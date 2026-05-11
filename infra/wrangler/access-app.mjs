@@ -14,6 +14,7 @@ export const defaults = {
   email: [],
   dryRun: false,
   applyConfig: "",
+  teamDomain: "",
 };
 
 export function buildBodies(config) {
@@ -77,6 +78,9 @@ export function parseArgs(args, fail = throwUsageError) {
       case "--apply-config":
         parsed.applyConfig = takeValue(args, ++index, arg, fail);
         break;
+      case "--team-domain":
+        parsed.teamDomain = withoutScheme(takeValue(args, ++index, arg, fail));
+        break;
       case "--help":
         usage(0);
         break;
@@ -108,8 +112,7 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   }
 
   const client = makeClient(config.accountId, token, fetchImpl);
-  const organization = await client.api("GET", `/accounts/${config.accountId}/access/organizations`);
-  const authDomain = organization.result?.auth_domain;
+  const authDomain = config.teamDomain || await readAccessTeamDomain(client, config.accountId);
   if (typeof authDomain !== "string" || authDomain.length === 0) {
     fail("Cloudflare Access organization has no auth_domain");
   }
@@ -154,6 +157,11 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
     });
   }
   return result;
+}
+
+async function readAccessTeamDomain(client, accountId) {
+  const organization = await client.api("GET", `/accounts/${accountId}/access/organizations`);
+  return organization.result?.auth_domain;
 }
 
 async function applyAccessConfig(path, vars) {
@@ -219,6 +227,7 @@ Options:
   --session-duration <value>  Access session duration (default: 24h)
   --allow-email <email,csv>   Email address allowed by the app policy; repeatable
   --apply-config <path>       Apply returned Access values to a Worker wrangler.toml
+  --team-domain <domain>      Access team domain; skips Access organization read
   --dry-run                   Print request bodies without calling Cloudflare
 `);
   process.exit(code);

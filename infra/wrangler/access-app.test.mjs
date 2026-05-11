@@ -96,6 +96,42 @@ ADMIN_CORS_ORIGIN = "https://old.example.com"
     assert.match(written, /ACCESS_AUDIENCE = "aud_123"/);
     assert.match(written, /ADMIN_CORS_ORIGIN = "https:\/\/cf-mail-relay-ui\.pages\.dev"/);
   });
+
+  it("uses an explicit team domain without reading the Access organization", async () => {
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      if (url.endsWith("/access/organizations")) {
+        throw new Error("organization endpoint should not be called");
+      }
+      if (url.endsWith("/access/apps?name=cf-mail-relay-admin")) {
+        return json({ result: [] });
+      }
+      if (init.method === "POST" && url.endsWith("/access/apps")) {
+        return json({ result: { id: "app_1" } });
+      }
+      if (url.endsWith("/access/apps/app_1/policies") && init.method === "GET") {
+        return json({ result: [] });
+      }
+      if (url.endsWith("/access/apps/app_1/policies") && init.method === "POST") {
+        return json({ result: { id: "policy_1" } });
+      }
+      if (url.endsWith("/access/apps/app_1")) {
+        return json({ result: { id: "app_1", aud: "aud_123" } });
+      }
+      throw new Error(`unexpected request ${init.method} ${url}`);
+    };
+
+    const result = await run(
+      ["--account-id", "acc", "--allow-email", "admin@example.com", "--team-domain", "https://team.cloudflareaccess.com/"],
+      { CLOUDFLARE_API_TOKEN: "token" },
+      fetchImpl,
+    );
+
+    assert.equal(result.access_team_domain, "team.cloudflareaccess.com");
+    assert.equal(result.access_audience, "aud_123");
+    assert.deepEqual(calls.map((call) => call.init.method), ["GET", "POST", "GET", "POST", "GET"]);
+  });
 });
 
 async function accessFetch(url, init) {

@@ -56,6 +56,9 @@ pnpm access:setup --allow-email alex@alexmiller.net \
 
 If you prefer to keep the setup and local config write as separate steps, save
 the setup output and run `pnpm access:apply --json .ai-runs/access-app.json`.
+If your API token can manage Access apps but cannot read the Access
+organization, add `--team-domain <your-team.cloudflareaccess.com>` to skip the
+organization lookup.
 
 Then deploy the Worker:
 
