@@ -22,7 +22,18 @@ import {
   revokeApiKey,
   revokeSmtpCredential,
 } from "./admin";
-import { requireAdmin } from "./access";
+import { requireAdmin, requireAuthenticated } from "./access";
+import {
+  selfApiKeys,
+  selfCreateApiKey,
+  selfCreateSmtpCredential,
+  selfProfile,
+  selfRevokeApiKey,
+  selfRevokeSmtpCredential,
+  selfSendEvents,
+  selfSenders,
+  selfSmtpCredentials,
+} from "./self";
 import {
   canonicalRelayString,
   normalizeBodySha256,
@@ -361,6 +372,44 @@ app.post("/admin/api/api-keys/:id/revoke", async (c) =>
 app.get("/admin/api/send-events", async (c) => adminJson(c, () => listSendEvents(c.env)));
 app.get("/admin/api/auth-failures", async (c) => adminJson(c, () => listAuthFailures(c.env)));
 
+// ───────────────────────── Self-service ─────────────────────────
+// Any authenticated, non-disabled user (admin or sender). All queries are
+// scoped to the session user; client-supplied user_id is ignored.
+
+app.options("/self/api/*", (c) => {
+  setAdminCors(c);
+  return new Response(null, { status: 204, headers: c.res.headers });
+});
+
+app.get("/self/api/session", async (c) => {
+  setAdminCors(c);
+  const session = await requireAuthenticated(c.req.raw, c.env);
+  if (!session.ok) return c.json({ ok: false, error: session.error }, session.status);
+  return c.json({
+    ok: true,
+    user: session.user,
+    access: { sub: session.claims.sub, email: session.claims.email ?? null },
+  });
+});
+
+app.get("/self/api/profile", async (c) => selfJson(c, (userId) => selfProfile(c.env, userId)));
+app.get("/self/api/senders", async (c) => selfJson(c, (userId) => selfSenders(c.env, userId)));
+app.get("/self/api/smtp-credentials", async (c) => selfJson(c, (userId) => selfSmtpCredentials(c.env, userId)));
+app.post("/self/api/smtp-credentials", async (c) =>
+  selfJson(c, async (userId) => selfCreateSmtpCredential(c.env, userId, await readJsonObject(c.req.raw)), 201),
+);
+app.post("/self/api/smtp-credentials/:id/revoke", async (c) =>
+  selfJson(c, (userId) => selfRevokeSmtpCredential(c.env, userId, c.req.param("id"))),
+);
+app.get("/self/api/api-keys", async (c) => selfJson(c, (userId) => selfApiKeys(c.env, userId)));
+app.post("/self/api/api-keys", async (c) =>
+  selfJson(c, async (userId) => selfCreateApiKey(c.env, userId, await readJsonObject(c.req.raw)), 201),
+);
+app.post("/self/api/api-keys/:id/revoke", async (c) =>
+  selfJson(c, (userId) => selfRevokeApiKey(c.env, userId, c.req.param("id"))),
+);
+app.get("/self/api/send-events", async (c) => selfJson(c, (userId) => selfSendEvents(c.env, userId)));
+
 app.post("/send", async (c) => {
   const bearer = parseBearer(c.req.header("authorization"));
   if (bearer === null) {
@@ -679,6 +728,26 @@ async function adminJson(
     return c.json({ ok: true, result }, successStatus);
   } catch (error) {
     return c.json({ ok: false, error: error instanceof Error ? error.message : "admin_request_failed" }, 400);
+  }
+}
+
+async function selfJson(
+  c: Context<{ Bindings: Env }>,
+  load: (userId: string) => Promise<unknown>,
+  successStatus: 200 | 201 = 200,
+) {
+  setAdminCors(c);
+  const session = await requireAuthenticated(c.req.raw, c.env);
+  if (!session.ok) {
+    return c.json({ ok: false, error: session.error }, session.status);
+  }
+  try {
+    const result = await load(session.user.id);
+    return c.json({ ok: true, result }, successStatus);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "self_request_failed";
+    const status = message === "credential_not_found" || message === "api_key_not_found" ? 404 : 400;
+    return c.json({ ok: false, error: message }, status);
   }
 }
 

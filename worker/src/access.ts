@@ -29,6 +29,15 @@ interface Jwks {
 }
 
 export async function requireAdmin(request: Request, env: Env): Promise<{ ok: true; claims: AccessClaims; user: AdminUser } | { ok: false; status: 401 | 403; error: string }> {
+  const result = await requireAuthenticated(request, env);
+  if (!result.ok) return result;
+  if (result.user.role !== "admin") {
+    return { ok: false, status: 403, error: "admin_not_allowed" };
+  }
+  return result;
+}
+
+export async function requireAuthenticated(request: Request, env: Env): Promise<{ ok: true; claims: AccessClaims; user: AdminUser } | { ok: false; status: 401 | 403; error: string }> {
   const token = request.headers.get("cf-access-jwt-assertion") ?? "";
   if (token.length === 0) {
     return { ok: false, status: 401, error: "missing_access_jwt" };
@@ -40,8 +49,11 @@ export async function requireAdmin(request: Request, env: Env): Promise<{ ok: tr
   }
 
   const user = await resolveAccessUser(env, verified.claims);
-  if (user === null || user.disabled_at !== null || user.role !== "admin") {
-    return { ok: false, status: 403, error: "admin_not_allowed" };
+  if (user === null) {
+    return { ok: false, status: 403, error: "user_not_provisioned" };
+  }
+  if (user.disabled_at !== null) {
+    return { ok: false, status: 403, error: "user_disabled" };
   }
 
   return {

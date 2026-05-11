@@ -56,6 +56,8 @@ export function parse(): Route {
     } else {
       name = "users";
     }
+  } else if (segments[0] === "me") {
+    name = "me";
   } else {
     name = "not-found";
   }

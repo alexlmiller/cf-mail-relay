@@ -1,7 +1,10 @@
-// Boot module. Mounts the shell, wires the router, initializes the palette,
-// and dispatches to the appropriate view module on every hash change.
+// Boot module. Fetches session, then mounts the appropriate shell (admin vs
+// sender) and wires the router. Every authenticated user can reach #/me
+// for their own profile; admins additionally get the full nav.
 
-import { api, ApiError, setApiBase } from "./api";
+import { ApiError, setApiBase } from "./api";
+import { api } from "./api";
+import { selfApi, setSelfApiBase } from "./api-self";
 import { h, icon, on, setChildren } from "./dom";
 import { initialsFor } from "./format";
 import { openPalette, setPaletteItems, type PaletteItem } from "./palette";
@@ -20,6 +23,7 @@ import { renderCredentials, openNewCredential } from "./views/credentials";
 import { renderApiKeys, openNewApiKey } from "./views/api-keys";
 import { renderUsers, openCreateUserSimple } from "./views/users";
 import { renderUserDetail } from "./views/user-detail";
+import { renderMe, openCreateCredential as openSelfCredential, openCreateApiKey as openSelfApiKey } from "./views/me";
 import type { Session } from "./types";
 
 interface NavItem {
@@ -28,7 +32,7 @@ interface NavItem {
   match: (name: string) => boolean;
 }
 
-const NAV: NavItem[] = [
+const ADMIN_NAV: NavItem[] = [
   { label: "Dashboard", route: "/", match: (n) => n === "dashboard" },
   { label: "Events", route: "/events", match: (n) => n === "events" },
   { label: "Domains", route: "/domains", match: (n) => n === "domains" || n === "domain-detail" },
@@ -40,7 +44,6 @@ const NAV: NavItem[] = [
 
 let session: Session | null = null;
 let appRoot: HTMLElement | null = null;
-let mainRoot: HTMLElement | null = null;
 let routeRoot: HTMLElement | null = null;
 let topbarUserSlot: HTMLElement | null = null;
 
@@ -49,34 +52,109 @@ export function boot() {
   if (!appRoot) return;
   const apiBase = appRoot.dataset.apiBase ?? "";
   setApiBase(apiBase);
+  setSelfApiBase(apiBase);
   initTheme();
   applyTheme(loadMode());
 
-  buildShell();
+  paintLoading();
+  void boostrapSession();
+}
+
+function paintLoading() {
+  if (!appRoot) return;
+  setChildren(
+    appRoot,
+    h(
+      "div",
+      { style: "min-height: 100vh; display: grid; place-items: center;" },
+      h("div", { class: "soft", style: "font-family: 'JetBrains Mono', monospace; font-size: 12px;" }, "loading…"),
+    ),
+  );
+}
+
+async function boostrapSession() {
+  try {
+    session = await selfApi.session();
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      paintAccessGate(error.message);
+      return;
+    }
+    paintAccessGate("network_error");
+    return;
+  }
+
   registerKeyboardShortcuts();
-  registerPaletteItems();
-  loadSession();
+
+  if (session.user.role === "admin") {
+    buildAdminShell();
+    registerAdminPaletteItems();
+  } else {
+    buildSenderShell();
+    registerSenderPaletteItems();
+  }
 
   subscribe(handleRouteChange);
   startRouter();
 }
 
-function buildShell() {
-  if (!appRoot) return;
+// ───────────────────────── Admin shell ─────────────────────────
 
-  const brandMark = h("span", { class: "brand-mark" }, "CR");
+function buildAdminShell() {
+  if (!appRoot || !session) return;
+
   const brand = h(
     "a",
     { class: "brand", href: "#/", title: "CF Mail Relay" },
-    brandMark,
+    h("span", { class: "brand-mark" }, "CR"),
     h("span", { class: "brand-name" }, "Mail Relay"),
   );
 
   const navEl = h("nav", { class: "nav", "aria-label": "Primary" });
-  for (const item of NAV) {
+  for (const item of ADMIN_NAV) {
     navEl.appendChild(h("a", { href: `#${item.route}`, "data-route": item.route }, item.label));
   }
 
+  const right = buildTopbarRight();
+  const topbarInner = h("div", { class: "topbar-inner" }, brand, navEl, right);
+  const topbar = h("header", { class: "topbar", role: "banner" }, topbarInner);
+
+  const main = h("main", { class: "main", id: "main", role: "main" });
+  routeRoot = h("div", { id: "route" });
+  main.appendChild(routeRoot);
+
+  setChildren(appRoot, h("div", { class: "shell" }, topbar, main));
+  syncUserChip();
+}
+
+// ───────────────────────── Sender shell ─────────────────────────
+
+function buildSenderShell() {
+  if (!appRoot || !session) return;
+
+  const brand = h(
+    "a",
+    { class: "brand", href: "#/me", title: "CF Mail Relay" },
+    h("span", { class: "brand-mark" }, "CR"),
+    h("span", { class: "brand-name" }, "Mail Relay"),
+  );
+
+  // Sender has no nav links — there's only one page.
+  const right = buildTopbarRight();
+  const topbarInner = h("div", { class: "topbar-inner" }, brand, h("div", { class: "flex-fill" }), right);
+  const topbar = h("header", { class: "topbar", role: "banner" }, topbarInner);
+
+  const main = h("main", { class: "main", id: "main", role: "main" });
+  routeRoot = h("div", { id: "route" });
+  main.appendChild(routeRoot);
+
+  setChildren(appRoot, h("div", { class: "shell" }, topbar, main));
+  syncUserChip();
+}
+
+// ───────────────────────── Topbar right (theme + user) ─────────────────────────
+
+function buildTopbarRight(): HTMLElement {
   const searchCue = h(
     "button",
     {
@@ -92,12 +170,11 @@ function buildShell() {
 
   topbarUserSlot = h("span", { class: "soft", style: "font-size: 12px" }, "—");
   const userChip = h(
-    "button",
+    "a",
     {
-      type: "button",
       class: "user-chip",
-      title: "Account",
-      "on:click": () => openPalette(),
+      title: "Your account",
+      href: "#/me",
     },
     h("span", { class: "avatar" }, "·"),
     topbarUserSlot,
@@ -123,22 +200,25 @@ function buildShell() {
     themeBtn.title = `Theme: ${mode}`;
   });
 
-  const right = h("div", { class: "topbar-right" }, searchCue, themeBtn, userChip);
-  const topbarInner = h("div", { class: "topbar-inner" }, brand, navEl, right);
-  const topbar = h("header", { class: "topbar", role: "banner" }, topbarInner);
+  return h("div", { class: "topbar-right" }, searchCue, themeBtn, userChip);
+}
 
-  mainRoot = h("main", { class: "main", id: "main", role: "main" });
-  routeRoot = h("div", { id: "route" });
-  mainRoot.appendChild(routeRoot);
-
-  const shell = h("div", { class: "shell" }, topbar, mainRoot);
-  setChildren(appRoot, shell);
+function syncUserChip() {
+  if (!topbarUserSlot || !session) return;
+  const userChip = topbarUserSlot.closest(".user-chip");
+  const avatar = userChip?.querySelector(".avatar");
+  if (avatar) avatar.textContent = initialsFor(session.user.email);
+  const span = h("span", { class: "email" }, session.user.email);
+  topbarUserSlot.replaceWith(span);
+  topbarUserSlot = span;
 }
 
 function getThemeIcon(): "sun" | "moon" {
   const resolved = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
   return resolved === "dark" ? "sun" : "moon";
 }
+
+// ───────────────────────── Keyboard shortcuts ─────────────────────────
 
 function registerKeyboardShortcuts() {
   on(window, "keydown", (event) => {
@@ -166,7 +246,8 @@ function armGotoSequence() {
       dispose();
       return;
     }
-    const map: Record<string, string> = {
+    const isAdmin = session?.user.role === "admin";
+    const adminMap: Record<string, string> = {
       d: "/",
       e: "/events",
       o: "/domains",
@@ -174,8 +255,10 @@ function armGotoSequence() {
       c: "/credentials",
       k: "/api-keys",
       u: "/users",
+      m: "/me",
     };
-    const route = map[event.key.toLowerCase()];
+    const senderMap: Record<string, string> = { m: "/me" };
+    const route = (isAdmin ? adminMap : senderMap)[event.key.toLowerCase()];
     if (route) {
       event.preventDefault();
       navigate(route);
@@ -185,164 +268,130 @@ function armGotoSequence() {
   window.setTimeout(dispose, 1200);
 }
 
-function registerPaletteItems() {
-  setPaletteItems((): PaletteItem[] => {
-    const items: PaletteItem[] = [
-      ...NAV.map((item) => ({
-        id: `goto-${item.route}`,
-        group: "Navigate",
-        label: item.label,
-        meta: `g · ${item.route}`,
-        glyph: "→",
-        run: () => navigate(item.route),
-      })),
-      {
-        id: "new-user-wizard",
-        group: "Create",
-        label: "Set up sender (guided)",
-        meta: "user → sender → credential",
-        glyph: "✦",
-        run: async () => {
-          const [users, senders, credentials, apiKeys] = await Promise.all([
-            api.listUsers(), api.listSenders(), api.listSmtpCredentials(), api.listApiKeys(),
-          ]);
-          runUserWizard({
-            snapshot: { users, senders, credentials, apiKeys },
-            onDone: () => reRender(),
-          });
-        },
+// ───────────────────────── Palettes ─────────────────────────
+
+function registerAdminPaletteItems() {
+  setPaletteItems((): PaletteItem[] => [
+    ...ADMIN_NAV.map((item) => ({
+      id: `goto-${item.route}`,
+      group: "Navigate",
+      label: item.label,
+      meta: `g · ${item.route}`,
+      glyph: "→",
+      run: () => navigate(item.route),
+    })),
+    {
+      id: "goto-me",
+      group: "Navigate",
+      label: "Your account",
+      meta: "g m · /me",
+      glyph: "→",
+      run: () => navigate("/me"),
+    },
+    {
+      id: "new-user-wizard",
+      group: "Create",
+      label: "Set up sender (guided)",
+      meta: "user → sender → credential",
+      glyph: "✦",
+      run: async () => {
+        const [users, senders, credentials, apiKeys] = await Promise.all([
+          api.listUsers(), api.listSenders(), api.listSmtpCredentials(), api.listApiKeys(),
+        ]);
+        runUserWizard({
+          snapshot: { users, senders, credentials, apiKeys },
+          onDone: () => reRender(),
+        });
       },
-      {
-        id: "new-user",
-        group: "Create",
-        label: "New user",
-        meta: "user only",
-        glyph: "+",
-        run: () => openCreateUserSimple(() => reRender()),
+    },
+    { id: "new-user", group: "Create", label: "New user", glyph: "+", run: () => openCreateUserSimple(() => reRender()) },
+    { id: "new-domain", group: "Create", label: "New domain", glyph: "+", run: () => openNewDomain(() => reRender()) },
+    {
+      id: "new-sender",
+      group: "Create",
+      label: "Grant sender",
+      glyph: "+",
+      run: async () => {
+        const [domains, users] = await Promise.all([api.listDomains(), api.listUsers()]);
+        openNewSender(domains, users, () => reRender());
       },
-      {
-        id: "new-domain",
-        group: "Create",
-        label: "New domain",
-        glyph: "+",
-        run: () => openNewDomain(() => reRender()),
+    },
+    {
+      id: "new-credential",
+      group: "Create",
+      label: "New SMTP credential",
+      glyph: "+",
+      run: async () => {
+        const [users, senders] = await Promise.all([api.listUsers(), api.listSenders()]);
+        openNewCredential(users, senders, () => reRender());
       },
-      {
-        id: "new-sender",
-        group: "Create",
-        label: "Grant sender",
-        glyph: "+",
-        run: async () => {
-          const [domains, users] = await Promise.all([api.listDomains(), api.listUsers()]);
-          openNewSender(domains, users, () => reRender());
-        },
+    },
+    {
+      id: "new-api-key",
+      group: "Create",
+      label: "New API key",
+      glyph: "+",
+      run: async () => {
+        const [users, senders] = await Promise.all([api.listUsers(), api.listSenders()]);
+        openNewApiKey(users, senders, () => reRender());
       },
-      {
-        id: "new-credential",
-        group: "Create",
-        label: "New SMTP credential",
-        glyph: "+",
-        run: async () => {
-          const [users, senders] = await Promise.all([api.listUsers(), api.listSenders()]);
-          openNewCredential(users, senders, () => reRender());
-        },
-      },
-      {
-        id: "new-api-key",
-        group: "Create",
-        label: "New API key",
-        glyph: "+",
-        run: async () => {
-          const [users, senders] = await Promise.all([api.listUsers(), api.listSenders()]);
-          openNewApiKey(users, senders, () => reRender());
-        },
-      },
-      {
-        id: "theme-auto",
-        group: "Theme",
-        label: "Match system",
-        glyph: "◐",
-        run: () => applyTheme("auto"),
-      },
-      {
-        id: "theme-light",
-        group: "Theme",
-        label: "Light",
-        glyph: "☼",
-        run: () => applyTheme("light"),
-      },
-      {
-        id: "theme-dark",
-        group: "Theme",
-        label: "Dark",
-        glyph: "☾",
-        run: () => applyTheme("dark"),
-      },
-    ];
-    return items;
-  });
+    },
+    ...themePaletteItems(),
+  ]);
 }
 
-async function loadSession() {
-  try {
-    session = await api.session();
-    if (topbarUserSlot && session) {
-      const userChip = topbarUserSlot.closest(".user-chip");
-      const avatar = userChip?.querySelector(".avatar");
-      if (avatar) avatar.textContent = initialsFor(session.user.email);
-      const span = h("span", { class: "email" }, session.user.email);
-      topbarUserSlot.replaceWith(span);
-      topbarUserSlot = span;
-    }
-  } catch (error) {
-    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-      paintAccessGate(error.message);
-    }
-  }
+function registerSenderPaletteItems() {
+  setPaletteItems((): PaletteItem[] => [
+    { id: "goto-me", group: "Navigate", label: "Your account", meta: "/me", glyph: "→", run: () => navigate("/me") },
+    {
+      id: "new-credential-self",
+      group: "Create",
+      label: "New SMTP credential",
+      glyph: "+",
+      run: () => {
+        if (routeRoot) openSelfCredential(routeRoot);
+      },
+    },
+    {
+      id: "new-api-key-self",
+      group: "Create",
+      label: "New API key",
+      glyph: "+",
+      run: () => {
+        if (routeRoot) openSelfApiKey(routeRoot);
+      },
+    },
+    ...themePaletteItems(),
+  ]);
 }
 
-function paintAccessGate(reason: string) {
-  if (!routeRoot) return;
-  setChildren(
-    routeRoot,
-    h(
-      "div",
-      { class: "card", style: "max-width: 560px; margin: 80px auto" },
-      h("div", { class: "card-head" }, h("h2", null, "Cloudflare Access required")),
-      h(
-        "div",
-        { class: "card-body stack", style: "gap: 12px" },
-        h(
-          "div",
-          { class: "soft", style: "font-size: 13.5px; line-height: 1.55" },
-          "This admin UI is gated by Cloudflare Access. You're either not signed in, or your identity isn't allowed to administer the relay.",
-        ),
-        h("div", { class: "banner bad" }, icon("warn", 14), `Reason: ${reason}`),
-        h(
-          "div",
-          { class: "row" },
-          h(
-            "button",
-            {
-              type: "button",
-              class: "btn primary",
-              "on:click": () => {
-                window.location.reload();
-              },
-            },
-            icon("refresh", 13),
-            "Sign in again",
-          ),
-        ),
-      ),
-    ),
-  );
+function themePaletteItems(): PaletteItem[] {
+  return [
+    { id: "theme-auto", group: "Theme", label: "Match system", glyph: "◐", run: () => applyTheme("auto") },
+    { id: "theme-light", group: "Theme", label: "Light", glyph: "☼", run: () => applyTheme("light") },
+    { id: "theme-dark", group: "Theme", label: "Dark", glyph: "☾", run: () => applyTheme("dark") },
+  ];
 }
+
+// ───────────────────────── Routing ─────────────────────────
 
 function handleRouteChange(route: ReturnType<typeof parse>) {
-  if (!routeRoot) return;
+  if (!routeRoot || !session) return;
   closeDrawer();
   closeModal();
+
+  if (session.user.role !== "admin") {
+    // Senders: every route collapses to /me. Don't leave broken state on a
+    // stale bookmark; silently redirect to /me if the URL doesn't match.
+    if (route.name !== "me") {
+      navigate("/me");
+      return;
+    }
+    syncNavActive(route.name);
+    void renderMe(routeRoot);
+    return;
+  }
+
   syncNavActive(route.name);
 
   switch (route.name) {
@@ -375,6 +424,9 @@ function handleRouteChange(route: ReturnType<typeof parse>) {
       if (route.params.id) void renderUserDetail(routeRoot, route.params.id);
       else navigate("/users");
       break;
+    case "me":
+      void renderMe(routeRoot);
+      break;
     default:
       paintNotFound();
   }
@@ -403,7 +455,7 @@ function syncNavActive(name: string) {
   const links = appRoot.querySelectorAll<HTMLAnchorElement>(".nav a[data-route]");
   for (const link of links) {
     const route = link.dataset.route ?? "";
-    const item = NAV.find((n) => n.route === route);
+    const item = ADMIN_NAV.find((n) => n.route === route);
     if (item?.match(name)) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
@@ -412,4 +464,42 @@ function syncNavActive(name: string) {
 function reRender() {
   const current = parse();
   handleRouteChange(current);
+}
+
+// ───────────────────────── Access gate ─────────────────────────
+
+function paintAccessGate(reason: string) {
+  if (!appRoot) return;
+  setChildren(
+    appRoot,
+    h(
+      "div",
+      { style: "min-height: 100vh; display: grid; place-items: center; padding: 24px" },
+      h(
+        "div",
+        { class: "card", style: "max-width: 520px; width: 100%" },
+        h("div", { class: "card-head" }, h("h2", null, "Access required")),
+        h(
+          "div",
+          { class: "card-body stack", style: "gap: 12px" },
+          h(
+            "div",
+            { class: "soft", style: "font-size: 13.5px; line-height: 1.55" },
+            "This dashboard is gated by Cloudflare Access. You're either not signed in, or your identity isn't provisioned on this relay.",
+          ),
+          h("div", { class: "banner bad" }, icon("warn", 14), `Reason: ${reason}`),
+          h(
+            "div",
+            { class: "row" },
+            h(
+              "button",
+              { type: "button", class: "btn primary", "on:click": () => window.location.reload() },
+              icon("refresh", 13),
+              "Sign in again",
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
