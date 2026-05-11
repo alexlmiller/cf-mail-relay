@@ -50,6 +50,8 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
 
   if (options.accessJwtEnv !== "" && env[options.accessJwtEnv] !== undefined) {
     checks.push(await checkAuthenticatedSession(fetchImpl, options.workerUrl, options.pagesUrl, env[options.accessJwtEnv]));
+  } else if (options.requireAuthenticatedSession) {
+    checks.push(failCheck("authenticated_session", `Set --access-jwt-env to an environment variable containing a live Access JWT.`));
   } else {
     checks.push(warnCheck("authenticated_session", `Set --access-jwt-env to verify a live Access-authenticated /admin/api/session response.`));
   }
@@ -70,6 +72,7 @@ export function parseArgs(args, fail = throwUsageError) {
     accessJwtEnv: "",
     audience: "",
     help: false,
+    requireAuthenticatedSession: false,
     teamDomain: "",
   };
 
@@ -78,6 +81,9 @@ export function parseArgs(args, fail = throwUsageError) {
     switch (arg) {
       case "--access-jwt-env":
         parsed.accessJwtEnv = takeValue(args, ++index, arg, fail);
+        break;
+      case "--require-authenticated-session":
+        parsed.requireAuthenticatedSession = true;
         break;
       case "--audience":
         parsed.audience = takeValue(args, ++index, arg, fail);
@@ -295,6 +301,8 @@ Options:
   --team-domain <domain>     Override ACCESS_TEAM_DOMAIN from wrangler.toml
   --audience <aud>           Override ACCESS_AUDIENCE from wrangler.toml
   --access-jwt-env <name>    Optional env var containing an Access JWT for /admin/api/session
+  --require-authenticated-session
+                             Fail unless --access-jwt-env is set and /admin/api/session passes
 `;
 }
 

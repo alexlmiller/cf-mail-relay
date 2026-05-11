@@ -70,6 +70,13 @@ and audience are no longer placeholders, fetches the Access JWKS, confirms the
 Pages artifact points at the Worker URL, and verifies that unauthenticated
 admin API requests are intercepted before reaching the Worker.
 
+For the final MS3 exit check, also verify an authenticated admin session with a
+real Access JWT:
+
+```sh
+ACCESS_JWT=... pnpm access:verify --access-jwt-env ACCESS_JWT --require-authenticated-session
+```
+
 ## Manual setup
 
 In Cloudflare Zero Trust, create a self-hosted Access application with:
