@@ -29,10 +29,7 @@ export async function main(argv, env, fetchImpl = fetch, writeOutput = console.l
     throw new Error(`Missing required option(s): ${missing.join(", ")}\n\n${usage()}`);
   }
 
-  const token = env[options.tokenEnv];
-  if (token === undefined || token.length === 0) {
-    throw new Error(`Environment variable ${options.tokenEnv} must contain the MS0 spike token.`);
-  }
+  const token = await readToken(options, env);
 
   const fixtureBytes = await readFile(options.fixture);
   const localMimeSha256 = sha256Hex(fixtureBytes);
@@ -100,6 +97,7 @@ export function parseArgs(argv) {
     recipients: "",
     retries: 3,
     tokenEnv: "MS0_SPIKE_TOKEN",
+    tokenFile: "",
     workerUrl: "",
   };
 
@@ -144,6 +142,10 @@ export function parseArgs(argv) {
         options.tokenEnv = readValue(argv, index, arg);
         index += 1;
         break;
+      case "--token-file":
+        options.tokenFile = readValue(argv, index, arg);
+        index += 1;
+        break;
       case "--worker-url":
         options.workerUrl = readValue(argv, index, arg);
         index += 1;
@@ -181,6 +183,22 @@ export function parseRecipients(raw) {
     .split(",")
     .map((recipient) => recipient.trim())
     .filter((recipient) => recipient.length > 0);
+}
+
+async function readToken(options, env) {
+  if (options.tokenFile.length > 0) {
+    const token = (await readFile(options.tokenFile, "utf8")).trim();
+    if (token.length === 0) {
+      throw new Error(`Token file ${options.tokenFile} is empty.`);
+    }
+    return token;
+  }
+
+  const token = env[options.tokenEnv];
+  if (token === undefined || token.length === 0) {
+    throw new Error(`Environment variable ${options.tokenEnv} must contain the MS0 spike token.`);
+  }
+  return token;
 }
 
 async function fetchWithRetry(fetchImpl, url, init, retries) {
@@ -275,5 +293,6 @@ Options:
   --label        Label used in the evidence filename. Default: fixture.
   --out-dir      Evidence directory. Default: ${defaultOutDir}.
   --retries      Retry transient fetch failures. Default: 3.
-  --token-env    Environment variable containing the spike token. Default: MS0_SPIKE_TOKEN.`;
+  --token-env    Environment variable containing the spike token. Default: MS0_SPIKE_TOKEN.
+  --token-file   File containing the spike token. Overrides --token-env.`;
 }

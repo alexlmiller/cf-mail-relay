@@ -50,6 +50,23 @@ describe("parseArgs", () => {
 
     assert.equal(options.retries, 5);
   });
+
+  it("parses token file", () => {
+    const options = parseArgs([
+      "--fixture",
+      "plain-text.eml",
+      "--from",
+      "sender@example.com",
+      "--recipients",
+      "one@example.net",
+      "--worker-url",
+      "https://worker.example.com",
+      "--token-file",
+      ".ai-runs/ms0-spike-token",
+    ]);
+
+    assert.equal(options.tokenFile, ".ai-runs/ms0-spike-token");
+  });
 });
 
 describe("spikeUrl", () => {
@@ -193,5 +210,49 @@ describe("main", () => {
     );
 
     assert.equal(calls, 2);
+  });
+
+  it("can read the spike token from a file", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "cf-mail-relay-ms0-"));
+    const fixture = path.join(tempDir, "plain.eml");
+    const tokenFile = path.join(tempDir, "token");
+    const outDir = path.join(tempDir, "evidence");
+    const fixtureText = "From: sender@example.com\r\n\r\nHello\r\n";
+    const fixtureSha256 = createHash("sha256").update(fixtureText).digest("hex");
+    await writeFile(fixture, fixtureText);
+    await writeFile(tokenFile, "token-from-file\n");
+
+    const fetchImpl = async (_url, init) => {
+      assert.equal(init.headers.authorization, "Bearer token-from-file");
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          dry_run: true,
+          mime_sha256: fixtureSha256,
+          mime_round_trip_verified: true,
+        }),
+        { status: 200 },
+      );
+    };
+
+    await main(
+      [
+        "--fixture",
+        fixture,
+        "--from",
+        "sender@example.com",
+        "--recipients",
+        "one@example.net",
+        "--worker-url",
+        "https://worker.example.com",
+        "--token-file",
+        tokenFile,
+        "--out-dir",
+        outDir,
+      ],
+      {},
+      fetchImpl,
+      () => {},
+    );
   });
 });
