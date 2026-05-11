@@ -40,6 +40,10 @@ relay/bin/
 *.out
 coverage.txt
 
+# Python tooling
+__pycache__/
+*.py[cod]
+
 # Secrets / env
 .env
 .env.local

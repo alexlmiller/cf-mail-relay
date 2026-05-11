@@ -76,6 +76,20 @@ go run ./cmd/ms0-capture \
   -out ../.ai-runs/ms0-captures
 ```
 
+If the Go toolchain is unavailable on the capture host, use the disposable
+Python helper instead:
+
+```sh
+export MS0_SMTP_PASSWORD='REPLACE_WITH_RANDOM_PASSWORD'
+python3 infra/ms0/capture_smtp.py \
+  --host 0.0.0.0 \
+  --port 587 \
+  --cert /etc/letsencrypt/live/smtp.example.com/fullchain.pem \
+  --key /etc/letsencrypt/live/smtp.example.com/privkey.pem \
+  --username ms0-capture \
+  --out .ai-runs/ms0-captures
+```
+
 Configure Gmail "Send mail as" with:
 
 - SMTP server: the capture hostname.
