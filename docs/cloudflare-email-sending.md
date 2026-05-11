@@ -91,7 +91,8 @@ Use [`docs/ms0-spike.md`](./ms0-spike.md) for the live spike runbook and evidenc
 |---|---|---|
 | Plain text from Gmail | delivered after stripping capture-hop trace headers | 2026-05-11 MS0: full Gmail SMTP DATA containing `Received`, `X-Received`, and `X-Gm-*` returned `email.sending.error.email.invalid`; same MIME from `MIME-Version` onward delivered to a Google-hosted inbox with Cloudflare DKIM pass, `alexmiller.net` DKIM pass, SPF pass on `cf-bounce.alexmiller.net`, and DMARC pass for `header.from=alexmiller.net` |
 | HTML with inline image | TBD | |
-| 4 MB PDF attachment + non-ASCII subject + existing DKIM-Signature | rejected as too large after Gmail base64 encoding | 2026-05-11 MS0: a 4,050,630 byte PDF became a 5,544,099 byte stripped Gmail MIME and `send_raw` returned `email.sending.error.email.too_big`; keep original attachments closer to 3 MiB |
+| PDF attachment | delivered below encoded-size cap; rejected above it | 2026-05-11 MS0: a 4,050,630 byte PDF became a 5,544,099 byte stripped Gmail MIME and `send_raw` returned `email.sending.error.email.too_big`; a 3,050,638 byte PDF became a 4,175,676 byte stripped Gmail MIME and `send_raw` accepted it |
+| Non-ASCII subject | TBD | |
 | 8-bit body content | rejected by relay | MVP decision |
 | Long subject lines (>78 chars) | TBD | |
 | iCal/multipart/alternative | TBD | |
