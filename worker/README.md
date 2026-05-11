@@ -38,6 +38,7 @@ and `/admin/api/*` is protected by Cloudflare Access JWT validation. The HTTP
 - `BOOTSTRAP_SETUP_TOKEN` (secret, one-time) — admits the first admin user while no `users` row exists.
 - `ACCESS_TEAM_DOMAIN` (var) — for JWKS URL.
 - `ACCESS_AUDIENCE` (var) — JWT `aud` claim to enforce.
+- `ADMIN_CORS_ORIGIN` (var, optional) — Pages origin allowed to call `/admin/api/*` when the UI and Worker are on different hostnames.
 
 ## Local development
 

@@ -58,6 +58,7 @@ export interface Env {
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUDIENCE: string;
   ACCESS_JWKS_JSON?: string;
+  ADMIN_CORS_ORIGIN?: string;
   REQUIRED_D1_SCHEMA_VERSION: string;
 }
 
@@ -270,7 +271,13 @@ app.post("/relay/send", async (c) => {
   return c.json(responseBody, responseStatus);
 });
 
+app.options("/admin/api/*", (c) => {
+  setAdminCors(c);
+  return new Response(null, { status: 204, headers: c.res.headers });
+});
+
 app.get("/admin/api/session", async (c) => {
+  setAdminCors(c);
   const admin = await requireAdmin(c.req.raw, c.env);
   if (!admin.ok) {
     return c.json({ ok: false, error: admin.error }, admin.status);
@@ -429,6 +436,7 @@ async function adminJson(
   load: () => Promise<unknown>,
   successStatus: 200 | 201 = 200,
 ) {
+  setAdminCors(c);
   const admin = await requireAdmin(c.req.raw, c.env);
   if (!admin.ok) {
     return c.json({ ok: false, error: admin.error }, admin.status);
@@ -439,6 +447,19 @@ async function adminJson(
   } catch (error) {
     return c.json({ ok: false, error: error instanceof Error ? error.message : "admin_request_failed" }, 400);
   }
+}
+
+function setAdminCors(c: Context<{ Bindings: Env }>): void {
+  const origin = c.req.header("origin");
+  const allowedOrigin = c.env.ADMIN_CORS_ORIGIN;
+  if (origin !== undefined && (allowedOrigin === "*" || origin === allowedOrigin)) {
+    c.header("access-control-allow-origin", origin);
+    c.header("access-control-allow-credentials", "true");
+    c.header("vary", "Origin");
+  }
+  c.header("access-control-allow-methods", "GET,POST,OPTIONS");
+  c.header("access-control-allow-headers", "content-type");
+  c.header("access-control-max-age", "600");
 }
 
 async function readJsonObject(request: Request): Promise<Record<string, unknown>> {

@@ -351,6 +351,7 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
       async function request(path, options = {}) {
         const response = await fetch(`${apiBase}${path}`, {
           ...options,
+          credentials: "include",
           headers: { "content-type": "application/json", ...(options.headers || {}) },
         });
         const payload = await response.json();
