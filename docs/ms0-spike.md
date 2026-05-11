@@ -13,6 +13,24 @@ MS0 proves the locked assumption that Cloudflare Email Sending `send_raw` can de
 
 Cloudflare-mutating commands in this document, including `wrangler secret put` and `wrangler deploy`, require explicit approval before an agent runs them.
 
+Read-only Wrangler discovery can identify the account and zone:
+
+```sh
+pnpm --filter @cf-mail-relay/worker exec wrangler whoami
+CLOUDFLARE_ACCOUNT_ID=<account-id> pnpm --filter @cf-mail-relay/worker exec wrangler email sending list
+```
+
+With a Cloudflare API token in `CLOUDFLARE_API_TOKEN`, run the MS0 preflight:
+
+```sh
+pnpm ms0:preflight \
+  --account-id <account-id> \
+  --zone-id <zone-id> \
+  --domain <sending-domain>
+```
+
+The preflight verifies token/account/zone access and checks the official Email Sending subdomains and DNS-record APIs. It cannot prove non-sandbox status; MS0 still requires the live delivery tests below.
+
 ## 1. Configure the disposable spike Worker
 
 From the repo root:
