@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkCloudflareApiHealth, dashboard } from "../src/admin";
+import { checkCloudflareApiHealth, createApiKey, dashboard, revokeApiKey } from "../src/admin";
 import type { Env } from "../src/index";
 
 function makeD1(): D1Database {
@@ -122,5 +122,16 @@ describe("admin dashboard", () => {
         checked_at: expect.any(Number),
       },
     });
+  });
+
+  it("creates and revokes HTTP API keys without returning stored hashes", async () => {
+    const created = await createApiKey(makeEnv(), { user_id: "usr_1", name: "Automation" });
+
+    expect(created.id).toMatch(/^key_/);
+    expect(created.secret).toHaveLength(43);
+    expect(created.key_prefix).toBe(created.secret.slice(0, 8));
+    expect(created).not.toHaveProperty("secret_hash");
+
+    await expect(revokeApiKey(makeEnv(), created.id)).resolves.toBeUndefined();
   });
 });

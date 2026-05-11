@@ -4,6 +4,7 @@ import { hmacSha256Hex, sha256Hex, signRelayRequest } from "../src/hmac";
 
 const hmacSecret = "relay-secret";
 const keyId = "rel_test";
+const apiSecret = "api-secret-123456789";
 
 function makeKv(): KVNamespace {
   const store = new Map<string, string>();
@@ -60,6 +61,21 @@ function makeD1(): D1Database & { state: FakeD1State } {
     }
     if (sql.includes("WHERE c.id = ?")) {
       return args[0] === "cred_1" ? { ...credential, secret_hash: await hmacSha256Hex("credential-pepper", "secret") } : null;
+    }
+    if (sql.includes("FROM api_keys k") && sql.includes("WHERE k.key_prefix = ?")) {
+      return args[0] === apiSecret.slice(0, 8)
+        ? {
+            id: "key_1",
+            user_id: "usr_1",
+            key_prefix: apiSecret.slice(0, 8),
+            secret_hash: await hmacSha256Hex("credential-pepper", apiSecret),
+            hash_version: 1,
+            scopes_json: JSON.stringify(["send"]),
+            allowed_sender_ids_json: null,
+            revoked_at: null,
+            user_disabled_at: null,
+          }
+        : null;
     }
     if (sql.includes("FROM settings WHERE key = 'policy_version'")) {
       return { value_json: "7" };
@@ -314,6 +330,87 @@ describe("relay endpoints", () => {
     expect(second.headers.get("x-relay-idempotency-replay")).toBe("1");
     await expect(second.json()).resolves.toMatchObject(firstJson as Record<string, unknown>);
     expect(cfFetch).toHaveBeenCalledOnce();
+  });
+
+  it("sends raw base64 MIME through the HTTP /send API", async () => {
+    const env = makeEnv();
+    const cfFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        from: "gmail@alexmiller.net",
+        recipients: ["alex@example.net", "copy@example.net", "hidden@example.net"],
+        mime_message:
+          "From: Alex <gmail@alexmiller.net>\r\nTo: alex@example.net\r\nCc: Copy <copy@example.net>\r\nBcc: hidden@example.net\r\nSubject: API\r\n\r\nBody\r\n",
+      });
+      return new Response(JSON.stringify({ success: true, errors: [], messages: [], result: { delivered: [], queued: [], permanent_bounces: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json", "cf-ray": "ray-1", "cf-request-id": "req-1" },
+      });
+    });
+    vi.stubGlobal("fetch", cfFetch);
+
+    const mime =
+      "From: Alex <gmail@alexmiller.net>\r\nTo: alex@example.net\r\nCc: Copy <copy@example.net>\r\nBcc: hidden@example.net\r\nSubject: API\r\n\r\nBody\r\n";
+    const response = await app.request(
+      "/send",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiSecret}`,
+          "content-type": "application/json",
+          "idempotency-key": "http-idem-1",
+        },
+        body: JSON.stringify({ raw: Buffer.from(mime, "utf8").toString("base64") }),
+      },
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(cfFetch).toHaveBeenCalledOnce();
+    expect((env.D1_MAIN as D1Database & { state: FakeD1State }).state.sendEvents[0]?.[3]).toBe("http");
+    expect((env.D1_MAIN as D1Database & { state: FakeD1State }).state.sendEvents[0]?.[6]).toBe("key_1");
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      from: "gmail@alexmiller.net",
+      recipients: ["alex@example.net", "copy@example.net", "hidden@example.net"],
+      idempotency_key: "http-idem-1",
+      cf_status: 200,
+      cf_ray_id: "ray-1",
+      cf_request_id: "req-1",
+    });
+  });
+
+  it("requires a bearer API key on /send", async () => {
+    const response = await app.request(
+      "/send",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ raw: "RnJvbTogZ21haWxAYWxleG1pbGxlci5uZXQNCg0K" }),
+      },
+      makeEnv(),
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "missing_api_key" });
+  });
+
+  it("enforces sender allowlist on /send", async () => {
+    const mime = "From: blocked@example.net\r\nTo: alex@example.net\r\nSubject: API\r\n\r\nBody\r\n";
+    const response = await app.request(
+      "/send",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiSecret}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ raw: Buffer.from(mime, "utf8").toString("base64") }),
+      },
+      makeEnv(),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "sender_not_allowed" });
   });
 });
 

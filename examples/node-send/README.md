@@ -1,6 +1,6 @@
-# curl-send
+# node-send
 
-Minimal curl client for the HTTP `/send` API.
+Minimal Node.js client for the HTTP `/send` API.
 
 ```sh
 export CF_MAIL_RELAY_WORKER_URL="https://<worker-host>"
@@ -8,8 +8,5 @@ export CF_MAIL_RELAY_API_KEY="<api key secret shown once in the admin UI>"
 export CF_MAIL_RELAY_FROM="gmail@example.com"
 export CF_MAIL_RELAY_TO="dest@example.org"
 
-./send.sh
+node index.mjs
 ```
-
-Optional environment variables: `CF_MAIL_RELAY_SUBJECT`,
-`CF_MAIL_RELAY_BODY`, and `CF_MAIL_RELAY_IDEMPOTENCY_KEY`.

@@ -23,6 +23,18 @@ interface CredentialRow {
   user_disabled_at: number | null;
 }
 
+interface ApiKeyRow {
+  id: string;
+  user_id: string;
+  key_prefix: string;
+  secret_hash: string;
+  hash_version: number;
+  scopes_json: string | null;
+  allowed_sender_ids_json: string | null;
+  revoked_at: number | null;
+  user_disabled_at: number | null;
+}
+
 interface SenderRow {
   id: string;
   email: string;
@@ -38,6 +50,7 @@ export interface SendEventInput {
   source: "smtp" | "http";
   userId?: string;
   credentialId?: string;
+  apiKeyId?: string;
   domainId?: string;
   envelopeFrom: string;
   recipients: string[];
@@ -101,6 +114,44 @@ export async function authenticateSmtpCredential(
   };
 }
 
+export async function authenticateApiKey(
+  env: Env,
+  secret: string,
+): Promise<
+  | { ok: true; policy_version: string; user_id: string; api_key_id: string; allowed_senders: string[] }
+  | { ok: false; reason: "not_found" | "disabled" | "bad_creds" | "invalid_scope" }
+> {
+  const trimmedSecret = secret.trim();
+  if (trimmedSecret.length < 8) {
+    return { ok: false, reason: "not_found" };
+  }
+  const policyVersion = await policyVersionFromD1(env);
+  const key = await lookupApiKey(env, trimmedSecret.slice(0, 8), policyVersion);
+  if (key === null) {
+    return { ok: false, reason: "not_found" };
+  }
+  if (key.revoked_at !== null || key.user_disabled_at !== null) {
+    return { ok: false, reason: "disabled" };
+  }
+  if (!apiKeyHasScope(key.scopes_json, "send")) {
+    return { ok: false, reason: "invalid_scope" };
+  }
+  const candidateHash = await credentialHash(env, trimmedSecret);
+  if (!timingSafeEqualString(candidateHash, key.secret_hash)) {
+    return { ok: false, reason: "bad_creds" };
+  }
+
+  const allowedSenders = await allowedSendersForApiKey(env, key);
+  await updateApiKeyLastUsed(env, key.id);
+  return {
+    ok: true,
+    policy_version: policyVersion,
+    user_id: key.user_id,
+    api_key_id: key.id,
+    allowed_senders: allowedSenders,
+  };
+}
+
 export async function senderAllowedForCredential(
   env: Env,
   credentialId: string,
@@ -118,6 +169,10 @@ export async function senderAllowedForCredential(
     return { ok: false, reason: "sender_not_allowed" };
   }
   return { ok: true, userId: credential.user_id, allowedSenders };
+}
+
+export function senderAllowedForApiKey(sender: string, allowedSenders: string[]): boolean {
+  return senderAllowed(sender, allowedSenders);
 }
 
 export async function bootstrapAdmin(
@@ -182,10 +237,27 @@ export async function computeSmtpIdempotencyKey(input: {
   return sha256Hex(new TextEncoder().encode(normalized));
 }
 
+export async function computeHttpIdempotencyKey(input: {
+  envelopeFrom: string;
+  recipients: string[];
+  messageIdHeader: string;
+  mimeSha256: string;
+}): Promise<string> {
+  const normalized = [
+    "http",
+    normalizeAddress(input.envelopeFrom),
+    [...input.recipients].map(normalizeAddress).sort().join(","),
+    input.messageIdHeader.trim(),
+    input.mimeSha256.toLowerCase(),
+  ].join("\n");
+  return sha256Hex(new TextEncoder().encode(normalized));
+}
+
 export async function beginIdempotentRequest(
   env: Env,
   key: string,
   requestHash: string,
+  source: "smtp" | "http" = "smtp",
 ): Promise<{ status: "new" } | { status: "pending" } | { status: "replay"; response: ReplayResponse }> {
   const cached = await env.KV_HOT.get(`idem:${key}`);
   if (cached !== null) {
@@ -194,9 +266,9 @@ export async function beginIdempotentRequest(
 
   const now = nowSeconds();
   const result = await env.D1_MAIN.prepare(
-    "INSERT OR IGNORE INTO idempotency_keys (idempotency_key, request_hash, source, status, response_json, created_at, updated_at, expires_at) VALUES (?, ?, 'smtp', 'pending', NULL, ?, ?, ?)",
+    "INSERT OR IGNORE INTO idempotency_keys (idempotency_key, request_hash, source, status, response_json, created_at, updated_at, expires_at) VALUES (?, ?, ?, 'pending', NULL, ?, ?, ?)",
   )
-    .bind(key, requestHash, now, now, now + idempotencyTtlSeconds)
+    .bind(key, requestHash, source, now, now, now + idempotencyTtlSeconds)
     .run();
   if (result.meta.changes > 0) {
     return { status: "new" };
@@ -228,7 +300,7 @@ export async function recordSendEvent(env: Env, event: SendEventInput): Promise<
       envelope_from, recipient_count, recipient_domains_hash, mime_size_bytes, message_id_hash,
       cf_request_id, cf_ray_id, cf_delivered_json, cf_queued_json, cf_bounced_json,
       status, smtp_code, error_code, cf_error_code
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       prefixedId("evt"),
@@ -237,6 +309,7 @@ export async function recordSendEvent(env: Env, event: SendEventInput): Promise<
       event.source,
       event.userId ?? null,
       event.credentialId ?? null,
+      event.apiKeyId ?? null,
       event.domainId ?? null,
       event.envelopeFrom,
       event.recipients.length,
@@ -314,6 +387,27 @@ async function lookupCredentialById(env: Env, credentialId: string): Promise<Cre
     .first<CredentialRow>();
 }
 
+async function lookupApiKey(env: Env, keyPrefix: string, policyVersion: string): Promise<ApiKeyRow | null> {
+  const normalizedPrefix = keyPrefix.trim();
+  const cacheKey = `apikey:${policyVersion}:${normalizedPrefix}`;
+  const cached = await env.KV_HOT.get(cacheKey);
+  if (cached !== null) {
+    return JSON.parse(cached) as ApiKeyRow;
+  }
+  const row = await env.D1_MAIN.prepare(
+    `SELECT k.id, k.user_id, k.key_prefix, k.secret_hash, k.hash_version, k.scopes_json, k.allowed_sender_ids_json, k.revoked_at, u.disabled_at AS user_disabled_at
+       FROM api_keys k
+       JOIN users u ON u.id = k.user_id
+      WHERE k.key_prefix = ?`,
+  )
+    .bind(normalizedPrefix)
+    .first<ApiKeyRow>();
+  if (row !== null) {
+    await env.KV_HOT.put(cacheKey, JSON.stringify(row), { expirationTtl: credentialCacheTtlSeconds });
+  }
+  return row;
+}
+
 async function allowedSendersForCredential(env: Env, credential: CredentialRow): Promise<string[]> {
   const senderIds = parseAllowedSenderIds(credential.allowed_sender_ids_json);
   if (senderIds !== null) {
@@ -349,6 +443,41 @@ async function allowedSendersForCredential(env: Env, credential: CredentialRow):
   return result.results?.map((row) => row.email) ?? [];
 }
 
+async function allowedSendersForApiKey(env: Env, key: ApiKeyRow): Promise<string[]> {
+  const senderIds = parseAllowedSenderIds(key.allowed_sender_ids_json);
+  if (senderIds !== null) {
+    if (senderIds.length === 0) {
+      return [];
+    }
+    const placeholders = senderIds.map(() => "?").join(", ");
+    const result = await env.D1_MAIN.prepare(
+      `SELECT s.id, s.email
+         FROM allowlisted_senders s
+         JOIN domains d ON d.id = s.domain_id
+        WHERE s.id IN (${placeholders})
+          AND s.enabled = 1
+          AND d.enabled = 1
+          AND d.status != 'disabled'`,
+    )
+      .bind(...senderIds)
+      .all<SenderRow>();
+    return result.results?.map((row) => row.email) ?? [];
+  }
+
+  const result = await env.D1_MAIN.prepare(
+    `SELECT s.id, s.email
+       FROM allowlisted_senders s
+       JOIN domains d ON d.id = s.domain_id
+      WHERE s.user_id = ?
+        AND s.enabled = 1
+        AND d.enabled = 1
+        AND d.status != 'disabled'`,
+  )
+    .bind(key.user_id)
+    .all<SenderRow>();
+  return result.results?.map((row) => row.email) ?? [];
+}
+
 function parseAllowedSenderIds(raw: string | null): string[] | null {
   if (raw === null || raw.trim().length === 0) {
     return null;
@@ -371,6 +500,22 @@ async function updateCredentialLastUsed(env: Env, credentialId: string, remoteIp
   await env.D1_MAIN.prepare("UPDATE smtp_credentials SET last_used_at = ?, last_used_ip_hash = ? WHERE id = ?")
     .bind(nowSeconds(), remoteIp === undefined ? null : await hmacSha256Hex(env.METADATA_PEPPER, remoteIp), credentialId)
     .run();
+}
+
+async function updateApiKeyLastUsed(env: Env, apiKeyId: string): Promise<void> {
+  await env.D1_MAIN.prepare("UPDATE api_keys SET last_used_at = ? WHERE id = ?").bind(nowSeconds(), apiKeyId).run();
+}
+
+function apiKeyHasScope(rawScopes: string | null, expected: string): boolean {
+  if (rawScopes === null || rawScopes.trim().length === 0) {
+    return true;
+  }
+  try {
+    const parsed = JSON.parse(rawScopes) as unknown;
+    return Array.isArray(parsed) && parsed.includes(expected);
+  } catch {
+    return false;
+  }
 }
 
 async function recipientDomainsHash(env: Env, recipients: string[]): Promise<string> {

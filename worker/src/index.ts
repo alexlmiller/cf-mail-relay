@@ -6,6 +6,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import {
+  createApiKey,
   createDomain,
   createSender,
   createSmtpCredential,
@@ -18,6 +19,7 @@ import {
   listSenders,
   listSmtpCredentials,
   listUsers,
+  revokeApiKey,
   revokeSmtpCredential,
 } from "./admin";
 import { requireAdmin } from "./access";
@@ -30,14 +32,17 @@ import {
   timingSafeEqualString,
 } from "./hmac";
 import {
+  authenticateApiKey,
   authenticateSmtpCredential,
   beginIdempotentRequest,
   bootstrapAdmin,
   completeIdempotentRequest,
+  computeHttpIdempotencyKey,
   computeSmtpIdempotencyKey,
   extractHeader,
   policyVersionFromD1,
   recordSendEvent,
+  senderAllowedForApiKey,
   senderAllowedForCredential,
 } from "./state";
 
@@ -301,10 +306,168 @@ app.post("/admin/api/smtp-credentials/:id/revoke", async (c) =>
   }),
 );
 app.get("/admin/api/api-keys", async (c) => adminJson(c, () => listApiKeys(c.env)));
+app.post("/admin/api/api-keys", async (c) => adminJson(c, async () => createApiKey(c.env, await readJsonObject(c.req.raw)), 201));
+app.post("/admin/api/api-keys/:id/revoke", async (c) =>
+  adminJson(c, async () => {
+    await revokeApiKey(c.env, c.req.param("id"));
+    return { revoked: true };
+  }),
+);
 app.get("/admin/api/send-events", async (c) => adminJson(c, () => listSendEvents(c.env)));
 app.get("/admin/api/auth-failures", async (c) => adminJson(c, () => listAuthFailures(c.env)));
 
-// TODO MS4: /send                      (API key-protected)
+app.post("/send", async (c) => {
+  const bearer = parseBearer(c.req.header("authorization"));
+  if (bearer === null) {
+    return c.json({ ok: false, error: "missing_api_key" }, 401);
+  }
+
+  const apiKey = await authenticateApiKey(c.env, bearer);
+  if (!apiKey.ok) {
+    return c.json({ ok: false, error: "invalid_api_key", reason: apiKey.reason }, 401);
+  }
+
+  let body: { raw?: unknown };
+  try {
+    body = (await c.req.json()) as { raw?: unknown };
+  } catch {
+    return c.json({ ok: false, error: "invalid_json" }, 400);
+  }
+  if (typeof body.raw !== "string" || body.raw.length === 0) {
+    return c.json({ ok: false, error: "invalid_raw" }, 400);
+  }
+
+  const rawMimeBytes = decodeBase64(body.raw);
+  if (rawMimeBytes === null) {
+    return c.json({ ok: false, error: "invalid_raw_base64" }, 400);
+  }
+  if (rawMimeBytes.byteLength > maxRelayBodyBytes) {
+    return c.json({ ok: false, error: "message_too_large" }, 413);
+  }
+
+  const mimeMessage = decodeUtf8(rawMimeBytes);
+  if (mimeMessage === null) {
+    return c.json({ ok: false, error: "mime_not_utf8_json_safe" }, 422);
+  }
+
+  const from = extractFirstEmailAddress(extractHeader(mimeMessage, "from"));
+  const recipients = uniqueAddresses([
+    ...extractEmailAddresses(extractHeader(mimeMessage, "to")),
+    ...extractEmailAddresses(extractHeader(mimeMessage, "cc")),
+    ...extractEmailAddresses(extractHeader(mimeMessage, "bcc")),
+  ]);
+  if (from === null) {
+    return c.json({ ok: false, error: "missing_from_header" }, 400);
+  }
+  if (recipients.length === 0) {
+    return c.json({ ok: false, error: "missing_recipients" }, 400);
+  }
+  if (recipients.length > 50) {
+    return c.json({ ok: false, error: "too_many_recipients" }, 400);
+  }
+  const messageIdHeader = extractHeader(mimeMessage, "message-id");
+  if (!senderAllowedForApiKey(from, apiKey.allowed_senders)) {
+    await recordSendEvent(c.env, {
+      traceId: crypto.randomUUID(),
+      source: "http",
+      userId: apiKey.user_id,
+      apiKeyId: apiKey.api_key_id,
+      envelopeFrom: from,
+      recipients,
+      mimeSizeBytes: rawMimeBytes.byteLength,
+      messageIdHeader,
+      status: "policy_rejected",
+      errorCode: "sender_not_allowed",
+    });
+    return c.json({ ok: false, error: "sender_not_allowed" }, 403);
+  }
+
+  const rawMimeSha256 = await sha256Hex(rawMimeBytes);
+  const requestHash = await computeHttpIdempotencyKey({
+    envelopeFrom: from,
+    recipients,
+    messageIdHeader,
+    mimeSha256: rawMimeSha256,
+  });
+  const suppliedIdempotencyKey = c.req.header("idempotency-key")?.trim();
+  const idempotencyKey = suppliedIdempotencyKey && suppliedIdempotencyKey.length > 0 ? suppliedIdempotencyKey : requestHash;
+  const idempotency = await beginIdempotentRequest(c.env, idempotencyKey, requestHash, "http");
+  if (idempotency.status === "pending") {
+    return c.json({ ok: false, error: "idempotency_pending" }, 409);
+  }
+  if (idempotency.status === "replay") {
+    for (const [name, value] of Object.entries(idempotency.response.headers ?? {})) {
+      c.header(name, value);
+    }
+    c.header("x-relay-idempotency-replay", "1");
+    return c.json(idempotency.response.body, idempotency.response.status as 200 | 400 | 401 | 403 | 409 | 413 | 422 | 502);
+  }
+
+  const cfResponse = await fetch(sendRawUrl(c.env.CF_ACCOUNT_ID), {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${c.env.CF_API_TOKEN}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      recipients,
+      mime_message: mimeMessage,
+    }),
+  });
+  const cfResponseText = await cfResponse.text();
+  const cfResponseParsed = parseJsonOrText(cfResponseText);
+  const cfResult = parseCloudflareResult(cfResponseParsed);
+  const allBounced =
+    cfResponse.ok &&
+    arrayLength(cfResult.bounced) > 0 &&
+    arrayLength(cfResult.delivered) === 0 &&
+    arrayLength(cfResult.queued) === 0;
+  const deliveryOk = cfResponse.ok && !allBounced;
+  const responseStatus = deliveryOk ? 200 : 502;
+  const cfRequestId = cfResponse.headers.get("cf-request-id");
+  const cfRayId = cfResponse.headers.get("cf-ray");
+  const responseBody = {
+    ok: deliveryOk,
+    from,
+    recipients,
+    raw_mime_size_bytes: rawMimeBytes.byteLength,
+    raw_mime_sha256: rawMimeSha256,
+    idempotency_key: idempotencyKey,
+    cf_status: cfResponse.status,
+    cf_ray_id: cfRayId,
+    cf_request_id: cfRequestId,
+    cf_response: cfResponseParsed,
+  };
+
+  await Promise.all([
+    recordSendEvent(c.env, {
+      traceId: crypto.randomUUID(),
+      source: "http",
+      userId: apiKey.user_id,
+      apiKeyId: apiKey.api_key_id,
+      envelopeFrom: from,
+      recipients,
+      mimeSizeBytes: rawMimeBytes.byteLength,
+      messageIdHeader,
+      cfRequestId,
+      cfRayId,
+      cfDeliveredJson: cfResult.delivered === null ? null : JSON.stringify(cfResult.delivered),
+      cfQueuedJson: cfResult.queued === null ? null : JSON.stringify(cfResult.queued),
+      cfBouncedJson: cfResult.bounced === null ? null : JSON.stringify(cfResult.bounced),
+      status: deliveryOk ? "accepted" : allBounced ? "all_bounced" : "cf_error",
+      errorCode: deliveryOk ? undefined : allBounced ? "all_recipients_bounced" : "cloudflare_send_raw_rejected",
+      cfErrorCode: cfResult.errorCode,
+    }),
+    completeIdempotentRequest(c.env, idempotencyKey, deliveryOk, {
+      ok: deliveryOk,
+      status: responseStatus,
+      body: responseBody,
+    }),
+  ]);
+
+  return c.json(responseBody, responseStatus);
+});
 
 export function parseRecipients(raw: string | undefined): string[] {
   if (raw === undefined) {
@@ -493,6 +656,42 @@ function parseCloudflareResult(value: unknown): {
 
 function arrayLength(value: unknown[] | null): number {
   return value?.length ?? 0;
+}
+
+function parseBearer(raw: string | undefined): string | null {
+  const match = raw?.match(/^Bearer\s+(.+)$/i);
+  const token = match?.[1]?.trim();
+  return token && token.length > 0 ? token : null;
+}
+
+function decodeBase64(raw: string): Uint8Array | null {
+  const normalized = raw.replace(/\s+/g, "").replaceAll("-", "+").replaceAll("_", "/");
+  if (normalized.length === 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
+    return null;
+  }
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  try {
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+function extractFirstEmailAddress(raw: string): string | null {
+  return extractEmailAddresses(raw)[0] ?? null;
+}
+
+function extractEmailAddresses(raw: string): string[] {
+  return [...raw.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map((match) => match[0].toLowerCase());
+}
+
+function uniqueAddresses(addresses: string[]): string[] {
+  return [...new Set(addresses)];
 }
 
 export default app;

@@ -457,7 +457,14 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
       }
 
       async function loadApiKeys() {
-        app.innerHTML = panel("API Keys", "", table(["Name", "Prefix", "User", "Last Used", "State"], await request("/admin/api/api-keys"), apiKeyRow));
+        await preloadRefs();
+        const rows = await request("/admin/api/api-keys");
+        app.innerHTML = panel("API Keys", `<button class="button primary" id="new-api-key">New API Key</button>`, table(["Name", "Prefix", "User", "Last Used", "State", ""], rows, apiKeyRow));
+        document.querySelector("#new-api-key")?.addEventListener("click", apiKeyForm);
+        document.querySelectorAll("[data-revoke-api-key]").forEach((button) => button.addEventListener("click", async () => {
+          await request(`/admin/api/api-keys/${button.dataset.revokeApiKey}/revoke`, { method: "POST", body: "{}" });
+          await show("apiKeys");
+        }));
       }
 
       async function preloadRefs() {
@@ -512,6 +519,17 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
           const result = await request("/admin/api/smtp-credentials", { method: "POST", body: JSON.stringify(body) });
           modal.querySelector(".secret-slot").innerHTML = `<div class="secret"><strong>${escapeHtml(result.username)}</strong><br>${escapeHtml(result.secret)}</div>`;
           await show("credentials");
+        }, true);
+      }
+
+      function apiKeyForm() {
+        openForm("New API Key", [
+          select("user_id", "User", state.users.map((user) => [user.id, user.email])),
+          field("name", "Name"),
+        ], async (body) => {
+          const result = await request("/admin/api/api-keys", { method: "POST", body: JSON.stringify(body) });
+          modal.querySelector(".secret-slot").innerHTML = `<div class="secret"><strong>${escapeHtml(result.key_prefix)}</strong><br>${escapeHtml(result.secret)}</div>`;
+          await show("apiKeys");
         }, true);
       }
 
@@ -604,7 +622,7 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
       }
 
       function apiKeyRow(row) {
-        return `<tr><td>${escapeHtml(row.name)}</td><td>${escapeHtml(row.key_prefix)}</td><td>${escapeHtml(row.user_email)}</td><td>${formatTime(row.last_used_at)}</td><td>${statePill(row.revoked_at ? "revoked" : "active")}</td></tr>`;
+        return `<tr><td>${escapeHtml(row.name)}</td><td>${escapeHtml(row.key_prefix)}</td><td>${escapeHtml(row.user_email)}</td><td>${formatTime(row.last_used_at)}</td><td>${statePill(row.revoked_at ? "revoked" : "active")}</td><td>${row.revoked_at ? "" : `<button class="button" data-revoke-api-key="${escapeHtml(row.id)}">Revoke</button>`}</td></tr>`;
       }
 
       function statePill(value) {

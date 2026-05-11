@@ -194,6 +194,46 @@ export async function listApiKeys(env: Env): Promise<unknown[]> {
   return result.results ?? [];
 }
 
+export async function createApiKey(env: Env, body: Record<string, unknown>): Promise<{ id: string; key_prefix: string; secret: string }> {
+  const id = prefixedId("key");
+  const now = nowSeconds();
+  const userId = requireString(body.user_id, "user_id");
+  const name = requireString(body.name, "name");
+  const allowedSenderIds = allowedSenderIdsJson(body.allowed_sender_ids);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const secret = randomSecret();
+    const keyPrefix = secret.slice(0, 8);
+    try {
+      await env.D1_MAIN.prepare(
+        "INSERT INTO api_keys (id, user_id, name, key_prefix, secret_hash, hash_version, scopes_json, allowed_sender_ids_json, created_at, last_used_at, revoked_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL)",
+      )
+        .bind(
+          id,
+          userId,
+          name,
+          keyPrefix,
+          await hmacSha256Hex(env.CREDENTIAL_PEPPER, secret),
+          JSON.stringify(["send"]),
+          allowedSenderIds,
+          now,
+        )
+        .run();
+      await bumpPolicyVersion(env);
+      return { id, key_prefix: keyPrefix, secret };
+    } catch (error) {
+      if (!String(error instanceof Error ? error.message : error).toLowerCase().includes("unique")) {
+        throw error;
+      }
+    }
+  }
+  throw new Error("api_key_prefix_collision");
+}
+
+export async function revokeApiKey(env: Env, id: string): Promise<void> {
+  await env.D1_MAIN.prepare("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL").bind(nowSeconds(), id).run();
+  await bumpPolicyVersion(env);
+}
+
 export async function listSendEvents(env: Env): Promise<unknown[]> {
   const result = await env.D1_MAIN.prepare(
     `SELECT id, ts, trace_id, source, user_id, credential_id, api_key_id, domain_id, envelope_from,
