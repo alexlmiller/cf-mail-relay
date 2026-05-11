@@ -45,12 +45,14 @@ It prints:
 - `access_team_domain`
 - `access_audience`
 
-Set those values in `worker/wrangler.toml`:
+Save the output and apply those values to `worker/wrangler.toml`:
 
-```toml
-ACCESS_TEAM_DOMAIN = "<access_team_domain>"
-ACCESS_AUDIENCE = "<access_audience>"
-ADMIN_CORS_ORIGIN = "https://cf-mail-relay-ui.pages.dev"
+```sh
+CLOUDFLARE_ACCOUNT_ID=fa774a1ed55e467890d48394f4409bdd \
+CLOUDFLARE_API_TOKEN=... \
+pnpm access:setup --allow-email alex@alexmiller.net > .ai-runs/access-app.json
+
+pnpm access:apply --json .ai-runs/access-app.json
 ```
 
 Then deploy the Worker:
@@ -94,7 +96,11 @@ In Cloudflare Zero Trust, create a self-hosted Access application with:
   - Allowed headers: `content-type`
 
 Copy the application audience tag into `ACCESS_AUDIENCE` and the team domain
-into `ACCESS_TEAM_DOMAIN`.
+into `ACCESS_TEAM_DOMAIN`, or apply them with:
+
+```sh
+pnpm access:apply --team-domain <access_team_domain> --audience <access_audience>
+```
 
 ## Current live status
 
