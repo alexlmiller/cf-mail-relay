@@ -3,15 +3,19 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alexlmiller/cf-mail-relay/relay/internal/workerclient"
@@ -33,6 +37,9 @@ type config struct {
 	AllowedSenders    []string
 	MaxMessageBytes   int64
 	AllowInsecureAuth bool
+	ConnPerMinute     int
+	AuthPerMinute     int
+	AuthLockoutBase   time.Duration
 }
 
 func main() {
@@ -62,6 +69,7 @@ func main() {
 		},
 		allowedSenders:  cfg.AllowedSenders,
 		maxMessageBytes: cfg.MaxMessageBytes,
+		throttle:        newThrottle(cfg.ConnPerMinute, cfg.AuthPerMinute, cfg.AuthLockoutBase),
 	}
 
 	server := smtp.NewServer(be)
@@ -84,10 +92,15 @@ type backend struct {
 	client          *workerclient.Client
 	allowedSenders  []string
 	maxMessageBytes int64
+	throttle        *throttle
 }
 
-func (b *backend) NewSession(_ *smtp.Conn) (smtp.Session, error) {
-	return &session{backend: b}, nil
+func (b *backend) NewSession(conn *smtp.Conn) (smtp.Session, error) {
+	remoteIP := remoteIP(conn)
+	if !b.throttle.allowConn(remoteIP) {
+		return nil, smtpError(421, smtp.EnhancedCode{4, 7, 0}, "too many connections; try again later")
+	}
+	return &session{backend: b, remoteIP: remoteIP}, nil
 }
 
 type session struct {
@@ -96,6 +109,7 @@ type session struct {
 	authDecision *workerclient.AuthResponse
 	mailFrom     string
 	recipients   []string
+	remoteIP     string
 }
 
 func (s *session) AuthMechanisms() []string {
@@ -104,10 +118,15 @@ func (s *session) AuthMechanisms() []string {
 
 func (s *session) Auth(mech string) (sasl.Server, error) {
 	authenticate := func(username, password string) error {
-		response, err := s.backend.client.Auth(context.Background(), username, password)
-		if err != nil {
+		if !s.backend.throttle.allowAuth(username) {
 			return smtp.ErrAuthFailed
 		}
+		response, err := s.backend.client.Auth(context.Background(), username, password)
+		if err != nil {
+			s.backend.throttle.recordAuthFailure(username)
+			return smtp.ErrAuthFailed
+		}
+		s.backend.throttle.recordAuthSuccess(username)
 		s.authed = true
 		s.authDecision = response
 		return nil
@@ -182,10 +201,11 @@ func (s *session) Data(r io.Reader) error {
 		return smtpError(554, smtp.EnhancedCode{5, 6, 0}, "8-bit content not supported in MVP; use base64 or quoted-printable")
 	}
 
-	if _, err := s.backend.client.Send(context.Background(), s.authDecision, s.mailFrom, s.recipients, mime); err != nil {
+	traceID := newTraceID()
+	if _, err := s.backend.client.Send(context.Background(), s.authDecision, s.mailFrom, s.recipients, mime, traceID); err != nil {
 		return smtpError(451, smtp.EnhancedCode{4, 7, 1}, "upstream send failed; try again later")
 	}
-	log.Printf("accepted message from=%s recipients=%d bytes=%d", s.mailFrom, len(s.recipients), len(mime))
+	log.Printf("accepted message trace_id=%s from=%s recipients=%d bytes=%d", traceID, s.mailFrom, len(s.recipients), len(mime))
 	s.Reset()
 	return nil
 }
@@ -244,6 +264,9 @@ func loadConfig() (config, error) {
 		HMACSecret:      os.Getenv("RELAY_HMAC_SECRET"),
 		AllowedSenders:  splitCSV(os.Getenv("RELAY_ALLOWED_SENDERS")),
 		MaxMessageBytes: defaultMaxMessageBytes,
+		ConnPerMinute:   60,
+		AuthPerMinute:   20,
+		AuthLockoutBase: 30 * time.Second,
 	}
 	if raw := os.Getenv("RELAY_MAX_BYTES"); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
@@ -251,6 +274,27 @@ func loadConfig() (config, error) {
 			return config{}, fmt.Errorf("invalid RELAY_MAX_BYTES")
 		}
 		cfg.MaxMessageBytes = parsed
+	}
+	if raw := os.Getenv("RELAY_CONN_PER_MIN"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			return config{}, fmt.Errorf("invalid RELAY_CONN_PER_MIN")
+		}
+		cfg.ConnPerMinute = parsed
+	}
+	if raw := os.Getenv("RELAY_AUTH_PER_MIN"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			return config{}, fmt.Errorf("invalid RELAY_AUTH_PER_MIN")
+		}
+		cfg.AuthPerMinute = parsed
+	}
+	if raw := os.Getenv("RELAY_AUTH_LOCKOUT_BASE_SECONDS"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			return config{}, fmt.Errorf("invalid RELAY_AUTH_LOCKOUT_BASE_SECONDS")
+		}
+		cfg.AuthLockoutBase = time.Duration(parsed) * time.Second
 	}
 	cfg.AllowInsecureAuth = os.Getenv("RELAY_ALLOW_INSECURE_AUTH") == "1" || os.Getenv("RELAY_ALLOW_INSECURE_AUTH") == "true"
 	for name, value := range map[string]string{
@@ -311,4 +355,112 @@ func splitCSV(raw string) []string {
 		}
 	}
 	return values
+}
+
+type throttle struct {
+	mu              sync.Mutex
+	connPerMinute   int
+	authPerMinute   int
+	authLockoutBase time.Duration
+	connCounts      map[string]int
+	authCounts      map[string]int
+	authFailures    map[string]authFailure
+}
+
+type authFailure struct {
+	count       int
+	blockUntil  time.Time
+	lastFailure time.Time
+}
+
+func newThrottle(connPerMinute, authPerMinute int, authLockoutBase time.Duration) *throttle {
+	return &throttle{
+		connPerMinute:   connPerMinute,
+		authPerMinute:   authPerMinute,
+		authLockoutBase: authLockoutBase,
+		connCounts:      make(map[string]int),
+		authCounts:      make(map[string]int),
+		authFailures:    make(map[string]authFailure),
+	}
+}
+
+func (t *throttle) allowConn(remoteIP string) bool {
+	if t == nil || t.connPerMinute <= 0 {
+		return true
+	}
+	key := fmt.Sprintf("%s:%s", minuteBucket(), remoteIP)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.connCounts[key]++
+	return t.connCounts[key] <= t.connPerMinute
+}
+
+func (t *throttle) allowAuth(username string) bool {
+	if t == nil {
+		return true
+	}
+	key := strings.ToLower(strings.TrimSpace(username))
+	now := time.Now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if failure, ok := t.authFailures[key]; ok && now.Before(failure.blockUntil) {
+		return false
+	}
+	if t.authPerMinute <= 0 {
+		return true
+	}
+	countKey := fmt.Sprintf("%s:%s", minuteBucket(), key)
+	t.authCounts[countKey]++
+	return t.authCounts[countKey] <= t.authPerMinute
+}
+
+func (t *throttle) recordAuthFailure(username string) {
+	if t == nil || t.authLockoutBase <= 0 {
+		return
+	}
+	key := strings.ToLower(strings.TrimSpace(username))
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	failure := t.authFailures[key]
+	failure.count++
+	failure.lastFailure = time.Now()
+	lockout := t.authLockoutBase * time.Duration(1<<(min(failure.count, 6)-1))
+	if lockout > 15*time.Minute {
+		lockout = 15 * time.Minute
+	}
+	failure.blockUntil = failure.lastFailure.Add(lockout)
+	t.authFailures[key] = failure
+}
+
+func (t *throttle) recordAuthSuccess(username string) {
+	if t == nil {
+		return
+	}
+	key := strings.ToLower(strings.TrimSpace(username))
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.authFailures, key)
+}
+
+func remoteIP(conn *smtp.Conn) string {
+	if conn == nil || conn.Conn() == nil || conn.Conn().RemoteAddr() == nil {
+		return "unknown"
+	}
+	host, _, err := net.SplitHostPort(conn.Conn().RemoteAddr().String())
+	if err != nil {
+		return conn.Conn().RemoteAddr().String()
+	}
+	return host
+}
+
+func minuteBucket() string {
+	return time.Now().UTC().Format("200601021504")
+}
+
+func newTraceID() string {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return fmt.Sprintf("trace_%d", time.Now().UnixNano())
+	}
+	return "trace_" + base64.RawURLEncoding.EncodeToString(random[:])
 }

@@ -22,12 +22,12 @@ The plan resolves these design questions definitively:
 
 | Milestone | Goal | Status |
 |---|---|---|
-| MS0 | `send_raw` spike — prove Gmail-originated MIME delivers with DKIM+DMARC pass | **Not started — block all other work here** |
-| MS1 | End-to-end relay (Gmail → relay → Worker → `send_raw`) | Not started |
-| MS2 | D1-backed state, audit log, idempotency | Not started |
-| MS3 | Admin UI on Pages with CF Access | Not started |
-| MS4 | HTTP `/send` API (raw MIME only — structured JSON is roadmap) | Not started |
-| MS5 | Hardening (rate limits, doctor scripts, threat model, partial-recipient policy) | Not started |
+| MS0 | `send_raw` spike — prove Gmail-originated MIME delivers with DKIM+DMARC pass | Complete |
+| MS1 | End-to-end relay (Gmail → relay → Worker → `send_raw`) | Complete |
+| MS2 | D1-backed state, audit log, idempotency | Complete |
+| MS3 | Admin UI on Pages with CF Access | Complete |
+| MS4 | HTTP `/send` API (raw MIME only — structured JSON is roadmap) | Complete |
+| MS5 | Hardening (rate limits, doctor scripts, threat model, partial-recipient policy) | In progress |
 | MS6 | Distribution polish (setup wizard, releases, full docs) | Not started |
 
 Each milestone has explicit deliverables and exit criteria in the plan. Don't skip ahead.

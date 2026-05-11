@@ -42,8 +42,10 @@ import {
   extractHeader,
   policyVersionFromD1,
   recordSendEvent,
+  reserveSendQuota,
   senderAllowedForApiKey,
   senderAllowedForCredential,
+  schemaVersionFromD1,
 } from "./state";
 
 export interface Env {
@@ -68,14 +70,30 @@ export interface Env {
 }
 
 const app = new Hono<{ Bindings: Env }>();
-const workerVersion = "0.1.0-ms4";
+const workerVersion = "0.1.0-ms5";
 const maxRelayBodyBytes = 6 * 1024 * 1024;
 
-app.get("/healthz", (c) => {
+app.get("/healthz", async (c) => {
+  const requiredSchemaVersion = c.env.REQUIRED_D1_SCHEMA_VERSION || "1";
+  const actualSchemaVersion = await schemaVersionFromD1(c.env);
+  if (actualSchemaVersion !== requiredSchemaVersion) {
+    return c.json(
+      {
+        ok: false,
+        version: workerVersion,
+        git_sha: "ms5",
+        error: "schema_version_mismatch",
+        required_schema_version: requiredSchemaVersion,
+        actual_schema_version: actualSchemaVersion,
+      },
+      500,
+    );
+  }
   return c.json({
     ok: true,
     version: workerVersion,
-    git_sha: "ms4",
+    git_sha: "ms5",
+    schema_version: actualSchemaVersion,
   });
 });
 
@@ -189,7 +207,34 @@ app.post("/relay/send", async (c) => {
       c.header(name, value);
     }
     c.header("x-relay-idempotency-replay", "1");
-    return c.json(idempotency.response.body, idempotency.response.status as 200 | 400 | 401 | 403 | 409 | 413 | 422 | 502);
+    return c.json(idempotency.response.body, idempotency.response.status as 200 | 400 | 401 | 403 | 409 | 413 | 422 | 429 | 502);
+  }
+
+  const quota = await reserveSendQuota(c.env, { source: "smtp", envelopeFrom: from, credentialId });
+  if (!quota.ok) {
+    const responseBody = { ok: false, error: "rate_limited", scope: quota.scope, limit: quota.limit };
+    await Promise.all([
+      recordSendEvent(c.env, {
+        traceId: c.req.header("x-relay-trace-id") ?? crypto.randomUUID(),
+        source: "smtp",
+        userId: senderPolicy.userId,
+        credentialId,
+        envelopeFrom: from,
+        recipients,
+        mimeSizeBytes: rawMimeBytes.byteLength,
+        messageIdHeader,
+        status: "rate_limited",
+        smtpCode: "451",
+        errorCode: "rate_limited",
+      }),
+      completeIdempotentRequest(c.env, idempotencyKey, false, {
+        ok: false,
+        status: 429,
+        body: responseBody,
+        headers: { "x-relay-policy-version": policyVersion },
+      }),
+    ]);
+    return c.json(responseBody, 429);
   }
 
   const bodyText = JSON.stringify({
@@ -400,7 +445,32 @@ app.post("/send", async (c) => {
       c.header(name, value);
     }
     c.header("x-relay-idempotency-replay", "1");
-    return c.json(idempotency.response.body, idempotency.response.status as 200 | 400 | 401 | 403 | 409 | 413 | 422 | 502);
+    return c.json(idempotency.response.body, idempotency.response.status as 200 | 400 | 401 | 403 | 409 | 413 | 422 | 429 | 502);
+  }
+
+  const quota = await reserveSendQuota(c.env, { source: "http", envelopeFrom: from, apiKeyId: apiKey.api_key_id });
+  if (!quota.ok) {
+    const responseBody = { ok: false, error: "rate_limited", scope: quota.scope, limit: quota.limit };
+    await Promise.all([
+      recordSendEvent(c.env, {
+        traceId: crypto.randomUUID(),
+        source: "http",
+        userId: apiKey.user_id,
+        apiKeyId: apiKey.api_key_id,
+        envelopeFrom: from,
+        recipients,
+        mimeSizeBytes: rawMimeBytes.byteLength,
+        messageIdHeader,
+        status: "rate_limited",
+        errorCode: "rate_limited",
+      }),
+      completeIdempotentRequest(c.env, idempotencyKey, false, {
+        ok: false,
+        status: 429,
+        body: responseBody,
+      }),
+    ]);
+    return c.json(responseBody, 429);
   }
 
   const cfResponse = await fetch(sendRawUrl(c.env.CF_ACCOUNT_ID), {

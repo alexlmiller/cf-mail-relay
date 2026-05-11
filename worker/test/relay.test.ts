@@ -18,12 +18,23 @@ function makeKv(): KVNamespace {
 
 interface FakeD1State {
   idempotency: Map<string, { status: string; response_json: string | null }>;
+  settings: Map<string, string>;
+  rates: Map<string, number>;
   sendEvents: unknown[][];
   authFailures: unknown[][];
 }
 
 function makeD1(): D1Database & { state: FakeD1State } {
-  const state: FakeD1State = { idempotency: new Map(), sendEvents: [], authFailures: [] };
+  const state: FakeD1State = {
+    idempotency: new Map(),
+    settings: new Map([
+      ["policy_version", "7"],
+      ["schema_version", "1"],
+    ]),
+    rates: new Map(),
+    sendEvents: [],
+    authFailures: [],
+  };
   const credential = {
     id: "cred_1",
     user_id: "usr_1",
@@ -80,8 +91,15 @@ function makeD1(): D1Database & { state: FakeD1State } {
     if (sql.includes("FROM settings WHERE key = 'policy_version'")) {
       return { value_json: "7" };
     }
+    if (sql.includes("FROM settings WHERE key = ?")) {
+      const value = state.settings.get(String(args[0]));
+      return value === undefined ? null : { value_json: value };
+    }
     if (sql.includes("FROM idempotency_keys WHERE idempotency_key = ?")) {
       return state.idempotency.get(String(args[0])) ?? null;
+    }
+    if (sql.includes("SELECT count FROM rate_reservations")) {
+      return { count: state.rates.get(rateKey(args)) ?? 0 };
     }
     if (sql.includes("SELECT id FROM users LIMIT 1")) {
       return null;
@@ -117,6 +135,24 @@ function makeD1(): D1Database & { state: FakeD1State } {
       state.authFailures.push(args);
       return { meta: { changes: 1 } };
     }
+    if (sql.includes("INSERT OR IGNORE INTO rate_reservations")) {
+      const key = `${String(args[1])}:${String(args[2])}:${String(args[3])}`;
+      if (!state.rates.has(key)) {
+        state.rates.set(key, 0);
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (sql.includes("UPDATE rate_reservations SET count = count + 1")) {
+      const key = rateKey(args.slice(1));
+      state.rates.set(key, (state.rates.get(key) ?? 0) + 1);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE rate_reservations SET count = MAX")) {
+      const key = rateKey(args.slice(1));
+      state.rates.set(key, Math.max((state.rates.get(key) ?? 0) - 1, 0));
+      return { meta: { changes: 1 } };
+    }
     return { meta: { changes: 1 } };
   };
 
@@ -128,6 +164,10 @@ function makeD1(): D1Database & { state: FakeD1State } {
     },
   };
   return d1 as unknown as D1Database & { state: FakeD1State };
+}
+
+function rateKey(args: unknown[]): string {
+  return `${String(args[0])}:${String(args[1])}:${String(args[2])}`;
 }
 
 function makeEnv(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -190,6 +230,25 @@ describe("relay endpoints", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, user_id: expect.stringMatching(/^usr_/) });
+  });
+
+  it("reports D1 schema mismatch on /healthz", async () => {
+    const response = await app.request("/healthz", { method: "GET" }, makeEnv({ REQUIRED_D1_SCHEMA_VERSION: "2" }));
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: "schema_version_mismatch",
+      required_schema_version: "2",
+      actual_schema_version: "1",
+    });
+  });
+
+  it("reports healthy schema on /healthz", async () => {
+    const response = await app.request("/healthz", { method: "GET" }, makeEnv({ REQUIRED_D1_SCHEMA_VERSION: "1" }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true, version: "0.1.0-ms5", schema_version: "1" });
   });
 
   it("authenticates SMTP credentials with HMAC-protected /relay/auth", async () => {
@@ -411,6 +470,41 @@ describe("relay endpoints", () => {
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ ok: false, error: "sender_not_allowed" });
+  });
+
+  it("rate limits HTTP sends using D1 daily reservations", async () => {
+    const env = makeEnv();
+    const d1 = env.D1_MAIN as D1Database & { state: FakeD1State };
+    d1.state.settings.set("daily_cap_global", "1");
+    const cfFetch = vi.fn(async () => {
+      return new Response(JSON.stringify({ success: true, errors: [], messages: [], result: { delivered: [], queued: [], permanent_bounces: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", cfFetch);
+    const mime = "From: gmail@alexmiller.net\r\nTo: alex@example.net\r\nSubject: API\r\n\r\nBody\r\n";
+    const request = (idempotencyKey: string) =>
+      app.request(
+        "/send",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${apiSecret}`,
+            "content-type": "application/json",
+            "idempotency-key": idempotencyKey,
+          },
+          body: JSON.stringify({ raw: Buffer.from(mime, "utf8").toString("base64") }),
+        },
+        env,
+      );
+
+    expect((await request("quota-1")).status).toBe(200);
+    const limited = await request("quota-2");
+
+    expect(limited.status).toBe(429);
+    await expect(limited.json()).resolves.toMatchObject({ ok: false, error: "rate_limited", scope: "global_day", limit: 1 });
+    expect(cfFetch).toHaveBeenCalledOnce();
   });
 });
 

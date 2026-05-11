@@ -6,16 +6,15 @@ The Worker is the policy and delivery authority. It calls the Cloudflare Email S
 
 ## Status
 
-MS3 is implemented. Relay endpoints use D1-backed credentials and policy,
-`/relay/send` writes metadata-only audit rows with D1-arbitrated idempotency,
-and `/admin/api/*` is protected by Cloudflare Access JWT validation. The HTTP
-`/send` API lands in MS4 per `IMPLEMENTATION_PLAN.md`.
+MS5 is implemented. Relay and HTTP send endpoints use D1-backed credentials,
+sender policy, idempotency, metadata-only audit rows, and configurable send
+quotas. `/admin/api/*` is protected by Cloudflare Access JWT validation.
 
 ## Routes
 
 | Route | Purpose | Auth |
 |---|---|---|
-| `GET /healthz` | Liveness + version + git SHA | none |
+| `GET /healthz` | Liveness, version, git SHA, and D1 schema compatibility | none |
 | `POST /bootstrap/admin` | Create the first admin user when no users exist | `BOOTSTRAP_SETUP_TOKEN` bearer |
 | `POST /relay/auth` | Verify SMTP credential, return short-lived policy snapshot | HMAC |
 | `POST /relay/send` | Accept raw MIME from relay, call `send_raw` | HMAC + idempotency |

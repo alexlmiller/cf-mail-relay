@@ -11,7 +11,7 @@
   "scripts": {
     "build": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' build",
     "typecheck": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' typecheck",
-    "test": "pnpm -r --filter='./worker' --filter='./shared' test && node --test infra/ms0/*.test.mjs infra/wrangler/*.test.mjs",
+    "test": "pnpm -r --filter='./worker' --filter='./shared' test && node --test infra/ms0/*.test.mjs infra/wrangler/*.test.mjs infra/setup/*.test.mjs",
     "ms0:spike:dev": "pnpm --filter @cf-mail-relay/worker spike:dev",
     "ms0:spike:deploy": "pnpm --filter @cf-mail-relay/worker spike:deploy",
     "ms0:preflight": "node infra/ms0/preflight.mjs",

@@ -81,11 +81,14 @@ func (c *Client) Auth(ctx context.Context, username, password string) (*AuthResp
 	return &response, nil
 }
 
-func (c *Client) Send(ctx context.Context, auth *AuthResponse, envelopeFrom string, recipients []string, mime []byte) (*SendResponse, error) {
+func (c *Client) Send(ctx context.Context, auth *AuthResponse, envelopeFrom string, recipients []string, mime []byte, traceID string) (*SendResponse, error) {
 	headers := map[string]string{
 		"content-type":          "message/rfc822",
 		"x-relay-envelope-from": envelopeFrom,
 		"x-relay-recipients":    strings.Join(recipients, ","),
+	}
+	if traceID != "" {
+		headers["x-relay-trace-id"] = traceID
 	}
 	if auth != nil {
 		headers["x-relay-credential-id"] = auth.CredentialID

@@ -31,3 +31,15 @@ pnpm --filter worker exec wrangler d1 migrations apply cf-mail-relay
 ## "Replay rejected" / "stale timestamp"
 
 The relay's clock is more than 60 seconds off. Sync NTP on the relay host.
+
+## "Rate limit exceeded"
+
+Check which layer rejected the request:
+
+- SMTP AUTH rejected before login: relay-side `RELAY_AUTH_PER_MIN` or
+  exponential lockout.
+- SMTP connection rejected at greeting: relay-side `RELAY_CONN_PER_MIN`.
+- Send request returns `rate_limited`: Worker-side D1/KV quota. Check
+  `send_events.status='rate_limited'` and D1 `settings` caps.
+
+Unset a cap or set its D1 `settings.value_json` to `null` to disable it.

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestSenderAllowed(t *testing.T) {
@@ -32,6 +33,42 @@ func TestContains8Bit(t *testing.T) {
 	}
 	if !contains8Bit([]byte("café")) {
 		t.Fatal("utf-8 bytes not detected as 8-bit")
+	}
+}
+
+func TestThrottleLimitsConnectionsPerMinute(t *testing.T) {
+	throttle := newThrottle(2, 20, 30)
+	if !throttle.allowConn("192.0.2.10") || !throttle.allowConn("192.0.2.10") {
+		t.Fatal("first two connections should be allowed")
+	}
+	if throttle.allowConn("192.0.2.10") {
+		t.Fatal("third connection should be limited")
+	}
+	if !throttle.allowConn("192.0.2.11") {
+		t.Fatal("different remote IP should have its own bucket")
+	}
+}
+
+func TestThrottleLocksOutAfterAuthFailure(t *testing.T) {
+	throttle := newThrottle(60, 20, 30*time.Second)
+	if !throttle.allowAuth("gmail") {
+		t.Fatal("first auth should be allowed")
+	}
+	throttle.recordAuthFailure("gmail")
+	if throttle.allowAuth("gmail") {
+		t.Fatal("failed username should be locked out")
+	}
+	throttle.recordAuthSuccess("gmail")
+	if !throttle.allowAuth("gmail") {
+		t.Fatal("success should clear lockout")
+	}
+}
+
+func TestNewTraceID(t *testing.T) {
+	first := newTraceID()
+	second := newTraceID()
+	if first == second || first == "" || second == "" {
+		t.Fatalf("trace IDs should be unique non-empty values: %q %q", first, second)
 	}
 }
 

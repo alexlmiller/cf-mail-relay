@@ -74,6 +74,13 @@ export interface ReplayResponse {
   headers?: Record<string, string>;
 }
 
+export interface QuotaInput {
+  source: "smtp" | "http";
+  envelopeFrom: string;
+  credentialId?: string;
+  apiKeyId?: string;
+}
+
 const authDecisionTtlSeconds = 60;
 const credentialCacheTtlSeconds = 300;
 const idempotencyTtlSeconds = 24 * 60 * 60;
@@ -221,6 +228,10 @@ export async function policyVersionFromD1(env: Env): Promise<string> {
   }
 }
 
+export async function schemaVersionFromD1(env: Env): Promise<string | null> {
+  return stringSetting(env, "schema_version");
+}
+
 export async function computeSmtpIdempotencyKey(input: {
   envelopeFrom: string;
   recipients: string[];
@@ -251,6 +262,50 @@ export async function computeHttpIdempotencyKey(input: {
     input.mimeSha256.toLowerCase(),
   ].join("\n");
   return sha256Hex(new TextEncoder().encode(normalized));
+}
+
+export async function reserveSendQuota(
+  env: Env,
+  input: QuotaInput,
+): Promise<{ ok: true } | { ok: false; scope: string; limit: number; count: number }> {
+  const sender = normalizeAddress(input.envelopeFrom);
+  const minuteLimit = await positiveIntegerSetting(env, "sender_minute_cap");
+  if (minuteLimit !== null) {
+    const count = await incrementKvCounter(env, `rate:sender:${sender}:${utcMinuteBucket()}`, 120);
+    if (count > minuteLimit) {
+      return { ok: false, scope: "sender_minute", limit: minuteLimit, count };
+    }
+  }
+
+  const senderDomain = sender.split("@").at(-1) ?? "";
+  const actorKey = input.source === "smtp" ? input.credentialId : input.apiKeyId;
+  const checks: Array<{ scopeType: string; scopeKey: string; setting: string }> = [
+    { scopeType: "global_day", scopeKey: "global", setting: "daily_cap_global" },
+    { scopeType: "sender_day", scopeKey: sender, setting: "daily_cap_sender" },
+    { scopeType: "domain_day", scopeKey: senderDomain, setting: "daily_cap_domain" },
+  ];
+  if (actorKey !== undefined && actorKey.length > 0) {
+    checks.push({ scopeType: "credential_day", scopeKey: `${input.source}:${actorKey}`, setting: "daily_cap_credential" });
+  }
+
+  const reservedScopes: Array<{ scopeType: string; scopeKey: string }> = [];
+  for (const check of checks) {
+    if (check.scopeKey.length === 0) {
+      continue;
+    }
+    const limit = await positiveIntegerSetting(env, check.setting);
+    if (limit === null) {
+      continue;
+    }
+    const count = await reserveDailyScope(env, check.scopeType, check.scopeKey, limit);
+    if (count > limit) {
+      await Promise.all(reservedScopes.map((scope) => rollbackDailyScope(env, scope.scopeType, scope.scopeKey)));
+      return { ok: false, scope: check.scopeType, limit, count };
+    }
+    reservedScopes.push({ scopeType: check.scopeType, scopeKey: check.scopeKey });
+  }
+
+  return { ok: true };
 }
 
 export async function beginIdempotentRequest(
@@ -506,6 +561,64 @@ async function updateApiKeyLastUsed(env: Env, apiKeyId: string): Promise<void> {
   await env.D1_MAIN.prepare("UPDATE api_keys SET last_used_at = ? WHERE id = ?").bind(nowSeconds(), apiKeyId).run();
 }
 
+async function positiveIntegerSetting(env: Env, key: string): Promise<number | null> {
+  const raw = await stringSetting(env, key);
+  if (raw === null || raw === "null") {
+    return null;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function stringSetting(env: Env, key: string): Promise<string | null> {
+  const row = await env.D1_MAIN.prepare("SELECT value_json FROM settings WHERE key = ?").bind(key).first<{ value_json: string }>();
+  if (row === null) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(row.value_json) as unknown;
+    return typeof parsed === "string" || typeof parsed === "number" ? String(parsed) : null;
+  } catch {
+    return row.value_json;
+  }
+}
+
+async function reserveDailyScope(env: Env, scopeType: string, scopeKey: string, limit: number): Promise<number> {
+  const day = utcDayBucket();
+  const now = nowSeconds();
+  await env.D1_MAIN.prepare(
+    "INSERT OR IGNORE INTO rate_reservations (id, scope_type, scope_key, day, count, updated_at) VALUES (?, ?, ?, ?, 0, ?)",
+  )
+    .bind(prefixedId("rate"), scopeType, scopeKey, day, now)
+    .run();
+  await env.D1_MAIN.prepare("UPDATE rate_reservations SET count = count + 1, updated_at = ? WHERE scope_type = ? AND scope_key = ? AND day = ?")
+    .bind(now, scopeType, scopeKey, day)
+    .run();
+  const row = await env.D1_MAIN.prepare("SELECT count FROM rate_reservations WHERE scope_type = ? AND scope_key = ? AND day = ?")
+    .bind(scopeType, scopeKey, day)
+    .first<{ count: number }>();
+  const count = row?.count ?? limit + 1;
+  if (count > limit) {
+    await env.D1_MAIN.prepare("UPDATE rate_reservations SET count = MAX(count - 1, 0), updated_at = ? WHERE scope_type = ? AND scope_key = ? AND day = ?")
+      .bind(now, scopeType, scopeKey, day)
+      .run();
+  }
+  return count;
+}
+
+async function rollbackDailyScope(env: Env, scopeType: string, scopeKey: string): Promise<void> {
+  await env.D1_MAIN.prepare("UPDATE rate_reservations SET count = MAX(count - 1, 0), updated_at = ? WHERE scope_type = ? AND scope_key = ? AND day = ?")
+    .bind(nowSeconds(), scopeType, scopeKey, utcDayBucket())
+    .run();
+}
+
+async function incrementKvCounter(env: Env, key: string, ttlSeconds: number): Promise<number> {
+  const current = Number.parseInt((await env.KV_HOT.get(key)) ?? "0", 10);
+  const next = Number.isFinite(current) ? current + 1 : 1;
+  await env.KV_HOT.put(key, String(next), { expirationTtl: ttlSeconds });
+  return next;
+}
+
 function apiKeyHasScope(rawScopes: string | null, expected: string): boolean {
   if (rawScopes === null || rawScopes.trim().length === 0) {
     return true;
@@ -549,4 +662,12 @@ function prefixedId(prefix: string): string {
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+function utcDayBucket(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function utcMinuteBucket(): string {
+  return new Date().toISOString().slice(0, 16);
 }

@@ -6,13 +6,15 @@ Listens on `587` with `STARTTLS` + `AUTH PLAIN/LOGIN`. Forwards raw RFC 5322 MIM
 
 ## Status
 
-MS2 relay implementation is in place:
+MS5 relay implementation is in place:
 
 - `587` SMTP submission with STARTTLS.
 - `AUTH PLAIN` and `AUTH LOGIN`, delegated to Worker `/relay/auth`.
 - Sender policy from Worker `/relay/auth`, recipient cap, size cap, and conservative 8-bit rejection.
 - HMAC-signed `POST /relay/send` with raw MIME bytes.
 - 60 second auth decision cache, invalidated when the Worker returns a new policy version.
+- Per-IP connection throttling, per-username AUTH throttling, and exponential AUTH-failure lockout.
+- Per-message trace IDs propagated to Worker `send_events`.
 
 ## Build target
 
@@ -37,8 +39,9 @@ All via environment variables.
 | `RELAY_MAX_BYTES` | Max MIME bytes at DATA | `4718592` |
 | `RELAY_MAX_RECIPIENTS` | Max `RCPT TO` count | `50` |
 | `RELAY_ALLOW_INSECURE_AUTH` | Local-dev only; allow AUTH before STARTTLS | unset/false |
-| `RELAY_RATE_LIMIT_PER_USER_PER_MIN` | AUTH attempts | `30` |
-| `RELAY_AUTH_FAIL_BAN_THRESHOLD` | Fail2ban-style threshold | `5/5m -> 15m ban` |
+| `RELAY_CONN_PER_MIN` | Connections per remote IP per minute | `60` |
+| `RELAY_AUTH_PER_MIN` | AUTH attempts per username per minute | `20` |
+| `RELAY_AUTH_LOCKOUT_BASE_SECONDS` | Exponential lockout base after failed AUTH | `30` |
 
 ## Local development
 

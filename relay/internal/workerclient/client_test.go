@@ -73,6 +73,9 @@ func TestClientSendsEnvelopeHeaders(t *testing.T) {
 		if got := r.Header.Get("X-Relay-Policy-Version"); got != "7" {
 			t.Fatalf("policy version = %s", got)
 		}
+		if got := r.Header.Get("X-Relay-Trace-Id"); got != "trace_test" {
+			t.Fatalf("trace id = %s", got)
+		}
 		w.Header().Set("content-type", "application/json")
 		json.NewEncoder(w).Encode(SendResponse{OK: true, CFStatus: 200})
 	}))
@@ -80,7 +83,7 @@ func TestClientSendsEnvelopeHeaders(t *testing.T) {
 	client.BaseURL = server.URL
 
 	auth := &AuthResponse{CredentialID: "cred_1", PolicyVersion: "7"}
-	_, err := client.Send(context.Background(), auth, "gmail@alexmiller.net", []string{"one@example.net", "two@example.net"}, []byte("From: x\r\n\r\nBody\r\n"))
+	_, err := client.Send(context.Background(), auth, "gmail@alexmiller.net", []string{"one@example.net", "two@example.net"}, []byte("From: x\r\n\r\nBody\r\n"), "trace_test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +118,7 @@ func TestClientCachesAuthAndInvalidatesOnPolicyChange(t *testing.T) {
 	if authCalls != 1 {
 		t.Fatalf("auth calls after cache hit = %d", authCalls)
 	}
-	if _, err := client.Send(context.Background(), &AuthResponse{CredentialID: "cred_1", PolicyVersion: "1"}, "gmail@alexmiller.net", []string{"one@example.net"}, []byte("From: x\r\n\r\nBody\r\n")); err != nil {
+	if _, err := client.Send(context.Background(), &AuthResponse{CredentialID: "cred_1", PolicyVersion: "1"}, "gmail@alexmiller.net", []string{"one@example.net"}, []byte("From: x\r\n\r\nBody\r\n"), "trace_test"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.Auth(context.Background(), "gmail", "pw"); err != nil {
