@@ -1,0 +1,58 @@
+# Relay with a lego ACME renewal sidecar.
+#
+# Requirements:
+# - RELAY_HOSTNAME is DNS-only in Cloudflare, for example smtp.example.com.
+# - CLOUDFLARE_DNS_API_TOKEN can edit DNS records for the relay hostname zone.
+# - The relay env file contains Worker URL/HMAC settings and SMTP listen config.
+#
+# First run:
+#   docker compose -f relay-with-lego.compose.yml run --rm lego
+#   docker compose -f relay-with-lego.compose.yml up -d relay
+
+services:
+  relay:
+    image: ghcr.io/alexlmiller/cf-mail-relay/relay:latest
+    container_name: cf-mail-relay
+    restart: unless-stopped
+    depends_on:
+      lego:
+        condition: service_completed_successfully
+    ports:
+      - "587:587"
+    env_file:
+      - .env
+    environment:
+      RELAY_LISTEN_ADDR: ":587"
+      RELAY_TLS_CERT_FILE: /tls/certificates/${RELAY_HOSTNAME}.crt
+      RELAY_TLS_KEY_FILE: /tls/certificates/${RELAY_HOSTNAME}.key
+      RELAY_MAX_BYTES: "4500000"
+      RELAY_MAX_RECIPIENTS: "50"
+    volumes:
+      - lego-certs:/tls:ro
+    healthcheck:
+      test: ["CMD", "/relay", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  lego:
+    image: goacme/lego:v4
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      LEGO_EMAIL: ${ACME_EMAIL}
+      LEGO_DNS: cloudflare
+      CLOUDFLARE_DNS_API_TOKEN: ${CLOUDFLARE_DNS_API_TOKEN}
+    command:
+      - --path=/tls
+      - --email=${ACME_EMAIL}
+      - --dns=cloudflare
+      - --domains=${RELAY_HOSTNAME}
+      - --accept-tos
+      - run
+    volumes:
+      - lego-certs:/tls
+
+volumes:
+  lego-certs:

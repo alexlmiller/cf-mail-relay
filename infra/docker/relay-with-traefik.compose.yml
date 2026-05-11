@@ -1,0 +1,45 @@
+# Relay behind Traefik TCP routing.
+#
+# Traefik passes SMTP through as raw TCP on port 587. SMTP STARTTLS is negotiated
+# inside the relay, so the relay still needs its own certificate/key mounted at
+# /tls. Use host certbot, lego, or another ACME job to populate ./tls.
+
+services:
+  traefik:
+    image: traefik:v3.1
+    container_name: cf-mail-relay-traefik
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.smtp.address=:587
+    ports:
+      - "587:587"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  relay:
+    image: ghcr.io/alexlmiller/cf-mail-relay/relay:latest
+    container_name: cf-mail-relay
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      RELAY_LISTEN_ADDR: ":587"
+      RELAY_TLS_CERT_FILE: /tls/fullchain.pem
+      RELAY_TLS_KEY_FILE: /tls/privkey.pem
+      RELAY_MAX_BYTES: "4500000"
+      RELAY_MAX_RECIPIENTS: "50"
+    volumes:
+      - ./tls:/tls:ro
+    labels:
+      traefik.enable: "true"
+      traefik.tcp.routers.cf-mail-relay.entrypoints: smtp
+      traefik.tcp.routers.cf-mail-relay.rule: HostSNI(`*`)
+      traefik.tcp.routers.cf-mail-relay.service: cf-mail-relay
+      traefik.tcp.services.cf-mail-relay.loadbalancer.server.port: "587"
+    healthcheck:
+      test: ["CMD", "/relay", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

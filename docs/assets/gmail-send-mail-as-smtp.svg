@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="560" viewBox="0 0 920 560" role="img" aria-labelledby="title desc">
+  <title id="title">Gmail SMTP settings dialog</title>
+  <desc id="desc">Screenshot-style diagram of Gmail SMTP server settings for the relay.</desc>
+  <rect width="920" height="560" fill="#f3f4f6"/>
+  <rect x="120" y="44" width="680" height="472" rx="2" fill="#fff8d7" stroke="#d5b94f"/>
+  <rect x="120" y="44" width="680" height="52" fill="#f8cf5a"/>
+  <text x="144" y="77" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#111">Add another email address you own</text>
+  <text x="158" y="128" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#111">Send mail through your SMTP server</text>
+  <line x1="144" y1="146" x2="776" y2="146" stroke="#f2c94c" stroke-width="2"/>
+  <text x="168" y="184" font-family="Arial, sans-serif" font-size="15" fill="#111">Configure your mail to be sent through your relay SMTP server.</text>
+  <text x="210" y="242" font-family="Arial, sans-serif" font-size="16" fill="#111">SMTP Server:</text>
+  <rect x="346" y="219" width="315" height="34" fill="#fff" stroke="#777"/>
+  <text x="358" y="242" font-family="Arial, sans-serif" font-size="15" fill="#333">mailer.example.com</text>
+  <text x="682" y="242" font-family="Arial, sans-serif" font-size="16" fill="#111">Port:</text>
+  <rect x="732" y="219" width="66" height="34" fill="#fff" stroke="#777"/>
+  <text x="748" y="242" font-family="Arial, sans-serif" font-size="15" fill="#333">587</text>
+  <text x="210" y="294" font-family="Arial, sans-serif" font-size="16" fill="#111">Username:</text>
+  <rect x="346" y="271" width="315" height="34" fill="#fff" stroke="#777"/>
+  <text x="358" y="294" font-family="Arial, sans-serif" font-size="15" fill="#333">gmail</text>
+  <text x="210" y="346" font-family="Arial, sans-serif" font-size="16" fill="#111">Password:</text>
+  <rect x="346" y="323" width="315" height="34" fill="#fff" stroke="#777"/>
+  <text x="358" y="346" font-family="Arial, sans-serif" font-size="15" fill="#777">SMTP credential password</text>
+  <circle cx="348" cy="392" r="10" fill="#fff" stroke="#1a73e8" stroke-width="2"/>
+  <circle cx="348" cy="392" r="5" fill="#1a73e8"/>
+  <text x="366" y="397" font-family="Arial, sans-serif" font-size="15" fill="#111">Secured connection using TLS</text>
+  <circle cx="348" cy="424" r="10" fill="#fff" stroke="#777" stroke-width="2"/>
+  <text x="366" y="429" font-family="Arial, sans-serif" font-size="15" fill="#111">Secured connection using SSL</text>
+  <rect x="552" y="464" width="140" height="38" rx="3" fill="#1a73e8" stroke="#1557b0"/>
+  <text x="575" y="489" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#fff">Add Account</text>
+  <rect x="440" y="464" width="90" height="38" rx="3" fill="#f8f9fa" stroke="#888"/>
+  <text x="464" y="489" font-family="Arial, sans-serif" font-size="16" fill="#111">Back</text>
+</svg>

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="560" viewBox="0 0 920 560" role="img" aria-labelledby="title desc">
+  <title id="title">Gmail add address dialog</title>
+  <desc id="desc">Screenshot-style diagram of Gmail's Add another email address form.</desc>
+  <rect width="920" height="560" fill="#f3f4f6"/>
+  <rect x="120" y="44" width="680" height="472" rx="2" fill="#fff8d7" stroke="#d5b94f"/>
+  <rect x="120" y="44" width="680" height="52" fill="#f8cf5a"/>
+  <text x="144" y="77" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#111">Add another email address you own</text>
+  <text x="158" y="128" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#111">Enter information about your other email address</text>
+  <line x1="144" y1="146" x2="776" y2="146" stroke="#f2c94c" stroke-width="2"/>
+  <text x="210" y="206" font-family="Arial, sans-serif" font-size="16" fill="#111">Name:</text>
+  <rect x="310" y="184" width="380" height="34" fill="#fff" stroke="#777"/>
+  <text x="322" y="207" font-family="Arial, sans-serif" font-size="15" fill="#333">Alex Miller</text>
+  <text x="210" y="262" font-family="Arial, sans-serif" font-size="16" fill="#111">Email address:</text>
+  <rect x="310" y="240" width="380" height="34" fill="#fff" stroke="#777"/>
+  <text x="322" y="263" font-family="Arial, sans-serif" font-size="15" fill="#333">gmail@example.com</text>
+  <rect x="310" y="304" width="18" height="18" fill="#fff" stroke="#555"/>
+  <path d="M314 313 l5 5 l10 -13" fill="none" stroke="#1a73e8" stroke-width="3"/>
+  <text x="338" y="319" font-family="Arial, sans-serif" font-size="15" fill="#111">Treat as an alias</text>
+  <rect x="500" y="394" width="160" height="38" rx="3" fill="#1a73e8" stroke="#1557b0"/>
+  <text x="530" y="419" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#fff">Next Step</text>
+  <rect x="390" y="394" width="90" height="38" rx="3" fill="#f8f9fa" stroke="#888"/>
+  <text x="414" y="419" font-family="Arial, sans-serif" font-size="16" fill="#111">Cancel</text>
+</svg>
