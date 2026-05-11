@@ -1,7 +1,7 @@
 # Cloudflare Access for the admin UI
 
-MS3 requires one Cloudflare Access self-hosted application covering both the
-static Pages UI and the Worker admin API:
+MS3 requires Cloudflare Access covering both the static Pages UI and the Worker
+admin API:
 
 - `https://cf-mail-relay-ui.pages.dev`
 - `https://cf-mail-relay-worker.milfred.workers.dev/admin/api/*`
@@ -10,7 +10,19 @@ The Worker validates the `Cf-Access-Jwt-Assertion` header against the Access
 JWKS endpoint and the configured audience. The display email header is not a
 trust root.
 
-## API setup
+See [ADR-002](../ADR/002-admin-access-hostnames.md) for the hostname decision.
+The current live deployment uses `pages.dev` and `workers.dev` platform
+hostnames; Cloudflare documents platform-specific dashboard controls for Access
+on those hostnames. The generic API helper below is the preferred path once the
+UI and Worker API use hostnames in an active Cloudflare zone.
+
+Reference docs:
+
+- Workers `workers.dev` Access: <https://developers.cloudflare.com/workers/configuration/routing/workers-dev/>
+- Pages `*.pages.dev` Access caveat: <https://developers.cloudflare.com/pages/platform/known-issues/#enable-access-on-your-pagesdev-domain>
+- Self-hosted public Access apps: <https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/>
+
+## API setup for custom domains
 
 Create a Cloudflare API token with `Access: Apps and Policies Write` on the
 target account. Cloudflare's Access application API documents this permission
@@ -35,7 +47,8 @@ pnpm access:setup --dry-run --account-id fa774a1ed55e467890d48394f4409bdd \
 The script creates or updates:
 
 - A self-hosted Access app named `cf-mail-relay-admin`.
-- Public destinations for the Pages UI and Worker `/admin/api/*`.
+- Public destinations for the configured Pages UI and Worker `/admin/api/*`
+  hostnames.
 - A CORS configuration that allows the Pages origin to call the Worker API with
   Access credentials.
 - An allow policy for the provided email addresses.
@@ -86,7 +99,20 @@ ACCESS_JWT=... pnpm access:verify --access-jwt-env ACCESS_JWT --require-authenti
 
 ## Manual setup
 
-In Cloudflare Zero Trust, create a self-hosted Access application with:
+For the current live platform-hostname deployment:
+
+1. In Workers & Pages, open the `cf-mail-relay-worker` Worker.
+2. Go to Settings > Domains & Routes.
+3. Enable Cloudflare Access for `workers.dev`.
+4. In Workers & Pages, open the `cf-mail-relay-ui` Pages project.
+5. Enable the Pages Access policy.
+6. Follow Cloudflare's `*.pages.dev` documented caveat: manage the generated
+   Access application and remove the wildcard from the public hostname so the
+   production `cf-mail-relay-ui.pages.dev` hostname is protected.
+7. Copy the Access team domain and audience into `worker/wrangler.toml`, or use
+   `pnpm access:apply`.
+
+For custom-domain deployments, create a self-hosted Access application with:
 
 - Name: `cf-mail-relay-admin`
 - Application domain: `cf-mail-relay-ui.pages.dev`
