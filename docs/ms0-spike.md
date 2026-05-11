@@ -82,10 +82,14 @@ Place sanitized captures under `examples/gmail-mime-fixture/` only if they conta
 Dry-run verifies that the Worker can decode the MIME bytes and build the documented JSON request shape without calling Cloudflare:
 
 ```sh
-curl -sS -X POST 'https://<spike-worker-host>/spike?from=sender@example.com&recipients=gmail-recipient@example.net&dry_run=1' \
-  -H "Authorization: Bearer $MS0_SPIKE_TOKEN" \
-  -H 'Content-Type: message/rfc822' \
-  --data-binary @.ai-runs/ms0-captures/plain-text.eml
+export MS0_SPIKE_TOKEN='REPLACE_WITH_SPIKE_TOKEN'
+pnpm ms0:spike:send \
+  --fixture .ai-runs/ms0-captures/plain-text.eml \
+  --from sender@example.com \
+  --recipients gmail-recipient@example.net \
+  --worker-url https://<spike-worker-host> \
+  --label plain-text \
+  --dry-run
 ```
 
 Expected:
@@ -95,15 +99,19 @@ Expected:
 - `mime_sha256` is recorded in the MS0 evidence.
 - `mime_round_trip_verified` is `true`.
 - `cf_status` is `null`.
+- Evidence JSON is written under `.ai-runs/ms0-evidence/`.
 
 Invalid non-UTF-8 bytes must be rejected before a live send:
 
 ```sh
 printf 'Subject: invalid\r\n\r\n\xff\r\n' > .ai-runs/ms0-invalid-utf8.eml
-curl -sS -X POST 'https://<spike-worker-host>/spike?from=sender@example.com&recipients=gmail-recipient@example.net&dry_run=1' \
-  -H "Authorization: Bearer $MS0_SPIKE_TOKEN" \
-  -H 'Content-Type: message/rfc822' \
-  --data-binary @.ai-runs/ms0-invalid-utf8.eml
+pnpm ms0:spike:send \
+  --fixture .ai-runs/ms0-invalid-utf8.eml \
+  --from sender@example.com \
+  --recipients gmail-recipient@example.net \
+  --worker-url https://<spike-worker-host> \
+  --label invalid-utf8 \
+  --dry-run
 ```
 
 Expected: HTTP `422` with `error: mime_not_utf8_json_safe`.
@@ -113,10 +121,13 @@ Expected: HTTP `422` with `error: mime_not_utf8_json_safe`.
 For each captured fixture, send to Gmail, Outlook, and iCloud:
 
 ```sh
-curl -sS -X POST 'https://<spike-worker-host>/spike?from=sender@example.com&recipients=gmail@example.net,outlook@example.net,icloud@example.net' \
-  -H "Authorization: Bearer $MS0_SPIKE_TOKEN" \
-  -H 'Content-Type: message/rfc822' \
-  --data-binary @.ai-runs/ms0-captures/plain-text.eml
+pnpm ms0:spike:send \
+  --fixture .ai-runs/ms0-captures/plain-text.eml \
+  --from sender@example.com \
+  --recipients gmail@example.net,outlook@example.net,icloud@example.net \
+  --worker-url https://<spike-worker-host> \
+  --label plain-text-live \
+  --live
 ```
 
 Record for each run:
@@ -127,6 +138,8 @@ Record for each run:
 - Cloudflare `result.delivered`, `result.queued`, and `result.permanent_bounces`.
 - Inbox placement for Gmail, Outlook, and iCloud.
 - Authentication results headers from each mailbox.
+
+The `pnpm ms0:spike:send` command writes request/response evidence JSON under `.ai-runs/ms0-evidence/`; keep those files with the run notes. They are intentionally gitignored because they may include private addresses and Cloudflare request metadata.
 
 ## MS0 exit checklist
 

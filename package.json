@@ -11,9 +11,10 @@
   "scripts": {
     "build": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' build",
     "typecheck": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' typecheck",
-    "test": "pnpm -r --filter='./worker' --filter='./shared' test",
+    "test": "pnpm -r --filter='./worker' --filter='./shared' test && node --test infra/ms0/*.test.mjs",
     "ms0:spike:dev": "pnpm --filter @cf-mail-relay/worker spike:dev",
     "ms0:spike:deploy": "pnpm --filter @cf-mail-relay/worker spike:deploy",
+    "ms0:spike:send": "node infra/ms0/send-fixture.mjs",
     "setup": "echo 'TODO MS6: implement setup wizard in infra/wrangler/setup.ts' && exit 1",
     "doctor:local": "bash infra/setup/doctor-local.sh",
     "doctor:delivery": "bash infra/setup/doctor-delivery.sh"
