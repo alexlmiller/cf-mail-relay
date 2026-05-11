@@ -35,6 +35,7 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --) shift ;;
     --domain) domain="$2"; shift 2 ;;
     --smtp-host) smtp_host="$2"; shift 2 ;;
     --smtp-port) smtp_port="$2"; shift 2 ;;
@@ -115,7 +116,11 @@ with smtplib.SMTP(host, port, timeout=20) as smtp:
         message.set_content("cf-mail-relay doctor local\n")
         smtp.send_message(message)
 PY
-pass "SMTP STARTTLS/AUTH path works"
+if [[ -n "$smtp_username" && -n "$smtp_password" ]]; then
+  pass "SMTP STARTTLS/AUTH path works"
+else
+  pass "SMTP STARTTLS path works"
+fi
 
 if [[ -n "$from_addr" && -n "$to_addr" && -n "$smtp_username" && -n "$smtp_password" ]] && command -v pnpm >/dev/null; then
   if pnpm --dir worker exec wrangler d1 execute "$d1_database" --remote --command \

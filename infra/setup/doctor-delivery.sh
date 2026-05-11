@@ -18,6 +18,7 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --) shift ;;
     --domain) domain="$2"; shift 2 ;;
     --to) to_addr="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
