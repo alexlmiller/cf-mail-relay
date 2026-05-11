@@ -103,6 +103,9 @@ app.post("/relay/send", async (c) => {
   if (recipients.length > 50) {
     return c.json({ ok: false, error: "too_many_recipients" }, 400);
   }
+  if (!senderAllowed(from, parseAllowedSenders(c.env.RELAY_ALLOWED_SENDERS))) {
+    return c.json({ ok: false, error: "sender_not_allowed" }, 403);
+  }
 
   const decoded = decodeUtf8(rawMimeBytes);
   if (decoded === null) {
@@ -259,6 +262,17 @@ function parseAllowedSenders(raw: string | undefined): string[] {
     ?.split(",")
     .map((sender) => sender.trim())
     .filter((sender) => sender.length > 0) ?? [];
+}
+
+function senderAllowed(sender: string, allowed: string[]): boolean {
+  const normalizedSender = sender.toLowerCase().replace(/^<|>$/g, "").trim();
+  return allowed.some((entry) => {
+    const normalizedEntry = entry.toLowerCase().trim();
+    if (normalizedEntry === normalizedSender) {
+      return true;
+    }
+    return normalizedEntry.startsWith("*@") && normalizedSender.endsWith(normalizedEntry.slice(1));
+  });
 }
 
 function isSupportedRelayVersion(version: string): boolean {

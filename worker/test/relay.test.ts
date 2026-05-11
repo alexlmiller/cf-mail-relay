@@ -125,6 +125,26 @@ describe("relay endpoints", () => {
     expect(cfFetch).toHaveBeenCalledOnce();
     await expect(response.json()).resolves.toMatchObject({ ok: true, cf_status: 200 });
   });
+
+  it("re-checks sender allowlist on /relay/send", async () => {
+    const body = new TextEncoder().encode("From: Alex <blocked@example.net>\r\n\r\nBody\r\n");
+    const response = await app.request(
+      "/relay/send",
+      {
+        method: "POST",
+        headers: {
+          ...(await signedHeaders("/relay/send", body, "blocked-sender-nonce")),
+          "x-relay-envelope-from": "blocked@example.net",
+          "x-relay-recipients": "alex@example.net",
+        },
+        body,
+      },
+      makeEnv(),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "sender_not_allowed" });
+  });
 });
 
 describe("stripCaptureHopHeaders", () => {
