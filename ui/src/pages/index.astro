@@ -372,7 +372,7 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
         const response = await fetch(`${apiBase}${path}`, {
           ...options,
           credentials: "include",
-          headers: { "content-type": "application/json", ...(options.headers || {}) },
+          headers: options.headers || {},
         });
         const payload = await response.json();
         if (!response.ok || payload.ok === false) {

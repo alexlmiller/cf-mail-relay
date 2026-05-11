@@ -97,7 +97,8 @@ Pages artifact points at the Worker URL, and verifies that unauthenticated
 admin API requests are intercepted before reaching the Worker.
 
 For the final MS3 exit check, also verify an authenticated admin session with a
-real Access JWT:
+real Access JWT. In a browser session, this is the value of the
+`CF_Authorization` cookie for the protected hostname:
 
 ```sh
 ACCESS_JWT=... pnpm access:verify --access-jwt-env ACCESS_JWT --require-authenticated-session

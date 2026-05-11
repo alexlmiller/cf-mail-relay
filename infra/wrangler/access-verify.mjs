@@ -181,6 +181,7 @@ async function checkPagesArtifact(fetchImpl, pagesUrl, workerUrl, accessJwt) {
   const headers = { accept: "text/html" };
   if (accessJwt !== undefined) {
     headers["cf-access-jwt-assertion"] = accessJwt;
+    headers.cookie = `CF_Authorization=${accessJwt}`;
   }
   const response = await fetchText(fetchImpl, pagesUrl, { method: "GET", redirect: "manual", headers });
   const location = response.headers.get("location") ?? "";
@@ -234,6 +235,7 @@ async function checkAuthenticatedSession(fetchImpl, workerUrl, pagesUrl, jwt) {
     headers: {
       accept: "application/json",
       "cf-access-jwt-assertion": jwt,
+      cookie: `CF_Authorization=${jwt}`,
       origin: pagesUrl,
     },
   });
@@ -312,7 +314,7 @@ Options:
   --worker-url <url>         Worker URL (default: https://cf-mail-relay-worker.milfred.workers.dev)
   --team-domain <domain>     Override ACCESS_TEAM_DOMAIN from wrangler.toml
   --audience <aud>           Override ACCESS_AUDIENCE from wrangler.toml
-  --access-jwt-env <name>    Optional env var containing an Access JWT for /admin/api/session
+  --access-jwt-env <name>    Optional env var containing an Access JWT or CF_Authorization cookie value for /admin/api/session
   --require-authenticated-session
                              Fail unless --access-jwt-env is set and /admin/api/session passes
 `;

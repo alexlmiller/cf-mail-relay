@@ -127,13 +127,21 @@ ADMIN_CORS_ORIGIN = "https://cf-mail-relay-ui.pages.dev"
       if (url === "https://cf-mail-relay-worker.milfred.workers.dev/healthz") {
         return json({ ok: true, version: "0.1.0-ms3", git_sha: "ms3" });
       }
-      if (url === "https://cf-mail-relay-ui.pages.dev" && init.headers["cf-access-jwt-assertion"] === "jwt") {
+      if (
+        url === "https://cf-mail-relay-ui.pages.dev" &&
+        init.headers["cf-access-jwt-assertion"] === "jwt" &&
+        init.headers.cookie === "CF_Authorization=jwt"
+      ) {
         return text("<html>https://cf-mail-relay-worker.milfred.workers.dev</html>");
       }
       if (url === "https://cf-mail-relay-worker.milfred.workers.dev/admin/api/session" && init.redirect === "manual") {
         return new Response("", { status: 302, headers: { location: "https://team.cloudflareaccess.com/cdn-cgi/access/login" } });
       }
-      if (url === "https://cf-mail-relay-worker.milfred.workers.dev/admin/api/session" && init.headers["cf-access-jwt-assertion"] === "jwt") {
+      if (
+        url === "https://cf-mail-relay-worker.milfred.workers.dev/admin/api/session" &&
+        init.headers["cf-access-jwt-assertion"] === "jwt" &&
+        init.headers.cookie === "CF_Authorization=jwt"
+      ) {
         return json({ ok: true, user: { id: "usr_1", email: "admin@example.com" } });
       }
       throw new Error(`unexpected request ${init.method} ${url}`);
@@ -191,7 +199,11 @@ ADMIN_CORS_ORIGIN = "https://cf-mail-relay-ui.pages.dev"
       if (url === "https://cf-mail-relay-worker.milfred.workers.dev/admin/api/session" && init.redirect === "manual") {
         return new Response("", { status: 302, headers: { location: "https://team.cloudflareaccess.com/cdn-cgi/access/login" } });
       }
-      if (url === "https://cf-mail-relay-worker.milfred.workers.dev/admin/api/session" && init.headers["cf-access-jwt-assertion"] === "jwt") {
+      if (
+        url === "https://cf-mail-relay-worker.milfred.workers.dev/admin/api/session" &&
+        init.headers["cf-access-jwt-assertion"] === "jwt" &&
+        init.headers.cookie === "CF_Authorization=jwt"
+      ) {
         return json({ ok: true, user: { id: "usr_1", email: "admin@example.com" } });
       }
       throw new Error(`unexpected request ${init.method} ${url}`);
