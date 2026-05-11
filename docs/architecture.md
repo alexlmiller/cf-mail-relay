@@ -32,6 +32,19 @@ HTTP client
 | `shared/` | TypeScript | Shared schemas and delivery status mapping |
 | `infra/` | Shell/Node/Docker examples | Setup, Access helper, doctors, relay deployment examples |
 
+## Cloudflare Boundary
+
+Worker, D1, KV, Pages, Access, and Email Sending run on Cloudflare. The SMTP
+relay does not, because SMTP submission requires a public raw TCP listener on
+port `587`; Cloudflare Workers and Containers currently expose HTTP/WebSocket
+request handling rather than arbitrary inbound TCP services.
+
+The relay is intentionally a thin edge adapter. It can run on existing
+infrastructure or a small public VM, including a GCP free-tier eligible
+`e2-micro` instance, while policy, credentials, quotas, idempotency, and
+delivery remain in Cloudflare. Provider free tiers usually have region, disk,
+and egress limits, so deployment docs should avoid promising zero cost.
+
 ## Trust Model
 
 - D1 is the source of truth.

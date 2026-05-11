@@ -10,6 +10,12 @@ The project has three pieces:
 - A Cloudflare Worker that enforces policy and calls Email Sending `send_raw`.
 - A Cloudflare Pages admin UI protected by Cloudflare Access.
 
+Most of the stack runs on Cloudflare. The SMTP relay is the exception: SMTP
+clients need a public raw TCP listener on port `587`, which Cloudflare
+Workers/Pages/Containers do not currently provide. Run the relay anywhere you
+already operate Docker, or on a small public VM such as a GCP free-tier
+eligible `e2-micro` instance in one of Google's supported free-tier regions.
+
 ```mermaid
 flowchart LR
   SMTP[SMTP clients] -->|SMTP 587 STARTTLS| Relay[Go SMTP relay]
@@ -43,7 +49,9 @@ flowchart LR
 - Cloudflare account with Workers Paid.
 - Each sending domain must use Cloudflare DNS and have Cloudflare Email Sending
   enabled and verified.
-- A Docker host reachable on TCP `587` for the SMTP relay.
+- A Docker host reachable on TCP `587` for the SMTP relay. This can be existing
+  infrastructure or a small VM such as a GCP free-tier eligible `e2-micro`
+  instance. Check the provider's current free-tier region and egress limits.
 - Local `pnpm`, `wrangler`, and `docker`.
 
 ## Setup
