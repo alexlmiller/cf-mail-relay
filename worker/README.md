@@ -6,7 +6,9 @@ The Worker is the policy and delivery authority. It calls the Cloudflare Email S
 
 ## Status
 
-Scaffold only. Implementation lands across MS1–MS5 per `IMPLEMENTATION_PLAN.md`.
+MS1 relay endpoints are implemented. D1-backed credentials, audit logging,
+idempotency, admin APIs, and the HTTP `/send` API land in later milestones per
+`IMPLEMENTATION_PLAN.md`.
 
 ## Routes (planned)
 
@@ -30,6 +32,9 @@ Scaffold only. Implementation lands across MS1–MS5 per `IMPLEMENTATION_PLAN.md
 - `METADATA_PEPPER` (secret) — HMAC pepper for hashed recipient domains, Message-IDs, IPs in audit log.
 - `RELAY_HMAC_SECRET_CURRENT` (secret) — verifies HMAC-signed relay requests.
 - `RELAY_HMAC_SECRET_PREVIOUS` (secret, optional) — for the rotation window.
+- `RELAY_HMAC_KEY_ID` (var, optional) — if set, only this relay key id is accepted.
+- `RELAY_AUTH_USERNAME` / `RELAY_AUTH_PASSWORD` (secrets for MS1 only) — temporary SMTP credential check before D1-backed credentials land in MS2.
+- `RELAY_ALLOWED_SENDERS` (var for MS1 only) — comma-separated policy snapshot returned by `/relay/auth`.
 - `BOOTSTRAP_SETUP_TOKEN` (secret, one-time) — admits the first admin user; rotated immediately after first use.
 - `ACCESS_TEAM_DOMAIN` (var) — for JWKS URL.
 - `ACCESS_AUDIENCE` (var) — JWT `aud` claim to enforce.

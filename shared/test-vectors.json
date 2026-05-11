@@ -1,6 +1,43 @@
 {
-  "$comment": "Canonical HMAC test vectors per IMPLEMENTATION_PLAN.md § HMAC contract. MS1 populates real values after the contract is implemented and exercised in both the relay (Go) and Worker (TS) sides. Both sides must agree on every vector here.",
+  "$comment": "Canonical HMAC test vectors per IMPLEMENTATION_PLAN.md HMAC contract. Both the relay (Go) and Worker (TS) test suites consume these vectors.",
   "version": 1,
   "algorithm": "HMAC-SHA256",
-  "vectors": []
+  "vectors": [
+    {
+      "name": "relay-send-basic",
+      "secret": "ms1-test-secret-current",
+      "method": "POST",
+      "path": "/relay/send",
+      "timestamp": "1778515200",
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "body_sha256": "4f778123369d2553daa9601084340f25426669eed437f76f465233e1b583984f",
+      "key_id": "rel_test_1",
+      "canonical": "POST\n/relay/send\n1778515200\nAAECAwQFBgcICQoLDA0ODw\n4f778123369d2553daa9601084340f25426669eed437f76f465233e1b583984f\nrel_test_1",
+      "signature": "97Z65QQIFjfznqmvIS8NxTWH41SPeOxNX5ki8M8Dq60"
+    },
+    {
+      "name": "relay-auth-json",
+      "secret": "another-ms1-secret",
+      "method": "POST",
+      "path": "/relay/auth",
+      "timestamp": "1778515260",
+      "nonce": "Dw4NDAsKCQgHBgUEAwIBAA",
+      "body_sha256": "a6f2f7af13f0ce35c0223f8a12ee93665921a367c4c2e64d74ce9f5b1453eaa4",
+      "key_id": "rel_test_2",
+      "canonical": "POST\n/relay/auth\n1778515260\nDw4NDAsKCQgHBgUEAwIBAA\na6f2f7af13f0ce35c0223f8a12ee93665921a367c4c2e64d74ce9f5b1453eaa4\nrel_test_2",
+      "signature": "8FrrNoSOzzslSuyyorLTv5EUut5iPI60uU1yCZMhOFw"
+    },
+    {
+      "name": "lowercase-method-normalized",
+      "secret": "unicode-secret-café",
+      "method": "post",
+      "path": "/relay/send",
+      "timestamp": "1778515320",
+      "nonce": "Zm9vLWJhci1ub25jZS0xMjM",
+      "body_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "key_id": "rel_test_3",
+      "canonical": "POST\n/relay/send\n1778515320\nZm9vLWJhci1ub25jZS0xMjM\n0000000000000000000000000000000000000000000000000000000000000000\nrel_test_3",
+      "signature": "QGj0DRdObHGgmSkhC-Nx8IpVDX2pGjlrltLI0P2k-PQ"
+    }
+  ]
 }
