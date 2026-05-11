@@ -59,6 +59,17 @@ Then deploy the Worker:
 pnpm --dir worker exec wrangler deploy
 ```
 
+Verify the live gate:
+
+```sh
+pnpm access:verify
+```
+
+The verifier reads `worker/wrangler.toml`, checks that the Access team domain
+and audience are no longer placeholders, fetches the Access JWKS, confirms the
+Pages artifact points at the Worker URL, and verifies that unauthenticated
+admin API requests are intercepted before reaching the Worker.
+
 ## Manual setup
 
 In Cloudflare Zero Trust, create a self-hosted Access application with:

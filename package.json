@@ -18,6 +18,7 @@
     "ms0:spike:send": "node infra/ms0/send-fixture.mjs",
     "setup": "echo 'TODO MS6: implement setup wizard in infra/wrangler/setup.ts' && exit 1",
     "access:setup": "node infra/wrangler/access-app.mjs",
+    "access:verify": "node infra/wrangler/access-verify.mjs",
     "doctor:local": "bash infra/setup/doctor-local.sh",
     "doctor:delivery": "bash infra/setup/doctor-delivery.sh"
   },
