@@ -38,6 +38,9 @@ pnpm doctor:delivery --domain example.com
 # 6. Configure Gmail "Send mail as" (see docs/gmail-send-mail-as.md).
 ```
 
+Until the MS6 setup wizard exists, configure the Cloudflare Access application
+for the admin UI with [`cloudflare-access.md`](./cloudflare-access.md).
+
 ## Adding multiple sending domains
 
 Multi-domain is first-class — one Worker handles many domains in the same Cloudflare account. There are three ways to add domains:
@@ -61,6 +64,7 @@ After your bootstrap admin exists, sign in to the UI via Cloudflare Access and a
 ## Where to look for more
 
 - `docs/dns.md` — DNS records, single and multi-domain.
+- `docs/cloudflare-access.md` — Access app setup for the admin UI.
 - `docs/gmail-send-mail-as.md` — Gmail-side configuration.
 - `docs/http-api.md` — using the HTTP `/send` API from applications.
 - `docs/operations.md` — rotation, backup/restore, doctor scripts.

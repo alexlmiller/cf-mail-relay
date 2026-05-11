@@ -5,6 +5,7 @@ Adopter-side tooling. Not deployed; runs locally on the adopter's workstation or
 | Path | Purpose | Milestone |
 |---|---|---|
 | `wrangler/setup.ts` | `pnpm setup` wizard: preflight checks, D1/KV creation, migrations, secret setting, Worker+Pages deploy, per-domain DNS guidance | MS6 |
+| `wrangler/access-app.mjs` | Creates or updates the Cloudflare Access self-hosted app for the MS3 admin UI | MS3 |
 | `docker/relay.compose.yml` | Reference compose file for the relay alone | MS5 |
 | `docker/relay-with-lego.compose.yml` | Compose with `lego` sidecar for DNS-01 ACME via Cloudflare | MS5 |
 | `docker/relay-with-traefik.compose.yml` | Compose with Traefik fronting the relay | MS5 |
