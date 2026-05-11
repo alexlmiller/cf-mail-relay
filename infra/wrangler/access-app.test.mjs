@@ -8,8 +8,9 @@ import { buildBodies, defaults, parseArgs, run } from "./access-app.mjs";
 describe("access-app helper", () => {
   it("parses repeatable admin email flags", () => {
     assert.deepEqual(
-      parseArgs(["--account-id", "acc", "--allow-email", "one@example.com,two@example.com", "--allow-email", "three@example.com", "--apply-config", "worker.toml"]),
+      parseArgs(["--account-id", "acc", "--allow-email", "one@example.com,two@example.com", "--allow-email", "three@example.com", "--apply-config", "worker.toml", "--allow-platform-hostnames"]),
       {
+        allowPlatformHostnames: true,
         applyConfig: "worker.toml",
         accountId: "acc",
         email: ["one@example.com", "two@example.com", "three@example.com"],
@@ -36,7 +37,7 @@ describe("access-app helper", () => {
   });
 
   it("returns dry-run payload without requiring a token", async () => {
-    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--dry-run"], {}, async () => {
+    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--dry-run", "--allow-platform-hostnames"], {}, async () => {
       throw new Error("fetch should not be called");
     });
 
@@ -69,7 +70,7 @@ describe("access-app helper", () => {
       throw new Error(`unexpected request ${init.method} ${url}`);
     };
 
-    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com"], { CLOUDFLARE_API_TOKEN: "token" }, fetchImpl);
+    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--allow-platform-hostnames"], { CLOUDFLARE_API_TOKEN: "token" }, fetchImpl);
 
     assert.equal(result.access_team_domain, "team.cloudflareaccess.com");
     assert.equal(result.access_audience, "aud_123");
@@ -88,7 +89,7 @@ ADMIN_CORS_ORIGIN = "https://old.example.com"
 `,
     );
 
-    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--apply-config", config], { CLOUDFLARE_API_TOKEN: "token" }, accessFetch);
+    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--apply-config", config, "--allow-platform-hostnames"], { CLOUDFLARE_API_TOKEN: "token" }, accessFetch);
     const written = await readFile(config, "utf8");
 
     assert.equal(result.applied_config.changed, true);
@@ -123,7 +124,7 @@ ADMIN_CORS_ORIGIN = "https://old.example.com"
     };
 
     const result = await run(
-      ["--account-id", "acc", "--allow-email", "admin@example.com", "--team-domain", "https://team.cloudflareaccess.com/"],
+      ["--account-id", "acc", "--allow-email", "admin@example.com", "--team-domain", "https://team.cloudflareaccess.com/", "--allow-platform-hostnames"],
       { CLOUDFLARE_API_TOKEN: "token" },
       fetchImpl,
     );
@@ -132,7 +133,42 @@ ADMIN_CORS_ORIGIN = "https://old.example.com"
     assert.equal(result.access_audience, "aud_123");
     assert.deepEqual(calls.map((call) => call.init.method), ["GET", "POST", "GET", "POST", "GET"]);
   });
+
+  it("rejects platform hostnames unless explicitly allowed", async () => {
+    await assert.rejects(
+      () => run(["--account-id", "acc", "--allow-email", "admin@example.com", "--dry-run"], {}, async () => {
+        throw new Error("fetch should not be called");
+      }, throwingFail),
+      /Platform hostnames require Workers & Pages Access controls/,
+    );
+  });
+
+  it("allows custom-domain payloads without the platform hostname override", async () => {
+    const result = await run(
+      [
+        "--account-id",
+        "acc",
+        "--allow-email",
+        "admin@example.com",
+        "--pages-url",
+        "https://admin.example.com",
+        "--worker-url",
+        "https://mail-api.example.com",
+        "--dry-run",
+      ],
+      {},
+      async () => {
+        throw new Error("fetch should not be called");
+      },
+    );
+
+    assert.equal(result.app.domain, "admin.example.com");
+  });
 });
+
+function throwingFail(message) {
+  throw new Error(message);
+}
 
 async function accessFetch(url, init) {
   if (url.endsWith("/access/organizations")) {

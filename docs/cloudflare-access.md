@@ -33,7 +33,9 @@ Then run:
 ```sh
 CLOUDFLARE_ACCOUNT_ID=fa774a1ed55e467890d48394f4409bdd \
 CLOUDFLARE_API_TOKEN=... \
-pnpm access:setup --allow-email alex@alexmiller.net
+pnpm access:setup --allow-email alex@alexmiller.net \
+  --pages-url https://admin.example.com \
+  --worker-url https://mail-api.example.com
 ```
 
 Use `--dry-run` to inspect the Access app and policy payload without calling
@@ -41,7 +43,9 @@ Cloudflare:
 
 ```sh
 pnpm access:setup --dry-run --account-id fa774a1ed55e467890d48394f4409bdd \
-  --allow-email alex@alexmiller.net
+  --allow-email alex@alexmiller.net \
+  --pages-url https://admin.example.com \
+  --worker-url https://mail-api.example.com
 ```
 
 The script creates or updates:
@@ -64,6 +68,8 @@ Save the output and apply those values to `worker/wrangler.toml`:
 CLOUDFLARE_ACCOUNT_ID=fa774a1ed55e467890d48394f4409bdd \
 CLOUDFLARE_API_TOKEN=... \
 pnpm access:setup --allow-email alex@alexmiller.net \
+  --pages-url https://admin.example.com \
+  --worker-url https://mail-api.example.com \
   --apply-config worker/wrangler.toml
 ```
 
@@ -115,14 +121,14 @@ For the current live platform-hostname deployment:
 For custom-domain deployments, create a self-hosted Access application with:
 
 - Name: `cf-mail-relay-admin`
-- Application domain: `cf-mail-relay-ui.pages.dev`
-- Additional public destination: `cf-mail-relay-worker.milfred.workers.dev/admin/api/*`
+- Application domain: `admin.example.com`
+- Additional public destination: `mail-api.example.com/admin/api/*`
 - Policy action: Allow
 - Include: the admin email addresses that should be allowed to use the UI
 - Session duration: `24h`
 - CORS:
   - Allow credentials: enabled
-  - Allowed origin: `https://cf-mail-relay-ui.pages.dev`
+  - Allowed origin: `https://admin.example.com`
   - Allowed methods: `GET`, `POST`, `OPTIONS`
   - Allowed headers: `content-type`
 

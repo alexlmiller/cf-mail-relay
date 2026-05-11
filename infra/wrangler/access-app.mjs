@@ -15,7 +15,10 @@ export const defaults = {
   dryRun: false,
   applyConfig: "",
   teamDomain: "",
+  allowPlatformHostnames: false,
 };
+
+const platformHostnameSuffixes = [".pages.dev", ".workers.dev"];
 
 export function buildBodies(config) {
   return {
@@ -81,6 +84,9 @@ export function parseArgs(args, fail = throwUsageError) {
       case "--team-domain":
         parsed.teamDomain = withoutScheme(takeValue(args, ++index, arg, fail));
         break;
+      case "--allow-platform-hostnames":
+        parsed.allowPlatformHostnames = true;
+        break;
       case "--help":
         usage(0);
         break;
@@ -91,19 +97,23 @@ export function parseArgs(args, fail = throwUsageError) {
   return parsed;
 }
 
-export async function run(rawArgs = process.argv.slice(2), env = process.env, fetchImpl = fetch) {
-  const options = parseArgs(rawArgs, fail);
+export async function run(rawArgs = process.argv.slice(2), env = process.env, fetchImpl = fetch, failImpl = fail) {
+  const options = parseArgs(rawArgs, failImpl);
   const config = { ...defaults, accountId: env.CLOUDFLARE_ACCOUNT_ID ?? defaults.accountId, ...options };
   const token = env[config.tokenEnv];
 
   if (!config.accountId) {
-    fail("--account-id or CLOUDFLARE_ACCOUNT_ID is required");
+    failImpl("--account-id or CLOUDFLARE_ACCOUNT_ID is required");
   }
   if (!token && !config.dryRun) {
-    fail(`${config.tokenEnv} is required unless --dry-run is set`);
+    failImpl(`${config.tokenEnv} is required unless --dry-run is set`);
   }
   if (config.email.length === 0) {
-    fail("at least one --allow-email is required");
+    failImpl("at least one --allow-email is required");
+  }
+  const platformHostnames = findPlatformHostnames([config.pagesUrl, config.workerUrl]);
+  if (platformHostnames.length > 0 && !config.allowPlatformHostnames) {
+    failImpl(`Platform hostnames require Workers & Pages Access controls, or pass --allow-platform-hostnames after confirming this account accepts them in a self-hosted Access app: ${platformHostnames.join(", ")}`);
   }
 
   const { app: appBody, policy: policyBody } = buildBodies(config);
@@ -114,7 +124,7 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   const client = makeClient(config.accountId, token, fetchImpl);
   const authDomain = config.teamDomain || await readAccessTeamDomain(client, config.accountId);
   if (typeof authDomain !== "string" || authDomain.length === 0) {
-    fail("Cloudflare Access organization has no auth_domain");
+    failImpl("Cloudflare Access organization has no auth_domain");
   }
 
   const existing = await client.api("GET", `/accounts/${config.accountId}/access/apps?name=${encodeURIComponent(config.name)}`);
@@ -124,7 +134,7 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
     : await client.api("PUT", `/accounts/${config.accountId}/access/apps/${existingApp.id}`, { ...appBody, id: existingApp.id });
   const appId = app.result?.id;
   if (typeof appId !== "string") {
-    fail("Access app response did not include an id");
+    failImpl("Access app response did not include an id");
   }
 
   const policies = await client.api("GET", `/accounts/${config.accountId}/access/apps/${appId}/policies`);
@@ -138,7 +148,7 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   const refreshed = await client.api("GET", `/accounts/${config.accountId}/access/apps/${appId}`);
   const aud = refreshed.result?.aud;
   if (typeof aud !== "string" || aud.length === 0) {
-    fail("Access app response did not include an aud value");
+    failImpl("Access app response did not include an aud value");
   }
 
   const result = {
@@ -210,6 +220,12 @@ function withoutScheme(url) {
   return trimTrailingSlash(url).replace(/^https?:\/\//, "");
 }
 
+function findPlatformHostnames(urls) {
+  return urls
+    .map((url) => withoutScheme(url).split("/", 1)[0]?.toLowerCase() ?? "")
+    .filter((hostname) => platformHostnameSuffixes.some((suffix) => hostname.endsWith(suffix)));
+}
+
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, "");
 }
@@ -228,6 +244,7 @@ Options:
   --allow-email <email,csv>   Email address allowed by the app policy; repeatable
   --apply-config <path>       Apply returned Access values to a Worker wrangler.toml
   --team-domain <domain>      Access team domain; skips Access organization read
+  --allow-platform-hostnames  Allow pages.dev/workers.dev hostnames in the self-hosted app payload
   --dry-run                   Print request bodies without calling Cloudflare
 `);
   process.exit(code);
