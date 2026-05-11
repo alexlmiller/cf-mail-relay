@@ -4,6 +4,23 @@
 // audit log. MS3 wires /admin/api/*. MS4 wires /send. See IMPLEMENTATION_PLAN.md.
 
 import { Hono } from "hono";
+import type { Context } from "hono";
+import {
+  createDomain,
+  createSender,
+  createSmtpCredential,
+  createUser,
+  dashboard,
+  listApiKeys,
+  listAuthFailures,
+  listDomains,
+  listSendEvents,
+  listSenders,
+  listSmtpCredentials,
+  listUsers,
+  revokeSmtpCredential,
+} from "./admin";
+import { requireAdmin } from "./access";
 import {
   canonicalRelayString,
   normalizeBodySha256,
@@ -40,18 +57,19 @@ export interface Env {
   BOOTSTRAP_SETUP_TOKEN?: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUDIENCE: string;
+  ACCESS_JWKS_JSON?: string;
   REQUIRED_D1_SCHEMA_VERSION: string;
 }
 
 const app = new Hono<{ Bindings: Env }>();
-const workerVersion = "0.1.0-ms2";
+const workerVersion = "0.1.0-ms3";
 const maxRelayBodyBytes = 6 * 1024 * 1024;
 
 app.get("/healthz", (c) => {
   return c.json({
     ok: true,
     version: workerVersion,
-    git_sha: "ms2",
+    git_sha: "ms3",
   });
 });
 
@@ -252,7 +270,33 @@ app.post("/relay/send", async (c) => {
   return c.json(responseBody, responseStatus);
 });
 
-// TODO MS3: /admin/api/*               (CF Access JWT-protected)
+app.get("/admin/api/session", async (c) => {
+  const admin = await requireAdmin(c.req.raw, c.env);
+  if (!admin.ok) {
+    return c.json({ ok: false, error: admin.error }, admin.status);
+  }
+  return c.json({ ok: true, user: admin.user, access: { sub: admin.claims.sub, email: admin.claims.email ?? null } });
+});
+
+app.get("/admin/api/dashboard", async (c) => adminJson(c, () => dashboard(c.env)));
+app.get("/admin/api/users", async (c) => adminJson(c, () => listUsers(c.env)));
+app.post("/admin/api/users", async (c) => adminJson(c, async () => createUser(c.env, await readJsonObject(c.req.raw)), 201));
+app.get("/admin/api/domains", async (c) => adminJson(c, () => listDomains(c.env)));
+app.post("/admin/api/domains", async (c) => adminJson(c, async () => createDomain(c.env, await readJsonObject(c.req.raw)), 201));
+app.get("/admin/api/senders", async (c) => adminJson(c, () => listSenders(c.env)));
+app.post("/admin/api/senders", async (c) => adminJson(c, async () => createSender(c.env, await readJsonObject(c.req.raw)), 201));
+app.get("/admin/api/smtp-credentials", async (c) => adminJson(c, () => listSmtpCredentials(c.env)));
+app.post("/admin/api/smtp-credentials", async (c) => adminJson(c, async () => createSmtpCredential(c.env, await readJsonObject(c.req.raw)), 201));
+app.post("/admin/api/smtp-credentials/:id/revoke", async (c) =>
+  adminJson(c, async () => {
+    await revokeSmtpCredential(c.env, c.req.param("id"));
+    return { revoked: true };
+  }),
+);
+app.get("/admin/api/api-keys", async (c) => adminJson(c, () => listApiKeys(c.env)));
+app.get("/admin/api/send-events", async (c) => adminJson(c, () => listSendEvents(c.env)));
+app.get("/admin/api/auth-failures", async (c) => adminJson(c, () => listAuthFailures(c.env)));
+
 // TODO MS4: /send                      (API key-protected)
 
 export function parseRecipients(raw: string | undefined): string[] {
@@ -378,6 +422,31 @@ function parseJsonOrText(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+async function adminJson(
+  c: Context<{ Bindings: Env }>,
+  load: () => Promise<unknown>,
+  successStatus: 200 | 201 = 200,
+) {
+  const admin = await requireAdmin(c.req.raw, c.env);
+  if (!admin.ok) {
+    return c.json({ ok: false, error: admin.error }, admin.status);
+  }
+  try {
+    const result = await load();
+    return c.json({ ok: true, result }, successStatus);
+  } catch (error) {
+    return c.json({ ok: false, error: error instanceof Error ? error.message : "admin_request_failed" }, 400);
+  }
+}
+
+async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
+  const parsed = (await request.json()) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("invalid_json");
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function parseCloudflareResult(value: unknown): {

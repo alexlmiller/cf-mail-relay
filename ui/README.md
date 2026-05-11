@@ -6,18 +6,16 @@ Behind a Cloudflare Access application that fronts both the Pages origin and the
 
 ## Status
 
-Scaffold only. Implementation lands in MS3 per `IMPLEMENTATION_PLAN.md`.
+MS3 dashboard UI is implemented as a static Astro app. It calls the Worker
+`/admin/api/*` endpoints from the browser and relies on Cloudflare Access to
+attach the `Cf-Access-Jwt-Assertion` header.
 
-## Pages (planned)
+## Pages
 
-- `/` — dashboard (24 h sends, failures, last error, CF API health).
-- `/domains` — list / add / configure sending domains.
-- `/senders` — allowlisted sender addresses per domain.
-- `/credentials` — SMTP credentials.
-- `/api-keys` — HTTP API keys.
-- `/events` — send_events with filters.
-- `/auth-failures` — auth_failures with filters.
-- `/settings` — retention, daily caps, policy version.
+- `/` — dashboard, domains, allowed senders, SMTP credentials, users, API keys,
+  send events, and auth failures.
+- The API base defaults to same-origin. Set `PUBLIC_CF_MAIL_RELAY_API_BASE`
+  when the Pages host calls a separate Worker host.
 
 ## Auth
 
