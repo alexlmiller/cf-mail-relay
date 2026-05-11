@@ -1,4 +1,4 @@
-import { api, ApiError } from "../api";
+import { api, describeError } from "../api";
 import type { Child } from "../dom";
 import { h, icon, setChildren } from "../dom";
 import { copyable } from "../clipboard";
@@ -234,7 +234,7 @@ export function openNewSender(domains: Domain[], users: User[], onCreated: (id: 
         closeModal();
         onCreated(result.id);
       } catch (error) {
-        const message = error instanceof ApiError ? error.message : "Could not create sender.";
+        const message = describeError(error, "Could not create sender.");
         setBanner(message);
         busy(false);
       }

@@ -1,4 +1,4 @@
-import { api, ApiError } from "../api";
+import { api, describeError } from "../api";
 import type { Child } from "../dom";
 import { h, icon, setChildren } from "../dom";
 import { copyable } from "../clipboard";
@@ -160,7 +160,7 @@ function paint(root: HTMLElement, credentials: SmtpCredential[], users: User[], 
                       toast(`${row.username} revoked`);
                       await renderCredentials(root);
                     } catch (error) {
-                      const message = error instanceof ApiError ? error.message : "Could not revoke";
+                      const message = describeError(error, "Could not revoke");
                       toast(message, "err");
                     }
                   },
@@ -279,7 +279,7 @@ export function openNewCredential(users: User[], senders: Sender[], onCreated: (
           onCreated(result.id);
         });
       } catch (error) {
-        const message = error instanceof ApiError ? error.message : "Could not create credential.";
+        const message = describeError(error, "Could not create credential.");
         setBanner(message);
         busy(false);
       }

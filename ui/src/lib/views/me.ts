@@ -2,7 +2,7 @@
 // surfaces profile, granted senders (read-only), SMTP credentials (CRUD),
 // API keys (CRUD), and recent activity (read-only, server-filtered by user_id).
 
-import { ApiError } from "../api";
+import { describeError } from "../api";
 import { selfApi, type SelfProfile, type SelfSender } from "../api-self";
 import type { Child } from "../dom";
 import { h, icon, setChildren } from "../dom";
@@ -279,7 +279,7 @@ function credentialRow(root: HTMLElement, credential: SmtpCredential): HTMLEleme
                 toast(`${credential.username} revoked`);
                 await renderMe(root);
               } catch (error) {
-                const message = error instanceof ApiError ? error.message : "Could not revoke";
+                const message = describeError(error, "Could not revoke");
                 toast(message, "err");
               }
             },
@@ -379,7 +379,7 @@ function apiKeyRow(root: HTMLElement, key: ApiKey): HTMLElement {
                 toast(`${key.name} revoked`);
                 await renderMe(root);
               } catch (error) {
-                const message = error instanceof ApiError ? error.message : "Could not revoke";
+                const message = describeError(error, "Could not revoke");
                 toast(message, "err");
               }
             },
@@ -548,7 +548,7 @@ export function openCreateCredential(root: HTMLElement) {
           void renderMe(root);
         });
       } catch (error) {
-        const message = error instanceof ApiError ? error.message : "Could not create credential.";
+        const message = describeError(error, "Could not create credential.");
         setBanner(message);
         busy(false);
       }
@@ -587,7 +587,7 @@ export function openCreateApiKey(root: HTMLElement) {
           void renderMe(root);
         });
       } catch (error) {
-        const message = error instanceof ApiError ? error.message : "Could not create API key.";
+        const message = describeError(error, "Could not create API key.");
         setBanner(message);
         busy(false);
       }

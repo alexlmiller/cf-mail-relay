@@ -1,4 +1,4 @@
-import { api, ApiError } from "../api";
+import { api, describeError } from "../api";
 import type { Child } from "../dom";
 import { h, icon, setChildren } from "../dom";
 import { copyable } from "../clipboard";
@@ -167,7 +167,7 @@ function paint(root: HTMLElement, keys: ApiKey[], users: User[], senders: Sender
                       toast(`${row.name} revoked`);
                       await renderApiKeys(root);
                     } catch (error) {
-                      const message = error instanceof ApiError ? error.message : "Could not revoke";
+                      const message = describeError(error, "Could not revoke");
                       toast(message, "err");
                     }
                   },
@@ -262,7 +262,7 @@ export function openNewApiKey(users: User[], senders: Sender[], onCreated: (id: 
           onCreated(result.id);
         });
       } catch (error) {
-        const message = error instanceof ApiError ? error.message : "Could not create API key.";
+        const message = describeError(error, "Could not create API key.");
         setBanner(message);
         busy(false);
       }

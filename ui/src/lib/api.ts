@@ -28,9 +28,19 @@ export class ApiError extends Error {
   code: string;
   constructor(message: string, status: number, code: string) {
     super(message);
+    // Restore prototype so `instanceof ApiError` works under any TS target.
+    Object.setPrototypeOf(this, ApiError.prototype);
+    this.name = "ApiError";
     this.status = status;
     this.code = code;
   }
+}
+
+/** Human-readable error message for any thrown value. */
+export function describeError(error: unknown, fallback = "Request failed"): string {
+  if (error instanceof Error) return error.message || fallback;
+  if (typeof error === "string") return error;
+  return fallback;
 }
 
 let apiBase = "";

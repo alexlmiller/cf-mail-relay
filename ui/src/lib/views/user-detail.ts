@@ -1,4 +1,4 @@
-import { api, ApiError } from "../api";
+import { api, describeError } from "../api";
 import type { Child } from "../dom";
 import { h, icon, setChildren } from "../dom";
 import { copyable } from "../clipboard";
@@ -327,7 +327,7 @@ function credentialRow(credential: SmtpCredential, root: HTMLElement): HTMLEleme
                 toast(`${credential.username} revoked`);
                 await renderUserDetail(root, credential.user_id);
               } catch (error) {
-                const message = error instanceof ApiError ? error.message : "Could not revoke";
+                const message = describeError(error, "Could not revoke");
                 toast(message, "err");
               }
             },
@@ -431,7 +431,7 @@ function apiKeyRow(key: ApiKey, root: HTMLElement): HTMLElement {
                 toast(`${key.name} revoked`);
                 await renderUserDetail(root, key.user_id);
               } catch (error) {
-                const message = error instanceof ApiError ? error.message : "Could not revoke";
+                const message = describeError(error, "Could not revoke");
                 toast(message, "err");
               }
             },

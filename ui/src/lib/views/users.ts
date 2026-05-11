@@ -1,4 +1,4 @@
-import { api, ApiError } from "../api";
+import { api, describeError } from "../api";
 import type { Child } from "../dom";
 import { h, icon, setChildren } from "../dom";
 import { copyable } from "../clipboard";
@@ -261,7 +261,7 @@ export function openCreateUserSimple(onCreated: (id: string) => void) {
         closeModal();
         onCreated(result.id);
       } catch (error) {
-        const message = error instanceof ApiError ? error.message : "Could not create user.";
+        const message = describeError(error, "Could not create user.");
         setBanner(message);
         busy(false);
       }

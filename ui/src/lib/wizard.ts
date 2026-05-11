@@ -2,7 +2,7 @@
 // fresh SMTP credential into one continuous flow. This is the canonical path
 // admins should take when on-boarding a new person to "Send mail as".
 
-import { api, ApiError } from "./api";
+import { api, describeError } from "./api";
 import { h, icon, setChildren } from "./dom";
 import { closeModal, openModal, setModalBody, setModalFooter, secretRevealBody } from "./modal";
 import { toast, copy } from "./toast";
@@ -169,7 +169,7 @@ export async function runUserWizard(init: WizardInit) {
         state.step = 1;
         repaint();
       } catch (error) {
-        const message = error instanceof ApiError ? error.message : "Could not create user.";
+        const message = describeError(error, "Could not create user.");
         toast(message, "err");
       }
       return;
@@ -214,7 +214,7 @@ export async function runUserWizard(init: WizardInit) {
         state.step = 2;
         repaint();
       } catch (error) {
-        const message = error instanceof ApiError ? error.message : "Could not create domain.";
+        const message = describeError(error, "Could not create domain.");
         toast(message, "err");
       }
       return;
@@ -242,7 +242,7 @@ export async function runUserWizard(init: WizardInit) {
         state.step = 3;
         repaint();
       } catch (error) {
-        const message = error instanceof ApiError ? error.message : "Could not grant sender.";
+        const message = describeError(error, "Could not grant sender.");
         toast(message, "err");
       }
       return;
@@ -270,7 +270,7 @@ export async function runUserWizard(init: WizardInit) {
         state.step = 4;
         repaint();
       } catch (error) {
-        const message = error instanceof ApiError ? error.message : "Could not create credential.";
+        const message = describeError(error, "Could not create credential.");
         toast(message, "err");
       }
       return;
