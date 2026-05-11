@@ -32,6 +32,7 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   const teamDomain = options.teamDomain || vars.ACCESS_TEAM_DOMAIN || "";
   const audience = options.audience || vars.ACCESS_AUDIENCE || "";
   const corsOrigin = vars.ADMIN_CORS_ORIGIN || "";
+  const accessJwt = options.accessJwtEnv !== "" ? env[options.accessJwtEnv] : undefined;
   const checks = [];
 
   checks.push(checkConfiguredValue("access_team_domain", teamDomain, ["your-team.cloudflareaccess.com", "REPLACE_WITH_ACCESS_TEAM_DOMAIN"]));
@@ -45,11 +46,11 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   }
 
   checks.push(await checkWorkerHealth(fetchImpl, options.workerUrl));
-  checks.push(await checkPagesArtifact(fetchImpl, options.pagesUrl, options.workerUrl));
+  checks.push(await checkPagesArtifact(fetchImpl, options.pagesUrl, options.workerUrl, accessJwt));
   checks.push(await checkUnauthenticatedAdminGate(fetchImpl, options.workerUrl, options.pagesUrl));
 
-  if (options.accessJwtEnv !== "" && env[options.accessJwtEnv] !== undefined) {
-    checks.push(await checkAuthenticatedSession(fetchImpl, options.workerUrl, options.pagesUrl, env[options.accessJwtEnv]));
+  if (accessJwt !== undefined) {
+    checks.push(await checkAuthenticatedSession(fetchImpl, options.workerUrl, options.pagesUrl, accessJwt));
   } else if (options.requireAuthenticatedSession) {
     checks.push(failCheck("authenticated_session", `Set --access-jwt-env to an environment variable containing a live Access JWT.`));
   } else {
@@ -176,8 +177,19 @@ async function checkWorkerHealth(fetchImpl, workerUrl) {
   return passCheck("worker_healthz", "Worker /healthz is healthy.", { version: response.body.version, git_sha: response.body.git_sha });
 }
 
-async function checkPagesArtifact(fetchImpl, pagesUrl, workerUrl) {
-  const response = await fetchText(fetchImpl, pagesUrl, { method: "GET", headers: { accept: "text/html" } });
+async function checkPagesArtifact(fetchImpl, pagesUrl, workerUrl, accessJwt) {
+  const headers = { accept: "text/html" };
+  if (accessJwt !== undefined) {
+    headers["cf-access-jwt-assertion"] = accessJwt;
+  }
+  const response = await fetchText(fetchImpl, pagesUrl, { method: "GET", redirect: "manual", headers });
+  const location = response.headers.get("location") ?? "";
+  if (response.status >= 300 && response.status < 400 && location.length > 0) {
+    if (accessJwt !== undefined) {
+      return failCheck("pages_artifact", "Pages URL still redirected with the provided Access JWT.", { status: response.status, location });
+    }
+    return passCheck("pages_artifact", "Pages URL is protected by Cloudflare Access before serving the artifact.", { status: response.status, location });
+  }
   if (!response.ok) {
     return failCheck("pages_artifact", `Pages fetch failed with HTTP ${response.status}.`, response.text);
   }
