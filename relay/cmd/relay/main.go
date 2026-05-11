@@ -19,7 +19,7 @@ import (
 	"github.com/emersion/go-smtp"
 )
 
-const version = "0.1.0-ms1"
+const version = "0.1.0-ms2"
 const defaultMaxMessageBytes = 4_718_592
 
 type config struct {
@@ -91,10 +91,11 @@ func (b *backend) NewSession(_ *smtp.Conn) (smtp.Session, error) {
 }
 
 type session struct {
-	backend    *backend
-	authed     bool
-	mailFrom   string
-	recipients []string
+	backend      *backend
+	authed       bool
+	authDecision *workerclient.AuthResponse
+	mailFrom     string
+	recipients   []string
 }
 
 func (s *session) AuthMechanisms() []string {
@@ -103,11 +104,12 @@ func (s *session) AuthMechanisms() []string {
 
 func (s *session) Auth(mech string) (sasl.Server, error) {
 	authenticate := func(username, password string) error {
-		_, err := s.backend.client.Auth(context.Background(), username, password)
+		response, err := s.backend.client.Auth(context.Background(), username, password)
 		if err != nil {
 			return smtp.ErrAuthFailed
 		}
 		s.authed = true
+		s.authDecision = response
 		return nil
 	}
 
@@ -135,7 +137,11 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 			return smtpError(552, smtp.EnhancedCode{5, 3, 4}, "message too large")
 		}
 	}
-	if !senderAllowed(from, s.backend.allowedSenders) {
+	allowedSenders := s.backend.allowedSenders
+	if s.authDecision != nil {
+		allowedSenders = s.authDecision.AllowedSenders
+	}
+	if !senderAllowed(from, allowedSenders) {
 		return smtpError(553, smtp.EnhancedCode{5, 7, 1}, "sender not allowed")
 	}
 	s.mailFrom = from
@@ -176,7 +182,7 @@ func (s *session) Data(r io.Reader) error {
 		return smtpError(554, smtp.EnhancedCode{5, 6, 0}, "8-bit content not supported in MVP; use base64 or quoted-printable")
 	}
 
-	if _, err := s.backend.client.Send(context.Background(), s.mailFrom, s.recipients, mime); err != nil {
+	if _, err := s.backend.client.Send(context.Background(), s.authDecision, s.mailFrom, s.recipients, mime); err != nil {
 		return smtpError(451, smtp.EnhancedCode{4, 7, 1}, "upstream send failed; try again later")
 	}
 	log.Printf("accepted message from=%s recipients=%d bytes=%d", s.mailFrom, len(s.recipients), len(mime))
@@ -191,6 +197,8 @@ func (s *session) Reset() {
 
 func (s *session) Logout() error {
 	s.Reset()
+	s.authDecision = nil
+	s.authed = false
 	return nil
 }
 
@@ -251,7 +259,7 @@ func loadConfig() (config, error) {
 		"RELAY_WORKER_URL":      cfg.WorkerURL,
 		"RELAY_KEY_ID":          cfg.HMACKeyID,
 		"RELAY_HMAC_SECRET":     cfg.HMACSecret,
-		"RELAY_ALLOWED_SENDERS": strings.Join(cfg.AllowedSenders, ","),
+		"RELAY_ALLOWED_SENDERS": "worker-policy-ms2",
 	} {
 		if value == "" {
 			return config{}, fmt.Errorf("%s is required", name)

@@ -6,12 +6,13 @@ Listens on `587` with `STARTTLS` + `AUTH PLAIN/LOGIN`. Forwards raw RFC 5322 MIM
 
 ## Status
 
-MS1 relay implementation is in place:
+MS2 relay implementation is in place:
 
 - `587` SMTP submission with STARTTLS.
 - `AUTH PLAIN` and `AUTH LOGIN`, delegated to Worker `/relay/auth`.
-- Sender allowlist, recipient cap, size cap, and conservative 8-bit rejection.
+- Sender policy from Worker `/relay/auth`, recipient cap, size cap, and conservative 8-bit rejection.
 - HMAC-signed `POST /relay/send` with raw MIME bytes.
+- 60 second auth decision cache, invalidated when the Worker returns a new policy version.
 
 ## Build target
 
@@ -32,7 +33,7 @@ All via environment variables.
 | `RELAY_HMAC_SECRET` | HMAC shared secret | required |
 | `RELAY_TLS_CERT_FILE` | Path to mounted PEM cert | required |
 | `RELAY_TLS_KEY_FILE` | Path to mounted PEM key | required |
-| `RELAY_ALLOWED_SENDERS` | Comma-separated sender allowlist; supports `*@domain` | required |
+| `RELAY_ALLOWED_SENDERS` | Optional local fallback allowlist before Worker auth policy is available | unset |
 | `RELAY_MAX_BYTES` | Max MIME bytes at DATA | `4718592` |
 | `RELAY_MAX_RECIPIENTS` | Max `RCPT TO` count | `50` |
 | `RELAY_ALLOW_INSECURE_AUTH` | Local-dev only; allow AUTH before STARTTLS | unset/false |

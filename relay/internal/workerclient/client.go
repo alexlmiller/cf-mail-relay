@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alexlmiller/cf-mail-relay/relay/internal/hmacsign"
@@ -22,6 +25,10 @@ type Client struct {
 	Secret     string
 	Version    string
 	HTTPClient *http.Client
+
+	mu            sync.Mutex
+	authCache     map[string]authCacheEntry
+	policyVersion string
 }
 
 type AuthResponse struct {
@@ -29,6 +36,8 @@ type AuthResponse struct {
 	Error          string   `json:"error,omitempty"`
 	TTLSeconds     int      `json:"ttl_seconds,omitempty"`
 	PolicyVersion  string   `json:"policy_version,omitempty"`
+	UserID         string   `json:"user_id,omitempty"`
+	CredentialID   string   `json:"credential_id,omitempty"`
 	AllowedSenders []string `json:"allowed_senders,omitempty"`
 }
 
@@ -38,7 +47,17 @@ type SendResponse struct {
 	CFStatus int    `json:"cf_status,omitempty"`
 }
 
+type authCacheEntry struct {
+	response  AuthResponse
+	expiresAt time.Time
+}
+
 func (c *Client) Auth(ctx context.Context, username, password string) (*AuthResponse, error) {
+	cacheKey := authCacheKey(username, password)
+	if cached, ok := c.cachedAuth(cacheKey); ok {
+		return cached, nil
+	}
+
 	body, err := json.Marshal(struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -58,14 +77,19 @@ func (c *Client) Auth(ctx context.Context, username, password string) (*AuthResp
 		}
 		return &response, fmt.Errorf("relay auth rejected: %s", response.Error)
 	}
+	c.storeAuth(cacheKey, response)
 	return &response, nil
 }
 
-func (c *Client) Send(ctx context.Context, envelopeFrom string, recipients []string, mime []byte) (*SendResponse, error) {
+func (c *Client) Send(ctx context.Context, auth *AuthResponse, envelopeFrom string, recipients []string, mime []byte) (*SendResponse, error) {
 	headers := map[string]string{
 		"content-type":          "message/rfc822",
 		"x-relay-envelope-from": envelopeFrom,
 		"x-relay-recipients":    strings.Join(recipients, ","),
+	}
+	if auth != nil {
+		headers["x-relay-credential-id"] = auth.CredentialID
+		headers["x-relay-policy-version"] = auth.PolicyVersion
 	}
 	var response SendResponse
 	status, err := c.post(ctx, "/relay/send", mime, headers, &response)
@@ -104,6 +128,7 @@ func (c *Client) post(ctx context.Context, path string, body []byte, headers map
 		return 0, err
 	}
 	defer response.Body.Close()
+	c.observePolicyVersion(response.Header.Get("x-relay-policy-version"))
 
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
@@ -115,6 +140,53 @@ func (c *Client) post(ctx context.Context, path string, body []byte, headers map
 		}
 	}
 	return response.StatusCode, nil
+}
+
+func (c *Client) cachedAuth(key string) (*AuthResponse, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.authCache == nil {
+		return nil, false
+	}
+	entry, ok := c.authCache[key]
+	if !ok || time.Now().After(entry.expiresAt) {
+		delete(c.authCache, key)
+		return nil, false
+	}
+	response := entry.response
+	return &response, true
+}
+
+func (c *Client) storeAuth(key string, response AuthResponse) {
+	ttl := response.TTLSeconds
+	if ttl <= 0 || ttl > 60 {
+		ttl = 60
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.authCache == nil {
+		c.authCache = make(map[string]authCacheEntry)
+	}
+	c.authCache[key] = authCacheEntry{response: response, expiresAt: time.Now().Add(time.Duration(ttl) * time.Second)}
+	if response.PolicyVersion != "" {
+		c.policyVersion = response.PolicyVersion
+	}
+}
+
+func (c *Client) observePolicyVersion(version string) {
+	if version == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.policyVersion == "" {
+		c.policyVersion = version
+		return
+	}
+	if c.policyVersion != version {
+		c.policyVersion = version
+		clear(c.authCache)
+	}
 }
 
 func (c *Client) sign(request *http.Request, path string, body []byte) {
@@ -136,6 +208,11 @@ func (c *Client) sign(request *http.Request, path string, body []byte) {
 	request.Header.Set("X-Relay-Body-SHA256", bodySHA256)
 	request.Header.Set("X-Relay-Version", c.Version)
 	request.Header.Set("X-Relay-Signature", signature)
+}
+
+func authCacheKey(username, password string) string {
+	sum := sha256.Sum256([]byte(username + "\x00" + password))
+	return hex.EncodeToString(sum[:])
 }
 
 func randomNonce() string {

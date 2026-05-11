@@ -16,7 +16,6 @@ ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
 ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
 CF_ACCOUNT_ID = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
 RELAY_HMAC_KEY_ID = "rel_REPLACE_ME"
-RELAY_ALLOWED_SENDERS = "gmail@example.com"
 
 [[d1_databases]]
 binding = "D1_MAIN"
@@ -39,6 +38,4 @@ id = "REPLACE_WITH_KV_NAMESPACE_ID"
 #   METADATA_PEPPER
 #   RELAY_HMAC_SECRET_CURRENT
 #   RELAY_HMAC_SECRET_PREVIOUS  (optional, during rotation)
-#   RELAY_AUTH_USERNAME         (MS1 only; replaced by D1 in MS2)
-#   RELAY_AUTH_PASSWORD         (MS1 only; replaced by D1 in MS2)
 #   BOOTSTRAP_SETUP_TOKEN       (one-time)

@@ -12,6 +12,17 @@ import {
   signRelayRequest,
   timingSafeEqualString,
 } from "./hmac";
+import {
+  authenticateSmtpCredential,
+  beginIdempotentRequest,
+  bootstrapAdmin,
+  completeIdempotentRequest,
+  computeSmtpIdempotencyKey,
+  extractHeader,
+  policyVersionFromD1,
+  recordSendEvent,
+  senderAllowedForCredential,
+} from "./state";
 
 export interface Env {
   D1_MAIN: D1Database;
@@ -33,15 +44,31 @@ export interface Env {
 }
 
 const app = new Hono<{ Bindings: Env }>();
-const workerVersion = "0.1.0-ms1";
+const workerVersion = "0.1.0-ms2";
 const maxRelayBodyBytes = 6 * 1024 * 1024;
 
 app.get("/healthz", (c) => {
   return c.json({
     ok: true,
     version: workerVersion,
-    git_sha: "ms1",
+    git_sha: "ms2",
   });
+});
+
+app.post("/bootstrap/admin", async (c) => {
+  let body: { email?: unknown; display_name?: unknown };
+  try {
+    body = (await c.req.json()) as { email?: unknown; display_name?: unknown };
+  } catch {
+    return c.json({ ok: false, error: "invalid_json" }, 400);
+  }
+
+  const token = c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+  const result = await bootstrapAdmin(c.env, token, body);
+  if (!result.ok) {
+    return c.json({ ok: false, error: result.error }, result.status);
+  }
+  return c.json(result);
 });
 
 app.post("/relay/auth", async (c) => {
@@ -62,24 +89,13 @@ app.post("/relay/auth", async (c) => {
     return c.json({ ok: false, error: "invalid_credentials_shape" }, 400);
   }
 
-  const configuredUsername = c.env.RELAY_AUTH_USERNAME;
-  const configuredPassword = c.env.RELAY_AUTH_PASSWORD;
-  if (configuredUsername === undefined || configuredPassword === undefined) {
-    return c.json({ ok: false, error: "relay_auth_not_configured" }, 500);
-  }
-
-  const usernameMatches = timingSafeEqualString(credentials.username, configuredUsername);
-  const passwordMatches = timingSafeEqualString(credentials.password, configuredPassword);
-  if (!usernameMatches || !passwordMatches) {
+  const result = await authenticateSmtpCredential(c.env, credentials.username, credentials.password, c.req.header("cf-connecting-ip") ?? undefined);
+  if (!result.ok) {
     return c.json({ ok: false, error: "invalid_credentials" }, 401);
   }
 
-  return c.json({
-    ok: true,
-    ttl_seconds: 60,
-    policy_version: "env-ms1",
-    allowed_senders: parseAllowedSenders(c.env.RELAY_ALLOWED_SENDERS),
-  });
+  c.header("x-relay-policy-version", result.policy_version);
+  return c.json(result);
 });
 
 app.post("/relay/send", async (c) => {
@@ -103,7 +119,26 @@ app.post("/relay/send", async (c) => {
   if (recipients.length > 50) {
     return c.json({ ok: false, error: "too_many_recipients" }, 400);
   }
-  if (!senderAllowed(from, parseAllowedSenders(c.env.RELAY_ALLOWED_SENDERS))) {
+  const credentialId = c.req.header("x-relay-credential-id")?.trim() ?? "";
+  if (credentialId.length === 0) {
+    return c.json({ ok: false, error: "missing_credential_id" }, 400);
+  }
+  const policyVersion = await policyVersionFromD1(c.env);
+  c.header("x-relay-policy-version", policyVersion);
+  const senderPolicy = await senderAllowedForCredential(c.env, credentialId, from);
+  if (!senderPolicy.ok) {
+    await recordSendEvent(c.env, {
+      traceId: c.req.header("x-relay-trace-id") ?? crypto.randomUUID(),
+      source: "smtp",
+      credentialId,
+      envelopeFrom: from,
+      recipients,
+      mimeSizeBytes: rawMimeBytes.byteLength,
+      messageIdHeader: "",
+      status: "policy_rejected",
+      smtpCode: "553",
+      errorCode: senderPolicy.reason,
+    });
     return c.json({ ok: false, error: "sender_not_allowed" }, 403);
   }
 
@@ -112,6 +147,27 @@ app.post("/relay/send", async (c) => {
     return c.json({ ok: false, error: "mime_not_utf8_json_safe" }, 422);
   }
   const mimeMessage = stripCaptureHopHeaders(decoded);
+  const mimeMessageBytes = new TextEncoder().encode(mimeMessage);
+  const strippedMimeSha256 = await sha256Hex(mimeMessageBytes);
+  const messageIdHeader = extractHeader(mimeMessage, "message-id");
+  const idempotencyKey = await computeSmtpIdempotencyKey({
+    envelopeFrom: from,
+    recipients,
+    messageIdHeader,
+    mimeSha256: strippedMimeSha256,
+  });
+  const idempotency = await beginIdempotentRequest(c.env, idempotencyKey, idempotencyKey);
+  if (idempotency.status === "pending") {
+    return c.json({ ok: false, error: "idempotency_pending" }, 409);
+  }
+  if (idempotency.status === "replay") {
+    for (const [name, value] of Object.entries(idempotency.response.headers ?? {})) {
+      c.header(name, value);
+    }
+    c.header("x-relay-idempotency-replay", "1");
+    return c.json(idempotency.response.body, idempotency.response.status as 200 | 400 | 401 | 403 | 409 | 413 | 422 | 502);
+  }
+
   const bodyText = JSON.stringify({
     from,
     recipients,
@@ -127,37 +183,75 @@ app.post("/relay/send", async (c) => {
     body: bodyText,
   });
   const cfResponseText = await cfResponse.text();
-  const responseStatus = cfResponse.ok ? 200 : 502;
+  const cfResponseParsed = parseJsonOrText(cfResponseText);
+  const cfResult = parseCloudflareResult(cfResponseParsed);
+  const allBounced =
+    cfResponse.ok &&
+    arrayLength(cfResult.bounced) > 0 &&
+    arrayLength(cfResult.delivered) === 0 &&
+    arrayLength(cfResult.queued) === 0;
+  const deliveryOk = cfResponse.ok && !allBounced;
+  const responseStatus = deliveryOk ? 200 : 502;
+  const rawMimeSha256 = await sha256Hex(rawMimeBytes);
+  const cfRequestId = cfResponse.headers.get("cf-request-id");
+  const cfRayId = cfResponse.headers.get("cf-ray");
+  const responseBody = {
+    ok: deliveryOk,
+    from,
+    recipients,
+    raw_mime_size_bytes: rawMimeBytes.byteLength,
+    stripped_mime_size_bytes: mimeMessageBytes.byteLength,
+    raw_mime_sha256: rawMimeSha256,
+    stripped_mime_sha256: strippedMimeSha256,
+    idempotency_key: idempotencyKey,
+    cf_status: cfResponse.status,
+    cf_ray_id: cfRayId,
+    cf_request_id: cfRequestId,
+    cf_response: cfResponseParsed,
+  };
   console.log(
     JSON.stringify({
       event: "relay_send_raw_result",
-      ok: cfResponse.ok,
+      ok: deliveryOk,
       recipient_count: recipients.length,
       raw_mime_size_bytes: rawMimeBytes.byteLength,
-      stripped_mime_size_bytes: new TextEncoder().encode(mimeMessage).byteLength,
+      stripped_mime_size_bytes: mimeMessageBytes.byteLength,
       cf_status: cfResponse.status,
     }),
   );
 
-  return c.json(
-    {
-      ok: cfResponse.ok,
-      from,
+  await Promise.all([
+    recordSendEvent(c.env, {
+      traceId: c.req.header("x-relay-trace-id") ?? crypto.randomUUID(),
+      source: "smtp",
+      userId: senderPolicy.userId,
+      credentialId,
+      envelopeFrom: from,
       recipients,
-      raw_mime_size_bytes: rawMimeBytes.byteLength,
-      stripped_mime_size_bytes: new TextEncoder().encode(mimeMessage).byteLength,
-      raw_mime_sha256: await sha256Hex(rawMimeBytes),
-      stripped_mime_sha256: await sha256Hex(new TextEncoder().encode(mimeMessage)),
-      cf_status: cfResponse.status,
-      cf_ray_id: cfResponse.headers.get("cf-ray"),
-      cf_request_id: cfResponse.headers.get("cf-request-id"),
-      cf_response: parseJsonOrText(cfResponseText),
+      mimeSizeBytes: rawMimeBytes.byteLength,
+      messageIdHeader,
+      cfRequestId,
+      cfRayId,
+      cfDeliveredJson: cfResult.delivered === null ? null : JSON.stringify(cfResult.delivered),
+      cfQueuedJson: cfResult.queued === null ? null : JSON.stringify(cfResult.queued),
+      cfBouncedJson: cfResult.bounced === null ? null : JSON.stringify(cfResult.bounced),
+      status: deliveryOk ? "accepted" : allBounced ? "all_bounced" : "cf_error",
+      smtpCode: deliveryOk ? "250" : allBounced ? "550" : "451",
+      errorCode: deliveryOk ? undefined : allBounced ? "all_recipients_bounced" : "cloudflare_send_raw_rejected",
+      cfErrorCode: cfResult.errorCode,
+    }),
+    completeIdempotentRequest(c.env, idempotencyKey, deliveryOk, {
+      ok: deliveryOk,
+      status: responseStatus,
+      body: responseBody,
+      headers: { "x-relay-policy-version": policyVersion },
     },
-    responseStatus,
-  );
+    ),
+  ]);
+
+  return c.json(responseBody, responseStatus);
 });
 
-// TODO MS2: D1-backed credential verification, idempotency, send_events
 // TODO MS3: /admin/api/*               (CF Access JWT-protected)
 // TODO MS4: /send                      (API key-protected)
 
@@ -267,24 +361,6 @@ function decodeUtf8(bytes: Uint8Array): string | null {
   }
 }
 
-function parseAllowedSenders(raw: string | undefined): string[] {
-  return raw
-    ?.split(",")
-    .map((sender) => sender.trim())
-    .filter((sender) => sender.length > 0) ?? [];
-}
-
-function senderAllowed(sender: string, allowed: string[]): boolean {
-  const normalizedSender = sender.toLowerCase().replace(/^<|>$/g, "").trim();
-  return allowed.some((entry) => {
-    const normalizedEntry = entry.toLowerCase().trim();
-    if (normalizedEntry === normalizedSender) {
-      return true;
-    }
-    return normalizedEntry.startsWith("*@") && normalizedSender.endsWith(normalizedEntry.slice(1));
-  });
-}
-
 function isSupportedRelayVersion(version: string): boolean {
   return version === "0.1.0-ms1" || version.startsWith("0.1.0-");
 }
@@ -302,6 +378,31 @@ function parseJsonOrText(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+function parseCloudflareResult(value: unknown): {
+  delivered: unknown[] | null;
+  queued: unknown[] | null;
+  bounced: unknown[] | null;
+  errorCode: string | null;
+} {
+  if (typeof value !== "object" || value === null) {
+    return { delivered: null, queued: null, bounced: null, errorCode: null };
+  }
+  const object = value as { result?: unknown; errors?: unknown };
+  const result = typeof object.result === "object" && object.result !== null ? (object.result as Record<string, unknown>) : {};
+  const errors = Array.isArray(object.errors) ? object.errors : [];
+  const firstError = errors.find((error): error is { code?: unknown } => typeof error === "object" && error !== null);
+  return {
+    delivered: Array.isArray(result.delivered) ? result.delivered : null,
+    queued: Array.isArray(result.queued) ? result.queued : null,
+    bounced: Array.isArray(result.permanent_bounces) ? result.permanent_bounces : null,
+    errorCode: typeof firstError?.code === "string" || typeof firstError?.code === "number" ? String(firstError.code) : null,
+  };
+}
+
+function arrayLength(value: unknown[] | null): number {
+  return value?.length ?? 0;
 }
 
 export default app;

@@ -90,7 +90,7 @@ The relay forwards `{username, password}` to the Worker. The Worker computes `HM
 | `CF_API_TOKEN` | `wrangler secret put CF_API_TOKEN`. In-flight calls already in progress use the old token; new calls use the new one. | Instant |
 | `CREDENTIAL_PEPPER` | One-time only; rotation requires re-hashing all stored credentials (a roadmap migration) | N/A |
 | `METADATA_PEPPER` | Same — rotation invalidates audit log hashing consistency | N/A |
-| `BOOTSTRAP_SETUP_TOKEN` | Auto-rotated after first admin is created | Single-use |
+| `BOOTSTRAP_SETUP_TOKEN` | Rejected after the first admin exists; remove or rotate the Worker secret after bootstrap | Single-use |
 
 ## Open relay prevention
 

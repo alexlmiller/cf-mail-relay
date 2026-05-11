@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app, { stripCaptureHopHeaders } from "../src/index";
-import { sha256Hex, signRelayRequest } from "../src/hmac";
+import { hmacSha256Hex, sha256Hex, signRelayRequest } from "../src/hmac";
 
 const hmacSecret = "relay-secret";
 const keyId = "rel_test";
@@ -15,16 +15,116 @@ function makeKv(): KVNamespace {
   } as unknown as KVNamespace;
 }
 
-function makeEnv(): Record<string, unknown> {
+interface FakeD1State {
+  idempotency: Map<string, { status: string; response_json: string | null }>;
+  sendEvents: unknown[][];
+  authFailures: unknown[][];
+}
+
+function makeD1(): D1Database & { state: FakeD1State } {
+  const state: FakeD1State = { idempotency: new Map(), sendEvents: [], authFailures: [] };
+  const credential = {
+    id: "cred_1",
+    user_id: "usr_1",
+    username: "gmail",
+    secret_hash: "",
+    hash_version: 1,
+    allowed_sender_ids_json: null,
+    revoked_at: null,
+    user_disabled_at: null,
+  };
+  const sender = { id: "sender_1", email: "gmail@alexmiller.net" };
+
+  const makeStatement = (sql: string) => {
+    let args: unknown[] = [];
+    return {
+      bind: (...bound: unknown[]) => {
+        args = bound;
+        return makeStatementWithArgs(sql, args);
+      },
+      first: async () => makeFirst(sql, args),
+      all: async () => makeAll(sql, args),
+      run: async () => makeRun(sql, args),
+    };
+  };
+  const makeStatementWithArgs = (sql: string, args: unknown[]) => ({
+    bind: (...bound: unknown[]) => makeStatementWithArgs(sql, bound),
+    first: async () => makeFirst(sql, args),
+    all: async () => makeAll(sql, args),
+    run: async () => makeRun(sql, args),
+  });
+
+  const makeFirst = async (sql: string, args: unknown[]) => {
+    if (sql.includes("WHERE lower(c.username) = ?")) {
+      return args[0] === "gmail" ? { ...credential, secret_hash: await hmacSha256Hex("credential-pepper", "secret") } : null;
+    }
+    if (sql.includes("WHERE c.id = ?")) {
+      return args[0] === "cred_1" ? { ...credential, secret_hash: await hmacSha256Hex("credential-pepper", "secret") } : null;
+    }
+    if (sql.includes("FROM settings WHERE key = 'policy_version'")) {
+      return { value_json: "7" };
+    }
+    if (sql.includes("FROM idempotency_keys WHERE idempotency_key = ?")) {
+      return state.idempotency.get(String(args[0])) ?? null;
+    }
+    if (sql.includes("SELECT id FROM users LIMIT 1")) {
+      return null;
+    }
+    return null;
+  };
+
+  const makeAll = async (sql: string) => {
+    if (sql.includes("FROM allowlisted_senders")) {
+      return { results: [sender] };
+    }
+    return { results: [] };
+  };
+
+  const makeRun = async (sql: string, args: unknown[]) => {
+    if (sql.includes("INSERT OR IGNORE INTO idempotency_keys")) {
+      const key = String(args[0]);
+      if (state.idempotency.has(key)) {
+        return { meta: { changes: 0 } };
+      }
+      state.idempotency.set(key, { status: "pending", response_json: null });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE idempotency_keys SET status = ?")) {
+      state.idempotency.set(String(args[3]), { status: String(args[0]), response_json: String(args[1]) });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("INSERT INTO send_events")) {
+      state.sendEvents.push(args);
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("INSERT INTO auth_failures")) {
+      state.authFailures.push(args);
+      return { meta: { changes: 1 } };
+    }
+    return { meta: { changes: 1 } };
+  };
+
+  const d1 = {
+    state,
+    prepare: (sql: string) => makeStatement(sql),
+    batch: async (statements: Array<{ run: () => Promise<unknown> }>) => {
+      return Promise.all(statements.map((statement) => statement.run()));
+    },
+  };
+  return d1 as unknown as D1Database & { state: FakeD1State };
+}
+
+function makeEnv(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    D1_MAIN: makeD1(),
     KV_HOT: makeKv(),
     CF_ACCOUNT_ID: "account_123",
     CF_API_TOKEN: "cf_token",
+    CREDENTIAL_PEPPER: "credential-pepper",
+    METADATA_PEPPER: "metadata-pepper",
     RELAY_HMAC_SECRET_CURRENT: hmacSecret,
     RELAY_HMAC_KEY_ID: keyId,
-    RELAY_AUTH_USERNAME: "gmail",
-    RELAY_AUTH_PASSWORD: "secret",
-    RELAY_ALLOWED_SENDERS: "gmail@alexmiller.net",
+    ...overrides,
   };
 }
 
@@ -58,6 +158,24 @@ describe("relay endpoints", () => {
     vi.unstubAllGlobals();
   });
 
+  it("creates the first bootstrap admin with the one-time token", async () => {
+    const response = await app.request(
+      "/bootstrap/admin",
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer setup-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ email: "alex@example.net", display_name: "Alex" }),
+      },
+      makeEnv({ BOOTSTRAP_SETUP_TOKEN: "setup-token" }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true, user_id: expect.stringMatching(/^usr_/) });
+  });
+
   it("authenticates SMTP credentials with HMAC-protected /relay/auth", async () => {
     const body = new TextEncoder().encode(JSON.stringify({ username: "gmail", password: "secret" }));
     const response = await app.request(
@@ -74,6 +192,8 @@ describe("relay endpoints", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       ttl_seconds: 60,
+      policy_version: "7",
+      credential_id: "cred_1",
       allowed_senders: ["gmail@alexmiller.net"],
     });
   });
@@ -115,6 +235,7 @@ describe("relay endpoints", () => {
           ...(await signedHeaders("/relay/send", body, "send-nonce")),
           "x-relay-envelope-from": "gmail@alexmiller.net",
           "x-relay-recipients": "alex@example.net",
+          "x-relay-credential-id": "cred_1",
         },
         body,
       },
@@ -123,7 +244,7 @@ describe("relay endpoints", () => {
 
     expect(response.status).toBe(200);
     expect(cfFetch).toHaveBeenCalledOnce();
-    await expect(response.json()).resolves.toMatchObject({ ok: true, cf_status: 200 });
+    await expect(response.json()).resolves.toMatchObject({ ok: true, cf_status: 200, idempotency_key: expect.any(String) });
   });
 
   it("re-checks sender allowlist on /relay/send", async () => {
@@ -136,6 +257,7 @@ describe("relay endpoints", () => {
           ...(await signedHeaders("/relay/send", body, "blocked-sender-nonce")),
           "x-relay-envelope-from": "blocked@example.net",
           "x-relay-recipients": "alex@example.net",
+          "x-relay-credential-id": "cred_1",
         },
         body,
       },
@@ -144,6 +266,54 @@ describe("relay endpoints", () => {
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ ok: false, error: "sender_not_allowed" });
+  });
+
+  it("replays completed idempotency responses from D1", async () => {
+    const env = makeEnv();
+    const cfFetch = vi.fn(async () => {
+      return new Response(JSON.stringify({ success: true, errors: [], messages: [], result: { delivered: [], queued: [], permanent_bounces: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", cfFetch);
+
+    const body = new TextEncoder().encode("From: Alex <gmail@alexmiller.net>\r\nMessage-ID: <same@example.net>\r\n\r\nBody\r\n");
+    const first = await app.request(
+      "/relay/send",
+      {
+        method: "POST",
+        headers: {
+          ...(await signedHeaders("/relay/send", body, "idem-nonce-1")),
+          "x-relay-envelope-from": "gmail@alexmiller.net",
+          "x-relay-recipients": "alex@example.net",
+          "x-relay-credential-id": "cred_1",
+        },
+        body,
+      },
+      env,
+    );
+    const firstJson = await first.json();
+    const second = await app.request(
+      "/relay/send",
+      {
+        method: "POST",
+        headers: {
+          ...(await signedHeaders("/relay/send", body, "idem-nonce-2")),
+          "x-relay-envelope-from": "gmail@alexmiller.net",
+          "x-relay-recipients": "alex@example.net",
+          "x-relay-credential-id": "cred_1",
+        },
+        body,
+      },
+      env,
+    );
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.headers.get("x-relay-idempotency-replay")).toBe("1");
+    await expect(second.json()).resolves.toMatchObject(firstJson as Record<string, unknown>);
+    expect(cfFetch).toHaveBeenCalledOnce();
   });
 });
 

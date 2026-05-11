@@ -6,15 +6,17 @@ The Worker is the policy and delivery authority. It calls the Cloudflare Email S
 
 ## Status
 
-MS1 relay endpoints are implemented. D1-backed credentials, audit logging,
-idempotency, admin APIs, and the HTTP `/send` API land in later milestones per
-`IMPLEMENTATION_PLAN.md`.
+MS2 relay endpoints are implemented. SMTP credentials and sender policy are
+D1-backed, `/relay/send` writes metadata-only audit rows, and SMTP idempotency
+is D1-arbitrated with KV used only for completed replay cache. Admin APIs and
+the HTTP `/send` API land in later milestones per `IMPLEMENTATION_PLAN.md`.
 
 ## Routes (planned)
 
 | Route | Purpose | Auth |
 |---|---|---|
 | `GET /healthz` | Liveness + version + git SHA | none |
+| `POST /bootstrap/admin` | Create the first admin user when no users exist | `BOOTSTRAP_SETUP_TOKEN` bearer |
 | `POST /relay/auth` | Verify SMTP credential, return short-lived policy snapshot | HMAC |
 | `POST /relay/send` | Accept raw MIME from relay, call `send_raw` | HMAC + idempotency |
 | `POST /send` | HTTP API for apps; raw MIME only in MVP | API key + idempotency |
@@ -33,9 +35,7 @@ idempotency, admin APIs, and the HTTP `/send` API land in later milestones per
 - `RELAY_HMAC_SECRET_CURRENT` (secret) — verifies HMAC-signed relay requests.
 - `RELAY_HMAC_SECRET_PREVIOUS` (secret, optional) — for the rotation window.
 - `RELAY_HMAC_KEY_ID` (var, optional) — if set, only this relay key id is accepted.
-- `RELAY_AUTH_USERNAME` / `RELAY_AUTH_PASSWORD` (secrets for MS1 only) — temporary SMTP credential check before D1-backed credentials land in MS2.
-- `RELAY_ALLOWED_SENDERS` (var for MS1 only) — comma-separated policy snapshot returned by `/relay/auth`.
-- `BOOTSTRAP_SETUP_TOKEN` (secret, one-time) — admits the first admin user; rotated immediately after first use.
+- `BOOTSTRAP_SETUP_TOKEN` (secret, one-time) — admits the first admin user while no `users` row exists.
 - `ACCESS_TEAM_DOMAIN` (var) — for JWKS URL.
 - `ACCESS_AUDIENCE` (var) — JWT `aud` claim to enforce.
 
