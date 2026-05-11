@@ -38,14 +38,19 @@ export async function main(argv, env, fetchImpl = fetch, writeOutput = console.l
   const localMimeSha256 = sha256Hex(fixtureBytes);
   const startedAt = new Date();
   const url = spikeUrl(options);
-  const response = await fetchImpl(url, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "message/rfc822",
+  const response = await fetchWithRetry(
+    fetchImpl,
+    url,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "message/rfc822",
+      },
+      body: fixtureBytes,
     },
-    body: fixtureBytes,
-  });
+    options.retries,
+  );
   const responseText = await response.text();
   const parsedResponse = parseJsonOrText(responseText);
   const finishedAt = new Date();
@@ -93,6 +98,7 @@ export function parseArgs(argv) {
     live: false,
     outDir: defaultOutDir,
     recipients: "",
+    retries: 3,
     tokenEnv: "MS0_SPIKE_TOKEN",
     workerUrl: "",
   };
@@ -124,6 +130,10 @@ export function parseArgs(argv) {
         break;
       case "--out-dir":
         options.outDir = readValue(argv, index, arg);
+        index += 1;
+        break;
+      case "--retries":
+        options.retries = parseNonNegativeInteger(readValue(argv, index, arg), arg);
         index += 1;
         break;
       case "--recipients":
@@ -173,6 +183,23 @@ export function parseRecipients(raw) {
     .filter((recipient) => recipient.length > 0);
 }
 
+async function fetchWithRetry(fetchImpl, url, init, retries) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await fetchImpl(url, init);
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries) {
+        break;
+      }
+      await sleep(250 * 2 ** attempt);
+    }
+  }
+
+  throw lastError;
+}
+
 function requiredFields(options) {
   return [
     ["--fixture", options.fixture],
@@ -190,6 +217,20 @@ function readValue(argv, index, optionName) {
     throw new Error(`${optionName} requires a value.`);
   }
   return value;
+}
+
+function parseNonNegativeInteger(raw, optionName) {
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isInteger(value) || value < 0 || String(value) !== raw) {
+    throw new Error(`${optionName} must be a non-negative integer.`);
+  }
+  return value;
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 function ensureTrailingSlash(rawUrl) {
@@ -233,5 +274,6 @@ Options:
   --live         Call Cloudflare Email Sending through /spike.
   --label        Label used in the evidence filename. Default: fixture.
   --out-dir      Evidence directory. Default: ${defaultOutDir}.
+  --retries      Retry transient fetch failures. Default: 3.
   --token-env    Environment variable containing the spike token. Default: MS0_SPIKE_TOKEN.`;
 }

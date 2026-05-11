@@ -33,6 +33,23 @@ describe("parseArgs", () => {
   it("rejects unknown options", () => {
     assert.throws(() => parseArgs(["--unknown"]), /Unknown option/);
   });
+
+  it("parses retry count", () => {
+    const options = parseArgs([
+      "--fixture",
+      "plain-text.eml",
+      "--from",
+      "sender@example.com",
+      "--recipients",
+      "one@example.net",
+      "--worker-url",
+      "https://worker.example.com",
+      "--retries",
+      "5",
+    ]);
+
+    assert.equal(options.retries, 5);
+  });
 });
 
 describe("spikeUrl", () => {
@@ -128,5 +145,53 @@ describe("main", () => {
     assert.equal(evidence.kind, "cf-mail-relay.ms0.spike-evidence");
     assert.equal(evidence.request.fixture_size_bytes, 35);
     assert.equal(evidence.checks.mime_sha256_matches_local, true);
+  });
+
+  it("retries transient fetch failures before writing evidence", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "cf-mail-relay-ms0-"));
+    const fixture = path.join(tempDir, "plain.eml");
+    const outDir = path.join(tempDir, "evidence");
+    const fixtureText = "From: sender@example.com\r\n\r\nHello\r\n";
+    const fixtureSha256 = createHash("sha256").update(fixtureText).digest("hex");
+    await writeFile(fixture, fixtureText);
+
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("transient dns failure");
+      }
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          dry_run: true,
+          mime_sha256: fixtureSha256,
+          mime_round_trip_verified: true,
+        }),
+        { status: 200 },
+      );
+    };
+
+    await main(
+      [
+        "--fixture",
+        fixture,
+        "--from",
+        "sender@example.com",
+        "--recipients",
+        "one@example.net",
+        "--worker-url",
+        "https://worker.example.com",
+        "--out-dir",
+        outDir,
+        "--retries",
+        "1",
+      ],
+      { MS0_SPIKE_TOKEN: "token" },
+      fetchImpl,
+      () => {},
+    );
+
+    assert.equal(calls, 2);
   });
 });
