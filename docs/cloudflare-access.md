@@ -25,6 +25,12 @@ node infra/wrangler/access-app.mjs \
   --allow-email alex@alexmiller.net
 ```
 
+The same helper is also exposed through:
+
+```sh
+pnpm access:setup --allow-email alex@alexmiller.net
+```
+
 The script creates or updates:
 
 - A self-hosted Access app named `cf-mail-relay-admin`.
