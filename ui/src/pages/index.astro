@@ -158,6 +158,22 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
         margin: 0;
         font-size: 16px;
       }
+      .health {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(140px, 1fr));
+        gap: 12px;
+        padding: 14px;
+      }
+      .health-item span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+      .health-item strong {
+        font-size: 15px;
+        font-weight: 650;
+      }
       .toolbar {
         display: flex;
         flex-wrap: wrap;
@@ -275,6 +291,9 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
         .metrics {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
+        .health {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
         header {
           align-items: flex-start;
           flex-direction: column;
@@ -282,6 +301,7 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
       }
       @media (max-width: 520px) {
         .metrics,
+        .health,
         nav {
           grid-template-columns: 1fr;
         }
@@ -394,6 +414,7 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
             ${metric("Auth Failures", data.auth_failures_24h)}
             ${metric("Credentials", data.resource_counts.smtp_credentials)}
           </div>
+          ${panel("Cloudflare API Health", "", cloudflareApiHealth(data.cf_api_health))}
           ${panel("Latest Send Events", "", table(["Time", "Status", "From", "Recipients", "SMTP"], await request("/admin/api/send-events"), eventRow))}
         `;
       }
@@ -521,6 +542,23 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
         return `<div class="metric"><span>${escapeHtml(label)}</span><strong>${Number(value || 0).toLocaleString()}</strong></div>`;
       }
 
+      function cloudflareApiHealth(value) {
+        const health = value && typeof value === "object" ? value : {};
+        const state = health.ok === true ? "healthy" : "unhealthy";
+        return `
+          <div class="health">
+            ${healthItem("State", statePill(state))}
+            ${healthItem("HTTP Status", escapeHtml(health.status ?? "not checked"))}
+            ${healthItem("Error Code", escapeHtml(health.error_code || "none"))}
+            ${healthItem("Checked", escapeHtml(health.checked_at ? formatTime(health.checked_at) : "not checked"))}
+          </div>
+        `;
+      }
+
+      function healthItem(label, body) {
+        return `<div class="health-item"><span>${escapeHtml(label)}</span><strong>${body}</strong></div>`;
+      }
+
       function panel(heading, tools, body) {
         return `<section class="panel"><div class="panel-header"><h2>${escapeHtml(heading)}</h2><div class="toolbar">${tools}</div></div>${body}</section>`;
       }
@@ -571,7 +609,7 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
 
       function statePill(value) {
         const normalized = String(value || "");
-        const cls = ["accepted", "active", "enabled", "verified"].includes(normalized) ? "ok" : ["revoked", "disabled", "cf_error", "all_bounced"].includes(normalized) ? "bad" : "";
+        const cls = ["accepted", "active", "enabled", "verified", "healthy"].includes(normalized) ? "ok" : ["revoked", "disabled", "cf_error", "all_bounced", "unhealthy"].includes(normalized) ? "bad" : "";
         return `<span class="pill ${cls}">${escapeHtml(normalized)}</span>`;
       }
 

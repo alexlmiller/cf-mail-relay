@@ -3,7 +3,7 @@ import type { Env } from "./index";
 
 export async function dashboard(env: Env): Promise<Record<string, unknown>> {
   const since = Math.floor(Date.now() / 1000) - 24 * 60 * 60;
-  const [sendStats, authStats, lastError, counts] = await Promise.all([
+  const [sendStats, authStats, lastError, counts, cfApiHealth] = await Promise.all([
     env.D1_MAIN.prepare(
       `SELECT
          COUNT(*) AS total,
@@ -22,6 +22,7 @@ export async function dashboard(env: Env): Promise<Record<string, unknown>> {
       env.D1_MAIN.prepare("SELECT COUNT(*) AS total FROM allowlisted_senders WHERE enabled = 1").first<{ total: number }>(),
       env.D1_MAIN.prepare("SELECT COUNT(*) AS total FROM smtp_credentials WHERE revoked_at IS NULL").first<{ total: number }>(),
     ]),
+    checkCloudflareApiHealth(env),
   ]);
 
   return {
@@ -39,8 +40,44 @@ export async function dashboard(env: Env): Promise<Record<string, unknown>> {
       senders: counts[2]?.total ?? 0,
       smtp_credentials: counts[3]?.total ?? 0,
     },
-    cf_api_health: "not_checked",
+    cf_api_health: cfApiHealth,
   };
+}
+
+export interface CloudflareApiHealth {
+  ok: boolean;
+  status: number | null;
+  checked_at: number;
+  error_code: string | null;
+}
+
+export async function checkCloudflareApiHealth(env: Env): Promise<CloudflareApiHealth> {
+  const checkedAt = nowSeconds();
+  try {
+    const response = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${env.CF_API_TOKEN}`,
+        accept: "application/json",
+      },
+    });
+    const payload = await readCloudflareJson(response);
+    const success = cloudflareSuccess(payload);
+    const ok = response.ok && success === true;
+    return {
+      ok,
+      status: response.status,
+      checked_at: checkedAt,
+      error_code: ok ? null : firstCloudflareErrorCode(payload) ?? (success === null ? "invalid_cloudflare_response" : `http_${response.status}`),
+    };
+  } catch {
+    return {
+      ok: false,
+      status: null,
+      checked_at: checkedAt,
+      error_code: "fetch_failed",
+    };
+  }
 }
 
 export async function listUsers(env: Env): Promise<unknown[]> {
@@ -228,6 +265,37 @@ function requireDomain(value: unknown): string {
 
 function statusOrDefault(value: unknown): string {
   return value === "pending" || value === "verified" || value === "sandbox" || value === "disabled" ? value : "pending";
+}
+
+async function readCloudflareJson(response: Response): Promise<unknown> {
+  try {
+    return (await response.json()) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function cloudflareSuccess(value: unknown): boolean | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const success = (value as { success?: unknown }).success;
+  return typeof success === "boolean" ? success : null;
+}
+
+function firstCloudflareErrorCode(value: unknown): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const errors = (value as { errors?: unknown }).errors;
+  if (!Array.isArray(errors)) {
+    return null;
+  }
+  const firstError = errors.find((error): error is { code?: unknown } => typeof error === "object" && error !== null);
+  if (typeof firstError?.code === "string" || typeof firstError?.code === "number") {
+    return String(firstError.code);
+  }
+  return null;
 }
 
 function randomSecret(): string {
