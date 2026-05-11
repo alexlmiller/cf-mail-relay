@@ -190,13 +190,20 @@ The `pnpm ms0:spike:send` command writes request/response evidence JSON under `.
 
 ## MS0 exit checklist
 
-- [ ] `send_raw` JSON shape verified live with `from`, `recipients`, and `mime_message`.
+- [x] `send_raw` JSON shape verified live with `from`, `recipients`, and `mime_message`.
+  Evidence: `.ai-runs/ms0-evidence/2026-05-11T16-26-07-218Z-fixture.json`.
 - [ ] Plain text Gmail MIME delivered to Gmail, Outlook, and iCloud.
+  Partial evidence: Google-hosted recipient delivery with DKIM, SPF, and DMARC pass recorded in `.ai-runs/ms0-evidence/2026-05-11T16-26-12-hiro-received-summary.md`.
 - [ ] HTML plus inline image Gmail MIME delivered to Gmail, Outlook, and iCloud.
+  Partial evidence: live `send_raw` acceptance in `.ai-runs/ms0-evidence/2026-05-11T16-46-27-166Z-fixture.json`.
 - [ ] At least one of the plain text or HTML tests shows DKIM pass with `d=<adopter-domain>` and DMARC pass in all three recipient services.
-- [ ] 4 MB PDF attachment plus non-ASCII subject behavior documented, including any quirks.
-- [ ] 8-bit/non-UTF-8 behavior documented.
-- [ ] Worker input MIME bytes and the `mime_message` value round-trip with identical SHA-256.
-- [ ] `docs/cloudflare-email-sending.md` MIME quirks table updated with real observations.
+  Partial evidence: Google-hosted recipient showed `dkim=pass header.i=@alexmiller.net` and `dmarc=pass header.from=alexmiller.net`.
+- [x] 4 MB PDF attachment plus non-ASCII subject behavior documented, including any quirks.
+  Evidence: `.ai-runs/ms0-evidence/2026-05-11T16-31-51-980Z-fixture.json`, `.ai-runs/ms0-evidence/2026-05-11T16-34-44-640Z-fixture.json`, and `.ai-runs/ms0-evidence/2026-05-11T16-38-48-047Z-fixture.json`.
+- [x] 8-bit/non-UTF-8 behavior documented.
+  Evidence: `.ai-runs/ms0-evidence/2026-05-11T16-47-48-655Z-fixture.json` and `.ai-runs/ms0-evidence/2026-05-11T16-47-48-656Z-fixture.json`.
+- [x] Worker input MIME bytes and the `mime_message` value round-trip with identical SHA-256.
+  Evidence: all successful fixture JSON files above have `mime_sha256_matches_local=true` and `mime_round_trip_verified=true`.
+- [x] `docs/cloudflare-email-sending.md` MIME quirks table updated with real observations.
 
 MS0 passes only after the live delivery evidence is captured. Until then, the project remains blocked before MS1.

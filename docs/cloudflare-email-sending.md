@@ -90,10 +90,10 @@ Use [`docs/ms0-spike.md`](./ms0-spike.md) for the live spike runbook and evidenc
 | Scenario | Result | Notes |
 |---|---|---|
 | Plain text from Gmail | delivered after stripping capture-hop trace headers | 2026-05-11 MS0: full Gmail SMTP DATA containing `Received`, `X-Received`, and `X-Gm-*` returned `email.sending.error.email.invalid`; same MIME from `MIME-Version` onward delivered to a Google-hosted inbox with Cloudflare DKIM pass, `alexmiller.net` DKIM pass, SPF pass on `cf-bounce.alexmiller.net`, and DMARC pass for `header.from=alexmiller.net` |
-| HTML with inline image | TBD | |
+| HTML with inline image | accepted | 2026-05-11 MS0: Gmail API send through the `gmail@alexmiller.net` SMTP alias produced a multipart/related capture with text/plain, text/html, and inline PNG `Content-ID`; stripped MIME was 1,381 bytes and `send_raw` accepted it |
 | PDF attachment | delivered below encoded-size cap; rejected above it | 2026-05-11 MS0: a 4,050,630 byte PDF became a 5,544,099 byte stripped Gmail MIME and `send_raw` returned `email.sending.error.email.too_big`; a 3,050,638 byte PDF became a 4,175,676 byte stripped Gmail MIME and `send_raw` accepted it |
 | Non-ASCII subject | accepted after Gmail RFC 2047 encoding | 2026-05-11 MS0: Gmail encoded `MS0 café résumé - 日本語` as a UTF-8/base64 encoded-word subject; stripped MIME was 800 bytes and `send_raw` accepted it |
-| 8-bit body content | rejected by relay | MVP decision |
+| 8-bit body content | valid UTF-8 accepted by `send_raw`; invalid non-UTF-8 rejected by spike | 2026-05-11 MS0: synthetic `Content-Transfer-Encoding: 8bit` with UTF-8 body was accepted by `send_raw`; synthetic ISO-8859-1/invalid UTF-8 bytes returned spike error `mime_not_utf8_json_safe`. MVP relay still rejects 8BITMIME at DATA for conservative JSON safety |
 | Long subject lines (>78 chars) | TBD | |
 | iCal/multipart/alternative | TBD | |
 
