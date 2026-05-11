@@ -21,14 +21,15 @@ Then run:
 ```sh
 CLOUDFLARE_ACCOUNT_ID=fa774a1ed55e467890d48394f4409bdd \
 CLOUDFLARE_API_TOKEN=... \
-node infra/wrangler/access-app.mjs \
-  --allow-email alex@alexmiller.net
+pnpm access:setup --allow-email alex@alexmiller.net
 ```
 
-The same helper is also exposed through:
+Use `--dry-run` to inspect the Access app and policy payload without calling
+Cloudflare:
 
 ```sh
-pnpm access:setup --allow-email alex@alexmiller.net
+pnpm access:setup --dry-run --account-id fa774a1ed55e467890d48394f4409bdd \
+  --allow-email alex@alexmiller.net
 ```
 
 The script creates or updates:
@@ -76,3 +77,16 @@ In Cloudflare Zero Trust, create a self-hosted Access application with:
 
 Copy the application audience tag into `ACCESS_AUDIENCE` and the team domain
 into `ACCESS_TEAM_DOMAIN`.
+
+## Current live status
+
+The MS3 Worker and Pages UI are already deployed:
+
+- Worker: `https://cf-mail-relay-worker.milfred.workers.dev`
+- Pages: `https://cf-mail-relay-ui.pages.dev`
+
+The currently available Wrangler OAuth token and the Email Sending API token do
+not have Access permissions. Both fail on Access organization read with
+Cloudflare API error `10000: Authentication error`. Use an API token with
+`Access: Apps and Policies Write`, or create the Access app manually and copy
+the resulting values into `worker/wrangler.toml`.
