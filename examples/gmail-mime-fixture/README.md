@@ -8,10 +8,12 @@ Captured Gmail-originated MIME payloads. Used by:
 
 ## How to capture a fixture
 
-1. Configure Gmail "Send mail as" to use a local debug SMTP server (e.g., `smtpd` from Python or a custom test server) on a non-public hostname.
+1. Run the disposable MS0 capture server from `relay/cmd/ms0-capture` on a public hostname with a valid TLS certificate.
 2. Send a message from Gmail.
 3. Capture the raw bytes from `MAIL FROM` through end-of-`DATA`.
 4. Save as a `.eml` file in this directory.
+
+See [`../../docs/ms0-spike.md`](../../docs/ms0-spike.md) for the exact runbook.
 
 ## Fixtures planned for MS0
 

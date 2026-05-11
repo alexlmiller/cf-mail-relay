@@ -10,11 +10,11 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "astro": "^4.16.0",
-    "@astrojs/cloudflare": "^11.0.0",
-    "@cf-mail-relay/shared": "workspace:*"
+    "@cf-mail-relay/shared": "workspace:*",
+    "astro": "^4.16.0"
   },
   "devDependencies": {
+    "@astrojs/check": "^0.9.9",
     "typescript": "^5.5.0"
   }
 }

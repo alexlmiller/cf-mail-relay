@@ -11,6 +11,8 @@ Three deployable components running on Cloudflare + one BYO Docker host:
 The canonical use case: replace Mailgun for Gmail's "Send mail as" feature on a custom domain, using your own Cloudflare account.
 
 > **Status**: pre-MVP. The implementation plan is locked in [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md). The next step is **MS0** — a one-day spike proving `send_raw` accepts a captured Gmail MIME payload with DKIM/DMARC alignment intact. Block all other work until MS0 passes.
+>
+> The MS0 runbook lives in [`docs/ms0-spike.md`](./docs/ms0-spike.md).
 
 ## Highlights
 

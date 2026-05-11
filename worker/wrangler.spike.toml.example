@@ -1,0 +1,17 @@
+# Copy to wrangler.spike.toml for MS0 only.
+# wrangler.spike.toml is intentionally untracked.
+#
+# Deploying this Worker sends real mail through Cloudflare Email Sending.
+# Only run `pnpm ms0:spike:deploy` after confirming the account, domain, and
+# recipients in docs/ms0-spike.md.
+
+name = "cf-mail-relay-ms0-spike"
+main = "src/spike.ts"
+compatibility_date = "2026-05-01"
+
+[vars]
+CF_ACCOUNT_ID = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
+
+# Secrets are set via `wrangler secret put <NAME> --config worker/wrangler.spike.toml`:
+#   CF_API_TOKEN     Cloudflare API token with Email Sending permission.
+#   MS0_SPIKE_TOKEN  Random bearer token required by POST /spike.

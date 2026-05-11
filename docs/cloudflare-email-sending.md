@@ -83,6 +83,8 @@ For attachments: Gmail base64-encodes which expands by ~33%, plus MIME boundary 
 
 ## MIME quirks (MS0 spike will populate)
 
+Use [`docs/ms0-spike.md`](./ms0-spike.md) for the live spike runbook and evidence checklist.
+
 > Populated by MS0 spike with concrete observations.
 
 | Scenario | Result | Notes |

@@ -7,7 +7,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "spike:dev": "wrangler dev --config wrangler.spike.toml",
+    "spike:deploy": "wrangler deploy --config wrangler.spike.toml"
   },
   "dependencies": {
     "hono": "^4.6.0",

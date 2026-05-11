@@ -44,6 +44,15 @@ pnpm test
 pnpm exec wrangler dev
 ```
 
+## MS0 spike
+
+MS0 uses a disposable Worker entrypoint at `src/spike.ts`; it is not the production relay API. Copy `wrangler.spike.toml.example` to `wrangler.spike.toml`, set the required secrets, and follow [`../docs/ms0-spike.md`](../docs/ms0-spike.md).
+
+```sh
+pnpm ms0:spike:dev
+pnpm ms0:spike:deploy
+```
+
 ## Migrations
 
 ```sh
