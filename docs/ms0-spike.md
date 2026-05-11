@@ -109,6 +109,15 @@ Send these messages from Gmail and preserve the captured `.eml` files:
 
 Place sanitized captures under `examples/gmail-mime-fixture/` only if they contain no private content. Otherwise keep them in `.ai-runs/ms0-captures/`, which is gitignored.
 
+Gmail SMTP submission adds transport trace headers such as `Received`,
+`X-Received`, and `X-Gm-*` before the user-authored MIME headers. On
+2026-05-11, Cloudflare Email Sending rejected a replay of the full captured SMTP
+DATA payload with `email.sending.error.email.invalid`. Replaying the same Gmail
+MIME after removing those capture-hop transport headers succeeded. The
+production relay must treat these headers as relay-hop metadata and strip them
+before calling `send_raw`; preserve the user-authored headers and body bytes
+below `MIME-Version`/`From`/`Date`.
+
 ## 3. Dry-run request assembly
 
 Dry-run verifies that the Worker can decode the MIME bytes and build the documented JSON request shape without calling Cloudflare:
