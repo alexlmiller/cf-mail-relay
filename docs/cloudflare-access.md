@@ -13,7 +13,10 @@ trust root.
 ## API setup
 
 Create a Cloudflare API token with `Access: Apps and Policies Write` on the
-target account. Then run:
+target account. Cloudflare's Access application API documents this permission
+for the `/access/apps` endpoints:
+<https://developers.cloudflare.com/api/resources/zero_trust/subresources/access/subresources/applications/methods/get/>.
+Then run:
 
 ```sh
 CLOUDFLARE_ACCOUNT_ID=fa774a1ed55e467890d48394f4409bdd \

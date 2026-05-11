@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
-const defaults = {
+import { pathToFileURL } from "node:url";
+
+export const defaults = {
   name: "cf-mail-relay-admin",
   accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
   tokenEnv: "CLOUDFLARE_API_TOKEN",
@@ -11,131 +13,60 @@ const defaults = {
   dryRun: false,
 };
 
-const options = parseArgs(process.argv.slice(2));
-const config = { ...defaults, ...options };
-const token = process.env[config.tokenEnv];
-
-if (!config.accountId) {
-  fail("--account-id or CLOUDFLARE_ACCOUNT_ID is required");
-}
-if (!token && !config.dryRun) {
-  fail(`${config.tokenEnv} is required unless --dry-run is set`);
-}
-if (config.email.length === 0) {
-  fail("at least one --allow-email is required");
-}
-
-const appBody = {
-  name: config.name,
-  type: "self_hosted",
-  domain: withoutScheme(config.pagesUrl),
-  destinations: [
-    { type: "public", uri: withoutScheme(config.pagesUrl) },
-    { type: "public", uri: `${withoutScheme(config.workerUrl)}/admin/api/*` },
-  ],
-  session_duration: config.sessionDuration,
-  app_launcher_visible: true,
-  cors_headers: {
-    allow_credentials: true,
-    allowed_methods: ["GET", "POST", "OPTIONS"],
-    allowed_headers: ["content-type"],
-    allowed_origins: [config.pagesUrl],
-    max_age: 600,
-  },
-};
-const policyBody = {
-  name: `${config.name} allow admins`,
-  decision: "allow",
-  include: config.email.map((email) => ({ email: { email } })),
-  session_duration: config.sessionDuration,
-};
-
-if (config.dryRun) {
-  console.log(JSON.stringify({ app: appBody, policy: policyBody }, null, 2));
-  process.exit(0);
-}
-
-const organization = await api("GET", `/accounts/${config.accountId}/access/organizations`);
-const authDomain = organization.result?.auth_domain;
-if (typeof authDomain !== "string" || authDomain.length === 0) {
-  fail("Cloudflare Access organization has no auth_domain");
-}
-
-const existing = await api("GET", `/accounts/${config.accountId}/access/apps?name=${encodeURIComponent(config.name)}`);
-const existingApp = Array.isArray(existing.result) ? existing.result.find((app) => app.name === config.name) : undefined;
-const app = existingApp === undefined
-  ? await api("POST", `/accounts/${config.accountId}/access/apps`, appBody)
-  : await api("PUT", `/accounts/${config.accountId}/access/apps/${existingApp.id}`, { ...appBody, id: existingApp.id });
-const appId = app.result?.id;
-if (typeof appId !== "string") {
-  fail("Access app response did not include an id");
-}
-
-const policies = await api("GET", `/accounts/${config.accountId}/access/apps/${appId}/policies`);
-const existingPolicy = Array.isArray(policies.result) ? policies.result.find((policy) => policy.name === policyBody.name) : undefined;
-if (existingPolicy === undefined) {
-  await api("POST", `/accounts/${config.accountId}/access/apps/${appId}/policies`, policyBody);
-} else {
-  await api("PUT", `/accounts/${config.accountId}/access/apps/${appId}/policies/${existingPolicy.id}`, { ...policyBody, id: existingPolicy.id });
-}
-
-const refreshed = await api("GET", `/accounts/${config.accountId}/access/apps/${appId}`);
-const aud = refreshed.result?.aud;
-if (typeof aud !== "string" || aud.length === 0) {
-  fail("Access app response did not include an aud value");
-}
-
-console.log(JSON.stringify({
-  app_id: appId,
-  app_name: config.name,
-  access_team_domain: authDomain,
-  access_audience: aud,
-  pages_url: config.pagesUrl,
-  worker_admin_api: `${config.workerUrl}/admin/api/*`,
-}, null, 2));
-
-async function api(method, path, body) {
-  const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
+export function buildBodies(config) {
+  return {
+    app: {
+      name: config.name,
+      type: "self_hosted",
+      domain: withoutScheme(config.pagesUrl),
+      destinations: [
+        { type: "public", uri: withoutScheme(config.pagesUrl) },
+        { type: "public", uri: `${withoutScheme(config.workerUrl)}/admin/api/*` },
+      ],
+      session_duration: config.sessionDuration,
+      app_launcher_visible: true,
+      cors_headers: {
+        allow_credentials: true,
+        allowed_methods: ["GET", "POST", "OPTIONS"],
+        allowed_headers: ["content-type"],
+        allowed_origins: [config.pagesUrl],
+        max_age: 600,
+      },
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const payload = await response.json();
-  if (!response.ok || payload.success === false) {
-    const message = payload.errors?.map((error) => `${error.code}: ${error.message}`).join("; ") || response.statusText;
-    fail(`${method} ${path} failed: ${message}`);
-  }
-  return payload;
+    policy: {
+      name: `${config.name} allow admins`,
+      decision: "allow",
+      include: config.email.map((email) => ({ email: { email } })),
+      session_duration: config.sessionDuration,
+    },
+  };
 }
 
-function parseArgs(args) {
+export function parseArgs(args, fail = throwUsageError) {
   const parsed = { email: [] };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     switch (arg) {
       case "--account-id":
-        parsed.accountId = takeValue(args, ++index, arg);
+        parsed.accountId = takeValue(args, ++index, arg, fail);
         break;
       case "--token-env":
-        parsed.tokenEnv = takeValue(args, ++index, arg);
+        parsed.tokenEnv = takeValue(args, ++index, arg, fail);
         break;
       case "--name":
-        parsed.name = takeValue(args, ++index, arg);
+        parsed.name = takeValue(args, ++index, arg, fail);
         break;
       case "--pages-url":
-        parsed.pagesUrl = trimTrailingSlash(takeValue(args, ++index, arg));
+        parsed.pagesUrl = trimTrailingSlash(takeValue(args, ++index, arg, fail));
         break;
       case "--worker-url":
-        parsed.workerUrl = trimTrailingSlash(takeValue(args, ++index, arg));
+        parsed.workerUrl = trimTrailingSlash(takeValue(args, ++index, arg, fail));
         break;
       case "--session-duration":
-        parsed.sessionDuration = takeValue(args, ++index, arg);
+        parsed.sessionDuration = takeValue(args, ++index, arg, fail);
         break;
       case "--allow-email":
-        parsed.email.push(...takeValue(args, ++index, arg).split(",").map((email) => email.trim()).filter(Boolean));
+        parsed.email.push(...takeValue(args, ++index, arg, fail).split(",").map((email) => email.trim()).filter(Boolean));
         break;
       case "--dry-run":
         parsed.dryRun = true;
@@ -150,7 +81,89 @@ function parseArgs(args) {
   return parsed;
 }
 
-function takeValue(args, index, flag) {
+export async function run(rawArgs = process.argv.slice(2), env = process.env, fetchImpl = fetch) {
+  const options = parseArgs(rawArgs, fail);
+  const config = { ...defaults, accountId: env.CLOUDFLARE_ACCOUNT_ID ?? defaults.accountId, ...options };
+  const token = env[config.tokenEnv];
+
+  if (!config.accountId) {
+    fail("--account-id or CLOUDFLARE_ACCOUNT_ID is required");
+  }
+  if (!token && !config.dryRun) {
+    fail(`${config.tokenEnv} is required unless --dry-run is set`);
+  }
+  if (config.email.length === 0) {
+    fail("at least one --allow-email is required");
+  }
+
+  const { app: appBody, policy: policyBody } = buildBodies(config);
+  if (config.dryRun) {
+    return { app: appBody, policy: policyBody };
+  }
+
+  const client = makeClient(config.accountId, token, fetchImpl);
+  const organization = await client.api("GET", `/accounts/${config.accountId}/access/organizations`);
+  const authDomain = organization.result?.auth_domain;
+  if (typeof authDomain !== "string" || authDomain.length === 0) {
+    fail("Cloudflare Access organization has no auth_domain");
+  }
+
+  const existing = await client.api("GET", `/accounts/${config.accountId}/access/apps?name=${encodeURIComponent(config.name)}`);
+  const existingApp = Array.isArray(existing.result) ? existing.result.find((app) => app.name === config.name) : undefined;
+  const app = existingApp === undefined
+    ? await client.api("POST", `/accounts/${config.accountId}/access/apps`, appBody)
+    : await client.api("PUT", `/accounts/${config.accountId}/access/apps/${existingApp.id}`, { ...appBody, id: existingApp.id });
+  const appId = app.result?.id;
+  if (typeof appId !== "string") {
+    fail("Access app response did not include an id");
+  }
+
+  const policies = await client.api("GET", `/accounts/${config.accountId}/access/apps/${appId}/policies`);
+  const existingPolicy = Array.isArray(policies.result) ? policies.result.find((policy) => policy.name === policyBody.name) : undefined;
+  if (existingPolicy === undefined) {
+    await client.api("POST", `/accounts/${config.accountId}/access/apps/${appId}/policies`, policyBody);
+  } else {
+    await client.api("PUT", `/accounts/${config.accountId}/access/apps/${appId}/policies/${existingPolicy.id}`, { ...policyBody, id: existingPolicy.id });
+  }
+
+  const refreshed = await client.api("GET", `/accounts/${config.accountId}/access/apps/${appId}`);
+  const aud = refreshed.result?.aud;
+  if (typeof aud !== "string" || aud.length === 0) {
+    fail("Access app response did not include an aud value");
+  }
+
+  return {
+    app_id: appId,
+    app_name: config.name,
+    access_team_domain: authDomain,
+    access_audience: aud,
+    pages_url: config.pagesUrl,
+    worker_admin_api: `${config.workerUrl}/admin/api/*`,
+  };
+}
+
+function makeClient(_accountId, token, fetchImpl) {
+  return {
+    async api(method, path, body) {
+      const response = await fetchImpl(`https://api.cloudflare.com/client/v4${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.success === false) {
+        const message = payload.errors?.map((error) => `${error.code}: ${error.message}`).join("; ") || response.statusText;
+        fail(`${method} ${path} failed: ${message}`);
+      }
+      return payload;
+    },
+  };
+}
+
+function takeValue(args, index, flag, fail) {
   const value = args[index];
   if (value === undefined || value.startsWith("--")) {
     fail(`${flag} requires a value`);
@@ -183,7 +196,16 @@ Options:
   process.exit(code);
 }
 
+function throwUsageError(message) {
+  throw new Error(message);
+}
+
 function fail(message) {
   console.error(message);
   process.exit(1);
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const result = await run();
+  console.log(JSON.stringify(result, null, 2));
 }
