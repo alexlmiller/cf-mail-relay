@@ -89,7 +89,7 @@ Use [`docs/ms0-spike.md`](./ms0-spike.md) for the live spike runbook and evidenc
 
 | Scenario | Result | Notes |
 |---|---|---|
-| Plain text from Gmail | accepted after stripping capture-hop trace headers | 2026-05-11 MS0: full Gmail SMTP DATA containing `Received`, `X-Received`, and `X-Gm-*` returned `email.sending.error.email.invalid`; same MIME from `MIME-Version` onward succeeded |
+| Plain text from Gmail | delivered after stripping capture-hop trace headers | 2026-05-11 MS0: full Gmail SMTP DATA containing `Received`, `X-Received`, and `X-Gm-*` returned `email.sending.error.email.invalid`; same MIME from `MIME-Version` onward delivered to a Google-hosted inbox with Cloudflare DKIM pass, `alexmiller.net` DKIM pass, SPF pass on `cf-bounce.alexmiller.net`, and DMARC pass for `header.from=alexmiller.net` |
 | HTML with inline image | TBD | |
 | 4 MB PDF attachment + non-ASCII subject + existing DKIM-Signature | TBD | |
 | 8-bit body content | rejected by relay | MVP decision |
