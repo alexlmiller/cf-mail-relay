@@ -29,6 +29,7 @@ export function buildBodies(config) {
       destinations: [
         { type: "public", uri: withoutScheme(config.pagesUrl) },
         { type: "public", uri: `${withoutScheme(config.workerUrl)}/admin/api/*` },
+        { type: "public", uri: `${withoutScheme(config.workerUrl)}/self/api/*` },
       ],
       session_duration: config.sessionDuration,
       app_launcher_visible: true,
@@ -158,6 +159,7 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
     access_audience: aud,
     pages_url: config.pagesUrl,
     worker_admin_api: `${config.workerUrl}/admin/api/*`,
+    worker_self_api: `${config.workerUrl}/self/api/*`,
   };
   if (config.applyConfig.length > 0) {
     result.applied_config = await applyAccessConfig(config.applyConfig, {

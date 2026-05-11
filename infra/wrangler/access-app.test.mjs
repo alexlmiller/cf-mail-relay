@@ -30,6 +30,7 @@ describe("access-app helper", () => {
     assert.deepEqual(bodies.app.destinations, [
       { type: "public", uri: "admin.example.com" },
       { type: "public", uri: "worker.example.com/admin/api/*" },
+      { type: "public", uri: "worker.example.com/self/api/*" },
     ]);
     assert.equal(bodies.app.domain, "admin.example.com");
     assert.deepEqual(bodies.app.cors_headers.allowed_origins, ["https://admin.example.com/"]);
