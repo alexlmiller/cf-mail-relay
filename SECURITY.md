@@ -32,7 +32,8 @@ Out of scope:
 - Adopter misconfiguration (e.g., publishing DNS records incorrectly, orange-clouding `smtp.<domain>`, leaving Email Sending in sandbox mode).
 - Cloudflare platform behaviour outside this codebase's control.
 - Denial-of-service against the adopter's own Cloudflare account (rate limits, Worker invocation budget).
-- Issues that require a compromised relay host (the threat model assumes the relay host is trusted infrastructure; see `docs/threat-model.md`).
+- Issues that require a compromised relay host. The relay host is trusted
+  infrastructure; rotate relay HMAC and SMTP credentials if it is compromised.
 
 ## Coordinated disclosure
 

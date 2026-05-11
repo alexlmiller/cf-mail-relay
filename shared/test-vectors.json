@@ -1,5 +1,5 @@
 {
-  "$comment": "Canonical HMAC test vectors per IMPLEMENTATION_PLAN.md HMAC contract. Both the relay (Go) and Worker (TS) test suites consume these vectors.",
+  "$comment": "Canonical HMAC test vectors. Both the relay (Go) and Worker (TS) test suites consume these vectors.",
   "version": 1,
   "algorithm": "HMAC-SHA256",
   "vectors": [

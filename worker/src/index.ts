@@ -1,7 +1,4 @@
 // cf-mail-relay Worker entry point.
-//
-// Scaffold only. MS1 wires /relay/auth, /relay/send. MS2 wires D1, idempotency,
-// audit log. MS3 wires /admin/api/*. MS4 wires /send. See IMPLEMENTATION_PLAN.md.
 
 import { Hono } from "hono";
 import type { Context } from "hono";

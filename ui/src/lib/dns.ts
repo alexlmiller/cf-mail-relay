@@ -1,6 +1,6 @@
 // DNS record helpers for domain detail. Records are illustrative — the actual
 // CNAME/TXT values are issued by Cloudflare when Email Sending is enabled for
-// the domain. See docs/dns.md and docs/cloudflare-email-sending.md.
+// the domain.
 
 import type { Child } from "./dom";
 import { h } from "./dom";

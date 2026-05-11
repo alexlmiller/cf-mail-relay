@@ -10,8 +10,8 @@ usage() {
   cat <<'USAGE'
 Usage: pnpm doctor:delivery -- --domain <domain> [--to <recipient>]
 
-The script prints a unique subject token. Send a message through Gmail "Send
-mail as" or the relay using that subject, then paste the received message
+The script prints a unique subject token. Send a message through any configured
+SMTP client or the HTTP API using that subject, then paste the received message
 headers into stdin and press Ctrl-D. It exits 0 only when DKIM and DMARC pass.
 USAGE
 }

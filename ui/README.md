@@ -4,12 +4,6 @@ Admin UI on Cloudflare Pages. [Astro](https://astro.build).
 
 Behind a Cloudflare Access application that fronts both the Pages origin and the Worker `/admin/api/*` route.
 
-## Status
-
-MS3 dashboard UI is implemented as a static Astro app. It calls the Worker
-`/admin/api/*` endpoints from the browser and relies on Cloudflare Access to
-attach the `Cf-Access-Jwt-Assertion` header.
-
 ## Pages
 
 - `/` — dashboard, domains, allowed senders, SMTP credentials, users, API keys,

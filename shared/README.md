@@ -1,16 +1,8 @@
 # shared/
 
-TypeScript types, zod schemas, and HMAC test vectors used by both `worker/` and `ui/`.
+Shared TypeScript contracts used by the Worker and UI.
 
-CI fails on contract drift: the same zod schemas are imported by both consumers, and round-trip tests run in both packages.
-
-## Status
-
-Scaffold only.
-
-## Contents (planned)
-
-- `src/types.ts` — shared TypeScript interfaces (User, Domain, Credential, SendEvent, etc.).
-- `src/schemas.ts` — zod schemas matching D1 row shapes and HTTP API contracts.
-- `src/smtp-error-map.ts` — the SMTP-code mapping table from `IMPLEMENTATION_PLAN.md`.
-- `test-vectors.json` — canonical HMAC inputs and expected signatures. Consumed by both `worker/` (TS HMAC verifier) and `relay/` (Go HMAC signer) tests.
+- `src/types.ts`: public row and API types.
+- `src/schemas.ts`: zod schemas for admin/API payloads.
+- `src/smtp-error-map.ts`: delivery status to SMTP response mapping.
+- `test-vectors.json`: HMAC vectors shared by Worker and relay tests.

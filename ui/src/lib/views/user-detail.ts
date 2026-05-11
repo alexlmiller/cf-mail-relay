@@ -264,7 +264,7 @@ function credentialsCard(data: DetailData, root: HTMLElement): HTMLElement {
         "div",
         { class: "empty" },
         h("div", { class: "empty-title" }, "No SMTP credentials"),
-        h("div", { class: "empty-sub" }, "This is the password you paste into Gmail's \"Send mail as\" form."),
+        h("div", { class: "empty-sub" }, "This is the SMTP password for mail clients and applications."),
         h(
           "div",
           { class: "empty-actions" },

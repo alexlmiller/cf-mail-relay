@@ -18,7 +18,7 @@ services:
       RELAY_HMAC_SECRET: REPLACE_ME
       RELAY_TLS_CERT_FILE: /tls/fullchain.pem
       RELAY_TLS_KEY_FILE: /tls/privkey.pem
-      RELAY_ALLOWED_SENDERS: gmail@example.com
+      RELAY_ALLOWED_SENDERS: sender@example.com
     volumes:
       - ./tls:/tls:ro
     healthcheck:

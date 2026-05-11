@@ -1,6 +1,5 @@
 -- cf-mail-relay D1 schema, version 1.
 --
--- Canonical schema per IMPLEMENTATION_PLAN.md § D1 Schema.
 -- All metadata-only — no message bodies, subjects, or attachment contents are ever stored.
 
 PRAGMA foreign_keys = ON;
