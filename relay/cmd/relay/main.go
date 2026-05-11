@@ -179,6 +179,7 @@ func (s *session) Data(r io.Reader) error {
 	if _, err := s.backend.client.Send(context.Background(), s.mailFrom, s.recipients, mime); err != nil {
 		return smtpError(451, smtp.EnhancedCode{4, 7, 1}, "upstream send failed; try again later")
 	}
+	log.Printf("accepted message from=%s recipients=%d bytes=%d", s.mailFrom, len(s.recipients), len(mime))
 	s.Reset()
 	return nil
 }
