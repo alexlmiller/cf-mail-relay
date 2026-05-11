@@ -33,8 +33,8 @@ const NAV: NavItem[] = [
   { label: "Events", route: "/events", match: (n) => n === "events" },
   { label: "Domains", route: "/domains", match: (n) => n === "domains" || n === "domain-detail" },
   { label: "Senders", route: "/senders", match: (n) => n === "senders" },
-  { label: "Credentials", route: "/credentials", match: (n) => n === "credentials" },
-  { label: "Keys", route: "/api-keys", match: (n) => n === "api-keys" },
+  { label: "SMTP Credentials", route: "/credentials", match: (n) => n === "credentials" },
+  { label: "API Keys", route: "/api-keys", match: (n) => n === "api-keys" },
   { label: "Users", route: "/users", match: (n) => n === "users" || n === "user-detail" },
 ];
 
@@ -43,7 +43,6 @@ let appRoot: HTMLElement | null = null;
 let mainRoot: HTMLElement | null = null;
 let routeRoot: HTMLElement | null = null;
 let topbarUserSlot: HTMLElement | null = null;
-let topbarRouteSlot: HTMLElement | null = null;
 
 export function boot() {
   appRoot = document.getElementById("app");
@@ -66,14 +65,11 @@ function buildShell() {
   if (!appRoot) return;
 
   const brandMark = h("span", { class: "brand-mark" }, "CR");
-  topbarRouteSlot = h("span", { class: "brand-route" }, "/");
   const brand = h(
     "a",
     { class: "brand", href: "#/", title: "CF Mail Relay" },
     brandMark,
     h("span", { class: "brand-name" }, "Mail Relay"),
-    h("span", { class: "brand-sep" }, "/"),
-    topbarRouteSlot,
   );
 
   const navEl = h("nav", { class: "nav", "aria-label": "Primary" });
@@ -348,7 +344,6 @@ function handleRouteChange(route: ReturnType<typeof parse>) {
   closeDrawer();
   closeModal();
   syncNavActive(route.name);
-  if (topbarRouteSlot) topbarRouteSlot.textContent = route.path;
 
   switch (route.name) {
     case "dashboard":

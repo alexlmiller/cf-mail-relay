@@ -214,17 +214,6 @@ html[data-theme="dark"] {
   letter-spacing: 0;
 }
 .brand-name { font-size: 13.5px; }
-.brand-sep {
-  color: var(--text-faint);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 13px;
-  user-select: none;
-}
-.brand-route {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 12px;
-  color: var(--text-mute);
-}
 
 .nav {
   display: flex;
