@@ -128,6 +128,16 @@ app.post("/relay/send", async (c) => {
   });
   const cfResponseText = await cfResponse.text();
   const responseStatus = cfResponse.ok ? 200 : 502;
+  console.log(
+    JSON.stringify({
+      event: "relay_send_raw_result",
+      ok: cfResponse.ok,
+      recipient_count: recipients.length,
+      raw_mime_size_bytes: rawMimeBytes.byteLength,
+      stripped_mime_size_bytes: new TextEncoder().encode(mimeMessage).byteLength,
+      cf_status: cfResponse.status,
+    }),
+  );
 
   return c.json(
     {
