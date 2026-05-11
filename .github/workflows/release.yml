@@ -20,31 +20,27 @@ jobs:
         id: release
         with:
           release-type: simple
-          # Unified semver across all three components.
-          # MS6: tune release-please config when components are real.
+          # Unified semver across relay, Worker, and UI.
 
-  # MS6: enable these jobs once each component builds reliably.
-  # docker-push-relay:
-  #   needs: release-please
-  #   if: needs.release-please.outputs.released == 'true'
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: docker/setup-qemu-action@v3
-  #     - uses: docker/setup-buildx-action@v3
-  #     - uses: docker/login-action@v3
-  #       with:
-  #         registry: ghcr.io
-  #         username: ${{ github.actor }}
-  #         password: ${{ secrets.GITHUB_TOKEN }}
-  #     - run: |
-  #         docker buildx build \
-  #           --platform linux/amd64,linux/arm64 \
-  #           -f relay/Dockerfile \
-  #           -t ghcr.io/${{ github.repository }}/relay:${{ needs.release-please.outputs.tag }} \
-  #           -t ghcr.io/${{ github.repository }}/relay:latest \
-  #           --push \
-  #           relay/
+  docker-push-relay:
+    needs: release-please
+    if: needs.release-please.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: docker buildx bake and push
+        working-directory: relay
+        env:
+          REGISTRY_IMAGE: ghcr.io/${{ github.repository }}/relay
+          VERSION: ${{ needs.release-please.outputs.tag }}
+        run: docker buildx bake --push --set relay.tags="$REGISTRY_IMAGE:$VERSION,$REGISTRY_IMAGE:latest"
 
   # deploy-worker:
   #   needs: release-please

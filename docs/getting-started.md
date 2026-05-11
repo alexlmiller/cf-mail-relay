@@ -1,73 +1,159 @@
 # Getting Started
 
-> **Status**: pre-MVP. The setup wizard described here lands in MS6. Until then, follow `IMPLEMENTATION_PLAN.md` directly.
+This walkthrough deploys the Worker, Pages UI, D1/KV state, Cloudflare Access,
+and the SMTP relay.
 
 ## Prerequisites
 
-- A Cloudflare account on the **Workers Paid** plan.
-- DNS managed on Cloudflare for each sending domain.
-- A Docker-capable host that allows inbound TCP `587`.
-- `pnpm`, `wrangler`, and `docker` installed locally.
+- Cloudflare Workers Paid plan.
+- DNS for each sending domain hosted on Cloudflare.
+- Cloudflare Email Sending enabled for each sending domain.
+- A Docker host reachable on TCP `587`.
+- Local `pnpm`, `wrangler`, `docker`, and `gh`.
 
-## Adopter flow (MS6 target)
+## 1. Clone and Install
 
 ```sh
-# 1. Use this template -> clone.
 gh repo create my-mail-relay --template alexlmiller/cf-mail-relay --private
 cd my-mail-relay
 pnpm install
-
-# 2. Run the setup wizard. It will:
-#    - Verify Workers Paid, Email Sending status, D1 production backend.
-#    - Prompt for one or more sending domains (REPEATABLE step).
-#    - Create D1 database, KV namespace, run migrations.
-#    - Set Worker secrets (HMAC, peppers, CF API token, bootstrap admin).
-#    - Deploy Worker + Pages.
-#    - Print the DNS records each domain needs.
-pnpm setup
-
-# 3. Add the DNS records per docs/dns.md (per domain) and wait for verification.
-
-# 4. Bring up the relay on your host.
-docker compose -f infra/docker/relay.compose.yml up -d
-
-# 5. Health checks.
-pnpm doctor:local
-pnpm doctor:delivery --domain example.com
-
-# 6. Configure Gmail "Send mail as" (see docs/gmail-send-mail-as.md).
+wrangler login
 ```
 
-Until the MS6 setup wizard exists, configure the Cloudflare Access application
-for the admin UI with [`cloudflare-access.md`](./cloudflare-access.md).
+## 2. Run Setup Preflight
 
-## Adding multiple sending domains
+Start with a dry run:
 
-Multi-domain is first-class — one Worker handles many domains in the same Cloudflare account. There are three ways to add domains:
+```sh
+pnpm run setup --account-id <cloudflare-account-id> --domain example.com --dry-run
+```
 
-1. **During `pnpm setup`**: the "Add domain" step is repeatable. Add as many as you want at install time.
-2. **In the admin UI later**: Domains → Add domain. The UI shows the DNS records you need to publish and tracks verification status per domain.
-3. **From the CLI**: `wrangler d1 execute cf-mail-relay --command "INSERT INTO domains ..."` (escape hatch; not the recommended path).
+Use `pnpm run setup`, not bare `pnpm setup`; pnpm reserves the bare command for
+its own shell setup helper.
 
-Each domain gets its own:
-- `cf-bounce.<domain>` records (see `docs/dns.md`).
-- DKIM CNAME/TXT.
-- DMARC TXT (start at `p=none`).
-- Verification status tracked in `domains.status`.
+Then run a live preflight once you know your D1 and KV IDs:
 
-The relay hostname (`smtp.<some-domain>`) is **shared** across all domains. Pick one. Gmail's "Send mail as" doesn't care that the submission server's hostname differs from the address's domain.
+```sh
+CLOUDFLARE_API_TOKEN=... pnpm run setup \
+  --account-id <cloudflare-account-id> \
+  --domain example.com \
+  --d1-database-id <d1-id> \
+  --kv-namespace-id <kv-id> \
+  --pages-url https://cf-mail-relay-ui.pages.dev \
+  --worker-url https://cf-mail-relay-worker.<subdomain>.workers.dev
+```
 
-## Adding multiple admin users
+The wizard checks:
 
-After your bootstrap admin exists, sign in to the UI via Cloudflare Access and add more users from the Users page. Each user signs in with their own Access identity; the `users.access_subject` column maps Access `sub` claims to local user rows.
+- API token validity.
+- Account access and Workers Paid signal.
+- Email Sending domain status and DNS-record visibility.
+- D1 database access.
+- KV namespace access.
+- Cloudflare Access app visibility.
+- Required Worker secret names.
 
-## Where to look for more
+Some Cloudflare APIs do not expose sandbox status consistently. Treat the
+wizard's sandbox warning as a prompt to run live delivery checks before you
+promise delivery to arbitrary recipients.
 
-- `docs/dns.md` — DNS records, single and multi-domain.
-- `docs/cloudflare-access.md` — Access app setup for the admin UI.
-- `docs/gmail-send-mail-as.md` — Gmail-side configuration.
-- `docs/http-api.md` — using the HTTP `/send` API from applications.
-- `docs/operations.md` — rotation, backup/restore, doctor scripts.
-- `docs/security.md` — auth model, HMAC contract, threat model summary.
-- `docs/cloudflare-email-sending.md` — Workers Paid, sandbox, limits, MIME quirks.
-- `IMPLEMENTATION_PLAN.md` — the canonical build spec.
+## 3. Create Cloudflare Resources
+
+```sh
+pnpm --dir worker exec wrangler d1 create cf-mail-relay
+pnpm --dir worker exec wrangler kv namespace create cf-mail-relay-hot
+cp worker/wrangler.toml.example worker/wrangler.toml
+```
+
+Paste the D1/KV IDs into `worker/wrangler.toml`, then run:
+
+```sh
+pnpm --dir worker exec wrangler d1 migrations apply cf-mail-relay --remote
+pnpm --dir worker exec wrangler secret put CF_API_TOKEN
+pnpm --dir worker exec wrangler secret put CREDENTIAL_PEPPER
+pnpm --dir worker exec wrangler secret put METADATA_PEPPER
+pnpm --dir worker exec wrangler secret put RELAY_HMAC_SECRET_CURRENT
+pnpm --dir worker exec wrangler secret put BOOTSTRAP_SETUP_TOKEN
+```
+
+Create the Access app:
+
+```sh
+pnpm access:setup \
+  --account-id <cloudflare-account-id> \
+  --allow-email <admin@example.com> \
+  --pages-url https://cf-mail-relay-ui.pages.dev \
+  --worker-url https://cf-mail-relay-worker.<subdomain>.workers.dev \
+  --allow-platform-hostnames \
+  --apply-config worker/wrangler.toml
+```
+
+## 4. Deploy Worker and Pages
+
+```sh
+pnpm --dir worker exec wrangler deploy
+PUBLIC_CF_MAIL_RELAY_API_BASE=https://cf-mail-relay-worker.<subdomain>.workers.dev pnpm --filter @cf-mail-relay/ui build
+pnpm --dir worker exec wrangler pages deploy ../ui/dist --project-name cf-mail-relay-ui --branch main
+```
+
+Bootstrap the first admin user with `/bootstrap/admin`, then remove or rotate
+`BOOTSTRAP_SETUP_TOKEN`.
+
+## 5. Configure DNS
+
+For each sending domain, publish the Cloudflare Email Sending records:
+
+- `cf-bounce.<domain>` MX.
+- `cf-bounce.<domain>` SPF TXT.
+- DKIM TXT/CNAME generated by Cloudflare.
+- `_dmarc.<domain>` TXT with `p=none` initially.
+
+Also publish one shared SMTP relay hostname, DNS-only:
+
+```text
+smtp.example.com. A <relay-host-ip>
+```
+
+See [dns.md](./dns.md) for single-domain and two-domain examples.
+
+## 6. Run the Relay
+
+```sh
+docker compose -f infra/docker/relay.compose.yml up -d
+```
+
+The relay needs mounted TLS files, Worker URL, HMAC key ID/secret, and a DNS-only
+hostname. See [operations.md](./operations.md) for rotation and rate-limit
+settings.
+
+## 7. Verify
+
+```sh
+pnpm doctor:local -- --domain example.com --worker-url https://<worker-host>
+pnpm doctor:delivery -- --domain example.com
+```
+
+`doctor:delivery` prints a subject token. Send a message through Gmail "Send
+mail as", paste the received headers, and confirm DKIM/DMARC pass.
+
+## Adding Multiple Sending Domains
+
+Repeat `--domain` during setup:
+
+```sh
+pnpm run setup --account-id <account-id> --domain example.com --domain example.org
+```
+
+One Worker handles both domains as long as they are in the same Cloudflare
+account. Each domain still needs its own Email Sending DNS records and its own
+allowed sender rows in the admin UI.
+
+The SMTP relay hostname is shared. For example, both `alex@example.com` and
+`alex@example.org` can use `smtp.example.com:587` in Gmail.
+
+## Next Steps
+
+- [gmail-send-mail-as.md](./gmail-send-mail-as.md) for Gmail setup.
+- [http-api.md](./http-api.md) for automation clients.
+- [security.md](./security.md) for auth and secret handling.
+- [operations.md](./operations.md) for rotation, backups, and doctors.

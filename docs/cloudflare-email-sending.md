@@ -1,10 +1,14 @@
 # Cloudflare Email Sending — what adopters need to know
 
-Cloudflare Email Sending is the upstream we call from the Worker. It's currently in **public beta**; this doc captures what's known and what to watch for.
+Cloudflare Email Sending is the upstream we call from the Worker. Cloudflare's
+service limits, pricing, and API behavior can change, so verify the current
+Cloudflare documentation during each production setup.
 
 ## Plan requirement
 
-Email Sending requires **Workers Paid**. Cloudflare's free Workers plan does not include it. Pricing as of writing: includes 3,000 outbound emails/month, then per-1,000-messages charges. Verify against Cloudflare's [pricing page](https://developers.cloudflare.com/email-service/platform/pricing/).
+Email Sending requires **Workers Paid**. Cloudflare's free Workers plan does not
+include it. Verify current included volume and overage pricing against
+Cloudflare's [pricing page](https://developers.cloudflare.com/email-service/platform/pricing/).
 
 ## DNS requirement
 
@@ -43,7 +47,7 @@ Documented [here](https://developers.cloudflare.com/api/resources/email_sending/
 }
 ```
 
-Response (approximate; verify in MS0):
+Response shape used by the Worker:
 
 ```json
 {
@@ -81,11 +85,9 @@ For attachments: Gmail base64-encodes which expands by ~33%, plus MIME boundary 
 - Pricing may change.
 - Send-and-forget. There is no inbound delivery confirmation API in MVP; `cf_delivered_json` in `send_events` records Cloudflare's accept-time response, not recipient-mailbox confirmation.
 
-## MIME quirks (MS0 spike will populate)
+## MIME quirks from MS0
 
 Use [`docs/ms0-spike.md`](./ms0-spike.md) for the live spike runbook and evidence checklist.
-
-> Populated by MS0 spike with concrete observations.
 
 | Scenario | Result | Notes |
 |---|---|---|
@@ -94,8 +96,9 @@ Use [`docs/ms0-spike.md`](./ms0-spike.md) for the live spike runbook and evidenc
 | PDF attachment | delivered below encoded-size cap; rejected above it | 2026-05-11 MS0: a 4,050,630 byte PDF became a 5,544,099 byte stripped Gmail MIME and `send_raw` returned `email.sending.error.email.too_big`; a 3,050,638 byte PDF became a 4,175,676 byte stripped Gmail MIME and `send_raw` accepted it |
 | Non-ASCII subject | accepted after Gmail RFC 2047 encoding | 2026-05-11 MS0: Gmail encoded `MS0 café résumé - 日本語` as a UTF-8/base64 encoded-word subject; stripped MIME was 800 bytes and `send_raw` accepted it |
 | 8-bit body content | valid UTF-8 accepted by `send_raw`; invalid non-UTF-8 rejected by spike | 2026-05-11 MS0: synthetic `Content-Transfer-Encoding: 8bit` with UTF-8 body was accepted by `send_raw`; synthetic ISO-8859-1/invalid UTF-8 bytes returned spike error `mime_not_utf8_json_safe`. MVP relay still rejects 8BITMIME at DATA for conservative JSON safety |
-| Long subject lines (>78 chars) | TBD | |
-| iCal/multipart/alternative | TBD | |
+
+Long RFC 2047-folded subjects and calendar invites should be validated before
+documenting support claims for them. They are not special-cased by the relay.
 
 ## References
 

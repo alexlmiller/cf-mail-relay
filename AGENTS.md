@@ -28,7 +28,7 @@ The plan resolves these design questions definitively:
 | MS3 | Admin UI on Pages with CF Access | Complete |
 | MS4 | HTTP `/send` API (raw MIME only — structured JSON is roadmap) | Complete |
 | MS5 | Hardening (rate limits, doctor scripts, threat model, partial-recipient policy) | Complete |
-| MS6 | Distribution polish (setup wizard, releases, full docs) | Not started |
+| MS6 | Distribution polish (setup wizard, releases, full docs) | Complete |
 
 Each milestone has explicit deliverables and exit criteria in the plan. Don't skip ahead.
 
