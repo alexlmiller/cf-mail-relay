@@ -1,0 +1,33 @@
+name: CI — worker
+
+on:
+  push:
+    paths:
+      - "worker/**"
+      - "shared/**"
+      - ".github/workflows/ci-worker.yml"
+      - "pnpm-lock.yaml"
+  pull_request:
+    paths:
+      - "worker/**"
+      - "shared/**"
+      - ".github/workflows/ci-worker.yml"
+      - "pnpm-lock.yaml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter worker typecheck
+      - run: pnpm --filter worker test
+      - name: wrangler deploy --dry-run
+        run: pnpm --filter worker exec wrangler deploy --dry-run --outdir=.wrangler/build

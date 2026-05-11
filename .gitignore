@@ -1,0 +1,60 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+*.log
+.turbo/
+
+# TypeScript build
+dist/
+build/
+*.tsbuildinfo
+
+# Astro
+.astro/
+ui/dist/
+
+# Wrangler / Cloudflare
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+wrangler.toml
+!wrangler.toml.example
+
+# Go
+relay/relay
+relay/bin/
+*.test
+*.out
+coverage.txt
+
+# Secrets / env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Test artifacts
+.coverage/
+test-results/
+
+# Agent working artifacts (per AGENTS.md)
+.ai-runs/
+.claude/
+.codex/
+
+# Worktrees
+.worktrees/
+
+# Local doctor outputs
+infra/setup/*.log

@@ -1,0 +1,30 @@
+# Reference compose for the relay. Adopters typically run this on a public VPS
+# (Hetzner, etc.) with inbound 587/tcp open and DNS-only smtp.<domain> A/AAAA
+# pointing at the host.
+#
+# This file mounts cert and key files from ./tls/. Pair with any external ACME
+# tool: lego, certbot, Caddy, or Traefik. See infra/docker/relay-with-lego.compose.yml
+# for an integrated example.
+
+services:
+  relay:
+    image: ghcr.io/alexlmiller/cf-mail-relay/relay:latest
+    container_name: cf-mail-relay
+    restart: unless-stopped
+    ports:
+      - "587:587"
+    env_file:
+      - .env                                    # secrets — gitignored
+    environment:
+      RELAY_LISTEN_ADDR: ":587"
+      RELAY_TLS_CERT_FILE: /tls/fullchain.pem
+      RELAY_TLS_KEY_FILE: /tls/privkey.pem
+      RELAY_MAX_BYTES: "4500000"
+      RELAY_MAX_RECIPIENTS: "50"
+    volumes:
+      - ./tls:/tls:ro
+    healthcheck:
+      test: ["CMD", "/relay", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,4 @@
+packages:
+  - worker
+  - ui
+  - shared

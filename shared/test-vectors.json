@@ -1,0 +1,6 @@
+{
+  "$comment": "Canonical HMAC test vectors per IMPLEMENTATION_PLAN.md § HMAC contract. MS1 populates real values after the contract is implemented and exercised in both the relay (Go) and Worker (TS) sides. Both sides must agree on every vector here.",
+  "version": 1,
+  "algorithm": "HMAC-SHA256",
+  "vectors": []
+}

@@ -1,0 +1,63 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: simple
+          # Unified semver across all three components.
+          # MS6: tune release-please config when components are real.
+
+  # MS6: enable these jobs once each component builds reliably.
+  # docker-push-relay:
+  #   needs: release-please
+  #   if: needs.release-please.outputs.released == 'true'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: docker/setup-qemu-action@v3
+  #     - uses: docker/setup-buildx-action@v3
+  #     - uses: docker/login-action@v3
+  #       with:
+  #         registry: ghcr.io
+  #         username: ${{ github.actor }}
+  #         password: ${{ secrets.GITHUB_TOKEN }}
+  #     - run: |
+  #         docker buildx build \
+  #           --platform linux/amd64,linux/arm64 \
+  #           -f relay/Dockerfile \
+  #           -t ghcr.io/${{ github.repository }}/relay:${{ needs.release-please.outputs.tag }} \
+  #           -t ghcr.io/${{ github.repository }}/relay:latest \
+  #           --push \
+  #           relay/
+
+  # deploy-worker:
+  #   needs: release-please
+  #   if: needs.release-please.outputs.released == 'true'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: pnpm/action-setup@v4
+  #       with: { version: 9 }
+  #     - uses: actions/setup-node@v4
+  #       with: { node-version: "20", cache: "pnpm" }
+  #     - run: pnpm install --frozen-lockfile
+  #     - run: pnpm --filter worker exec wrangler deploy
+  #       env:
+  #         CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  #         CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

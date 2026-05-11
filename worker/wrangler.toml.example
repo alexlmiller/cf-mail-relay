@@ -1,0 +1,40 @@
+# Copy to wrangler.toml and fill in the IDs that `pnpm setup` prints
+# (or that you get from `wrangler d1 create` / `wrangler kv namespace create`).
+#
+# wrangler.toml is gitignored.
+
+name = "cf-mail-relay-worker"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Worker schema version that the code expects to find in D1's settings table.
+# Mismatch -> Worker boots with /healthz returning 500 + schema_version_mismatch.
+[vars]
+REQUIRED_D1_SCHEMA_VERSION = "1"
+ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
+ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
+CF_ACCOUNT_ID = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
+
+[[d1_databases]]
+binding = "D1_MAIN"
+database_name = "cf-mail-relay"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "KV_HOT"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Optional: custom domain for the Worker. The UI calls this hostname.
+# routes = [
+#   { pattern = "mail-api.example.com", custom_domain = true },
+# ]
+
+# Secrets are set via `wrangler secret put <NAME>`, not in this file:
+#   CF_API_TOKEN
+#   CREDENTIAL_PEPPER
+#   METADATA_PEPPER
+#   RELAY_HMAC_SECRET_CURRENT
+#   RELAY_HMAC_SECRET_PREVIOUS  (optional, during rotation)
+#   BOOTSTRAP_SETUP_TOKEN       (one-time)

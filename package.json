@@ -1,0 +1,24 @@
+{
+  "name": "cf-mail-relay",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Turnkey SMTP-to-Cloudflare-Email-Sending bridge. See IMPLEMENTATION_PLAN.md.",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' build",
+    "typecheck": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' typecheck",
+    "test": "pnpm -r --filter='./worker' --filter='./shared' test",
+    "setup": "echo 'TODO MS6: implement setup wizard in infra/wrangler/setup.ts' && exit 1",
+    "doctor:local": "bash infra/setup/doctor-local.sh",
+    "doctor:delivery": "bash infra/setup/doctor-delivery.sh"
+  },
+  "workspaces": [
+    "worker",
+    "ui",
+    "shared"
+  ]
+}
