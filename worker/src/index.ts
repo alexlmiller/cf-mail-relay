@@ -68,14 +68,14 @@ export interface Env {
 }
 
 const app = new Hono<{ Bindings: Env }>();
-const workerVersion = "0.1.0-ms3";
+const workerVersion = "0.1.0-ms4";
 const maxRelayBodyBytes = 6 * 1024 * 1024;
 
 app.get("/healthz", (c) => {
   return c.json({
     ok: true,
     version: workerVersion,
-    git_sha: "ms3",
+    git_sha: "ms4",
   });
 });
 
