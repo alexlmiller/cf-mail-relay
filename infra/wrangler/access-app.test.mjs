@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
 import { buildBodies, defaults, parseArgs, run } from "./access-app.mjs";
 
 describe("access-app helper", () => {
   it("parses repeatable admin email flags", () => {
     assert.deepEqual(
-      parseArgs(["--account-id", "acc", "--allow-email", "one@example.com,two@example.com", "--allow-email", "three@example.com"]),
+      parseArgs(["--account-id", "acc", "--allow-email", "one@example.com,two@example.com", "--allow-email", "three@example.com", "--apply-config", "worker.toml"]),
       {
+        applyConfig: "worker.toml",
         accountId: "acc",
         email: ["one@example.com", "two@example.com", "three@example.com"],
       },
@@ -71,7 +75,50 @@ describe("access-app helper", () => {
     assert.equal(result.access_audience, "aud_123");
     assert.deepEqual(calls.map((call) => call.init.method), ["GET", "GET", "POST", "GET", "POST", "GET"]);
   });
+
+  it("can apply returned Access values to wrangler config", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "cf-mail-relay-access-app-"));
+    const config = path.join(dir, "wrangler.toml");
+    await writeFile(
+      config,
+      `[vars]
+ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
+ACCESS_AUDIENCE = "MS1_NOT_USED"
+ADMIN_CORS_ORIGIN = "https://old.example.com"
+`,
+    );
+
+    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--apply-config", config], { CLOUDFLARE_API_TOKEN: "token" }, accessFetch);
+    const written = await readFile(config, "utf8");
+
+    assert.equal(result.applied_config.changed, true);
+    assert.match(written, /ACCESS_TEAM_DOMAIN = "team\.cloudflareaccess\.com"/);
+    assert.match(written, /ACCESS_AUDIENCE = "aud_123"/);
+    assert.match(written, /ADMIN_CORS_ORIGIN = "https:\/\/cf-mail-relay-ui\.pages\.dev"/);
+  });
 });
+
+async function accessFetch(url, init) {
+  if (url.endsWith("/access/organizations")) {
+    return json({ result: { auth_domain: "team.cloudflareaccess.com" } });
+  }
+  if (url.endsWith("/access/apps?name=cf-mail-relay-admin")) {
+    return json({ result: [] });
+  }
+  if (init.method === "POST" && url.endsWith("/access/apps")) {
+    return json({ result: { id: "app_1" } });
+  }
+  if (url.endsWith("/access/apps/app_1/policies") && init.method === "GET") {
+    return json({ result: [] });
+  }
+  if (url.endsWith("/access/apps/app_1/policies") && init.method === "POST") {
+    return json({ result: { id: "policy_1" } });
+  }
+  if (url.endsWith("/access/apps/app_1")) {
+    return json({ result: { id: "app_1", aud: "aud_123" } });
+  }
+  throw new Error(`unexpected request ${init.method} ${url}`);
+}
 
 function json(payload) {
   return new Response(JSON.stringify({ success: true, ...payload }), {

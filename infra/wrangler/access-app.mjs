@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
+import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { updateWranglerVars } from "./access-apply.mjs";
 
 export const defaults = {
   name: "cf-mail-relay-admin",
@@ -11,6 +13,7 @@ export const defaults = {
   sessionDuration: "24h",
   email: [],
   dryRun: false,
+  applyConfig: "",
 };
 
 export function buildBodies(config) {
@@ -70,6 +73,9 @@ export function parseArgs(args, fail = throwUsageError) {
         break;
       case "--dry-run":
         parsed.dryRun = true;
+        break;
+      case "--apply-config":
+        parsed.applyConfig = takeValue(args, ++index, arg, fail);
         break;
       case "--help":
         usage(0);
@@ -132,13 +138,34 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
     fail("Access app response did not include an aud value");
   }
 
-  return {
+  const result = {
     app_id: appId,
     app_name: config.name,
     access_team_domain: authDomain,
     access_audience: aud,
     pages_url: config.pagesUrl,
     worker_admin_api: `${config.workerUrl}/admin/api/*`,
+  };
+  if (config.applyConfig.length > 0) {
+    result.applied_config = await applyAccessConfig(config.applyConfig, {
+      ACCESS_TEAM_DOMAIN: authDomain,
+      ACCESS_AUDIENCE: aud,
+      ADMIN_CORS_ORIGIN: config.pagesUrl,
+    });
+  }
+  return result;
+}
+
+async function applyAccessConfig(path, vars) {
+  const before = await readFile(path, "utf8");
+  const after = updateWranglerVars(before, vars);
+  if (after !== before) {
+    await writeFile(path, after);
+  }
+  return {
+    config: path,
+    changed: after !== before,
+    vars,
   };
 }
 
@@ -191,6 +218,7 @@ Options:
   --worker-url <url>          Worker API URL (default: https://cf-mail-relay-worker.milfred.workers.dev)
   --session-duration <value>  Access session duration (default: 24h)
   --allow-email <email,csv>   Email address allowed by the app policy; repeatable
+  --apply-config <path>       Apply returned Access values to a Worker wrangler.toml
   --dry-run                   Print request bodies without calling Cloudflare
 `);
   process.exit(code);

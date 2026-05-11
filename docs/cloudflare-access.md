@@ -50,10 +50,12 @@ Save the output and apply those values to `worker/wrangler.toml`:
 ```sh
 CLOUDFLARE_ACCOUNT_ID=fa774a1ed55e467890d48394f4409bdd \
 CLOUDFLARE_API_TOKEN=... \
-pnpm access:setup --allow-email alex@alexmiller.net > .ai-runs/access-app.json
-
-pnpm access:apply --json .ai-runs/access-app.json
+pnpm access:setup --allow-email alex@alexmiller.net \
+  --apply-config worker/wrangler.toml
 ```
+
+If you prefer to keep the setup and local config write as separate steps, save
+the setup output and run `pnpm access:apply --json .ai-runs/access-app.json`.
 
 Then deploy the Worker:
 
