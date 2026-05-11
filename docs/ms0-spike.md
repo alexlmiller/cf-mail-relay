@@ -109,6 +109,12 @@ Send these messages from Gmail and preserve the captured `.eml` files:
 
 Place sanitized captures under `examples/gmail-mime-fixture/` only if they contain no private content. Otherwise keep them in `.ai-runs/ms0-captures/`, which is gitignored.
 
+Attachment sizing is measured after Gmail's MIME assembly and base64 encoding,
+not by the original file size. On 2026-05-11, a 4,050,630 byte PDF expanded to a
+5,544,099 byte stripped Gmail MIME and Cloudflare returned
+`email.sending.error.email.too_big`. Use a smaller follow-up PDF, around 3 MiB,
+to prove attachment delivery below the upstream cap.
+
 Gmail SMTP submission adds transport trace headers such as `Received`,
 `X-Received`, and `X-Gm-*` before the user-authored MIME headers. On
 2026-05-11, Cloudflare Email Sending rejected a replay of the full captured SMTP
