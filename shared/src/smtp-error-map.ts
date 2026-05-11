@@ -1,8 +1,6 @@
 // Canonical mapping from internal error categories to SMTP enhanced status codes.
 // Used by worker/ to map CF Email Sending responses; mirrored by relay/ for
 // fallback paths when the Worker is unreachable.
-//
-// Per IMPLEMENTATION_PLAN.md "Partial-recipient policy" + relay error mapping.
 
 export type ErrorCategory =
   | "rejected_auth"

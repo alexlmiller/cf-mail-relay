@@ -455,7 +455,7 @@ export async function runUserWizard(init: WizardInit) {
             value: state.user?.email && state.domain ? `${(state.user.email.split("@")[0] ?? "")}@${state.domain.domain}` : "",
           }),
         ),
-        h("div", { class: "hint" }, "Use the full address you'll set in Gmail's \"Send mail as\". Or use *@domain for any address on the domain."),
+        h("div", { class: "hint" }, "Use the full sender address for this SMTP identity. Or use *@domain for any address on the domain."),
       ),
     );
   }
@@ -470,20 +470,20 @@ export async function runUserWizard(init: WizardInit) {
         "div",
         { class: "banner" },
         icon("info", 14),
-        "Generates the SMTP secret your user pastes into Gmail. We show it once.",
+        "Generates the SMTP secret for a mail client or application. We show it once.",
       ),
       h(
         "div",
         { class: "field" },
         h("label", null, "Label"),
-        h("div", { class: "input" }, h("input", { type: "text", name: "name", placeholder: "Gmail · laptop", value: `Gmail · ${suggested}`, required: true })),
+        h("div", { class: "input" }, h("input", { type: "text", name: "name", placeholder: "Laptop mail client", value: `SMTP · ${suggested}`, required: true })),
       ),
       h(
         "div",
         { class: "field" },
         h("label", null, "SMTP username"),
         h("div", { class: "input" }, h("input", { type: "text", name: "username", placeholder: suggested, value: suggested, required: true })),
-        h("div", { class: "hint" }, "This is the username you'll paste into Gmail. Choose something memorable — usernames must be unique."),
+        h("div", { class: "hint" }, "Use this as the SMTP username. Choose something memorable — usernames must be unique."),
       ),
     );
   }
@@ -521,7 +521,7 @@ export async function runUserWizard(init: WizardInit) {
           { label: "SMTP host", value: "your relay's hostname, port 587, STARTTLS" },
         ],
         secret: credential.secret,
-        warning: "Paste this into Gmail's \"Send mail as\" form now. It will not be shown again.",
+        warning: "Save this SMTP password now. It will not be shown again.",
       }),
       h(
         "div",
@@ -563,7 +563,7 @@ export async function runUserWizard(init: WizardInit) {
       case 2:
         return "Grant permission for this user to send as a specific address on the domain.";
       case 3:
-        return "Mint the SMTP password. The username + secret get pasted into Gmail's \"Send mail as\" form.";
+        return "Mint the SMTP password. Use the username + secret in your SMTP client or application.";
       case 4:
         return "All set — copy the secret now, it cannot be retrieved later.";
       default:

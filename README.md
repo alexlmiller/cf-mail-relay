@@ -1,93 +1,229 @@
 # Cloudflare Mail Relay
 
-Self-hosted SMTP-to-Cloudflare-Email-Sending bridge for Gmail "Send mail as"
-and raw-MIME HTTP sends.
+SMTP submission relay for custom-domain sending through Cloudflare Email
+Sending. Use it with Gmail's **Send mail as**, internal applications, scripts,
+or any SMTP-capable client that needs authenticated outbound mail.
 
-## Architecture
+The project has three pieces:
+
+- A Go SMTP relay you run on a public Docker host.
+- A Cloudflare Worker that enforces policy and calls Email Sending `send_raw`.
+- A Cloudflare Pages admin UI protected by Cloudflare Access.
 
 ```mermaid
 flowchart LR
-  Gmail[Gmail Send mail as] -->|SMTP 587 STARTTLS| Relay[Go SMTP relay]
+  SMTP[SMTP clients] -->|SMTP 587 STARTTLS| Relay[Go SMTP relay]
   Apps[HTTP clients] -->|POST /send raw MIME| Worker[Cloudflare Worker]
   Relay -->|HMAC-signed /relay/send| Worker
   Admin[Admin browser] -->|Cloudflare Access| Pages[Pages admin UI]
   Pages -->|/admin/api/*| Worker
   Worker --> D1[(D1 source of truth)]
-  Worker --> KV[(KV hot cache)]
-  Worker --> CFEmail[Cloudflare Email Sending send_raw]
+  Worker --> KV[(KV cache)]
+  Worker --> Email[Cloudflare Email Sending]
 ```
 
-## Components
+## What It Does
 
-1. **Docker SMTP relay**: accepts authenticated SMTP submission on `587`
-   with STARTTLS and forwards raw RFC 5322 MIME to the Worker.
-2. **Cloudflare Worker**: verifies credentials, sender policy, idempotency,
-   rate limits, and calls Cloudflare Email Sending `send_raw`.
-3. **Cloudflare Pages admin UI**: static admin surface protected by
-   Cloudflare Access.
+- SMTP submission on port `587` for mail clients and applications.
+- Raw MIME HTTP API for applications.
+- Admin UI for domains, senders, users, SMTP credentials, API keys, and events.
+- Multi-domain sending from one Cloudflare account.
+- Metadata-only audit log, idempotency, quotas, and basic operational doctors.
 
-## Status
+## What It Does Not Do
 
-Functional MVP milestones MS0 through MS6 are implemented:
+- No inbound email handling.
+- No templates, mailing lists, scheduling, or message body storage.
+- No built-in password login for the admin UI; Cloudflare Access is the auth
+  boundary.
+- No structured JSON email composer. The HTTP API accepts raw MIME only.
 
-- Gmail-originated MIME was proven against Cloudflare Email Sending with
-  DKIM/DMARC pass.
-- Gmail SMTP relay path works.
-- D1/KV-backed state, audit log, idempotency, admin UI, HTTP `/send`, rate
-  limits, doctor scripts, and distribution setup are in place.
-- Remaining work after v0.1 is normal hardening from real adopter feedback.
+## Requirements
 
-## Prerequisites
+- Cloudflare account with Workers Paid.
+- Each sending domain must use Cloudflare DNS and have Cloudflare Email Sending
+  enabled and verified.
+- A Docker host reachable on TCP `587` for the SMTP relay.
+- Local `pnpm`, `wrangler`, and `docker`.
 
-- Cloudflare account on **Workers Paid**.
-- Sending domain DNS on Cloudflare.
-- Cloudflare Email Sending enabled and verified for each sending domain.
-- Docker-capable host with inbound TCP `587`.
-- Local `pnpm`, `wrangler`, `docker`, and `gh` for setup/release workflows.
+## Setup
 
-## Quickstart
+Install dependencies:
 
 ```sh
 pnpm install
+wrangler login
+```
 
-# Plan and preflight setup. Repeat --domain for each sending domain.
+Run the setup preflight. Repeat `--domain` for every sending domain:
+
+```sh
 pnpm run setup --account-id <cloudflare-account-id> --domain example.com --dry-run
+```
 
-# After creating/binding D1, KV, Access, secrets, and DNS:
+Use `pnpm run setup`, not bare `pnpm setup`; pnpm reserves the bare command for
+its own shell setup helper.
+
+Create and bind the Cloudflare resources:
+
+```sh
+pnpm --dir worker exec wrangler d1 create cf-mail-relay
+pnpm --dir worker exec wrangler kv namespace create cf-mail-relay-hot
+cp worker/wrangler.toml.example worker/wrangler.toml
+```
+
+Paste the D1/KV IDs into `worker/wrangler.toml`, then apply migrations and set
+secrets:
+
+```sh
 pnpm --dir worker exec wrangler d1 migrations apply cf-mail-relay --remote
+pnpm --dir worker exec wrangler secret put CF_API_TOKEN
+pnpm --dir worker exec wrangler secret put CREDENTIAL_PEPPER
+pnpm --dir worker exec wrangler secret put METADATA_PEPPER
+pnpm --dir worker exec wrangler secret put RELAY_HMAC_SECRET_CURRENT
+pnpm --dir worker exec wrangler secret put BOOTSTRAP_SETUP_TOKEN
+```
+
+Create the Cloudflare Access app for the admin UI:
+
+```sh
+pnpm access:setup \
+  --account-id <cloudflare-account-id> \
+  --allow-email <admin@example.com> \
+  --pages-url https://cf-mail-relay-ui.pages.dev \
+  --worker-url https://cf-mail-relay-worker.<subdomain>.workers.dev \
+  --allow-platform-hostnames \
+  --apply-config worker/wrangler.toml
+```
+
+Deploy Worker and Pages:
+
+```sh
 pnpm --dir worker exec wrangler deploy
-PUBLIC_CF_MAIL_RELAY_API_BASE=https://<worker-host> pnpm --filter @cf-mail-relay/ui build
+PUBLIC_CF_MAIL_RELAY_API_BASE=https://cf-mail-relay-worker.<subdomain>.workers.dev pnpm --filter @cf-mail-relay/ui build
 pnpm --dir worker exec wrangler pages deploy ../ui/dist --project-name cf-mail-relay-ui --branch main
+```
 
-# Relay host:
+Bootstrap the first admin user with `POST /bootstrap/admin`, then rotate or
+remove `BOOTSTRAP_SETUP_TOKEN`.
+
+## DNS
+
+For each sending domain, publish the records Cloudflare Email Sending gives you:
+
+- `cf-bounce.<domain>` MX.
+- `cf-bounce.<domain>` SPF TXT.
+- DKIM TXT/CNAME.
+- `_dmarc.<domain>` TXT. Start with `v=DMARC1; p=none`.
+
+Create one DNS-only SMTP relay record:
+
+```text
+smtp.example.com. A <relay-host-ip>
+```
+
+Do not orange-cloud the SMTP hostname. Cloudflare's HTTP proxy does not proxy
+SMTP.
+
+Email Sending records are for outbound mail and usually live under
+`cf-bounce.<domain>`. Cloudflare Email Routing records are for inbound mail and
+live at the apex. Keep those concepts separate.
+
+## Relay
+
+Run the relay on the Docker host:
+
+```sh
 docker compose -f infra/docker/relay.compose.yml up -d
+```
 
-# Verification:
+The relay needs these environment values:
+
+| Variable | Purpose |
+|---|---|
+| `RELAY_WORKER_URL` | Worker base URL |
+| `RELAY_KEY_ID` | HMAC key id sent to Worker |
+| `RELAY_HMAC_SECRET` | Shared HMAC secret matching Worker secret |
+| `RELAY_TLS_CERT_FILE` | Mounted certificate path |
+| `RELAY_TLS_KEY_FILE` | Mounted private key path |
+
+See `infra/docker/` for plain Docker, lego, Traefik, and host-certbot examples.
+
+## SMTP Clients
+
+For each sender address:
+
+1. Add or verify the domain in the admin UI.
+2. Add the exact sender address.
+3. Create an SMTP credential scoped to that sender.
+4. Configure your SMTP client with the relay hostname, port `587`, STARTTLS, the
+   SMTP username, and the generated SMTP password.
+
+For Gmail, open Settings -> Accounts and Import -> Send mail as -> Add another
+email address. Use the relay hostname, port `587`, TLS, the SMTP username, and
+the generated SMTP password, then confirm Gmail's verification email.
+
+For applications, use the same values:
+
+| SMTP setting | Value |
+|---|---|
+| Host | `smtp.<domain>` or your chosen relay hostname |
+| Port | `587` |
+| Security | STARTTLS |
+| Username | SMTP credential username |
+| Password | SMTP credential password |
+
+Multiple sender domains can use the same relay hostname. For example,
+`alex@example.com` and `ops@example.org` can both use `smtp.example.com:587`.
+
+## HTTP Send API
+
+Applications can send raw MIME directly through the Worker:
+
+```sh
+curl -fsS https://<worker-host>/send \
+  -H "Authorization: Bearer <api-key>" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: <stable-key>" \
+  --data '{"from":"alex@example.com","recipients":["to@example.net"],"raw":"<base64url-mime>"}'
+```
+
+The API key must belong to a user allowed to send as the `from` address.
+
+## Verification and Operations
+
+Run local checks:
+
+```sh
 pnpm doctor:local -- --domain example.com --worker-url https://<worker-host>
 pnpm doctor:delivery -- --domain example.com
 ```
 
-For a full walkthrough, see [docs/getting-started.md](./docs/getting-started.md).
+`doctor:local` checks DNS, Worker health, SMTP STARTTLS, and optional SMTP AUTH.
+`doctor:delivery` gives you a subject token, then asks you to paste received
+headers so it can confirm DKIM and DMARC pass.
 
-## Repository Layout
+Operational notes:
 
+- Rotate `RELAY_HMAC_SECRET` by setting `RELAY_HMAC_SECRET_PREVIOUS`, deploying a
+  new current secret, updating relay hosts, then removing previous after the
+  overlap window.
+- Rotate leaked SMTP credentials or API keys from the admin UI.
+- D1 is the source of truth. KV is cache only.
+- D1 Time Travel can restore production databases, but restore is destructive.
+- Keep attachments under about 3.25 MiB before encoding; MIME/base64 overhead can
+  push larger files over Cloudflare's 5 MiB Email Sending limit.
+
+## Development
+
+```sh
+pnpm test
+pnpm typecheck
+pnpm build
+go test ./...          # from relay/
 ```
-relay/    Go SMTP daemon, multi-arch Docker image
-worker/   Cloudflare Worker (TypeScript, Hono)
-ui/       Cloudflare Pages admin app (Astro)
-shared/   TypeScript types, zod schemas, HMAC test vectors
-infra/    Setup wizard, Docker compose examples, doctor scripts
-docs/     Architecture, deployment, security, threat model
-examples/ Sample HTTP clients and Gmail MIME fixtures
-ADR/      Architecture decision records
-```
 
-## Design Boundaries
-
-- Send-only. No inbound mail handling.
-- Raw MIME only. No templates, mailing lists, or message-body storage.
-- One Worker supports many domains in one Cloudflare account.
-- Cloudflare Access is the admin auth boundary.
+Architecture and contributor notes live in [docs/architecture.md](./docs/architecture.md).
 
 ## License
 

@@ -344,7 +344,7 @@ function firstRunChecklist(snapshot: SnapshotState): HTMLElement | null {
     {
       done: hasCredential,
       label: "Create an SMTP credential",
-      sub: "Paste this into Gmail's \"Send mail as\" — it's the password.",
+      sub: "Create the SMTP username and password for a client or application.",
       href: "#/credentials?new=1",
       cta: "Create credential",
     },

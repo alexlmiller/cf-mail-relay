@@ -61,7 +61,7 @@ function head(): HTMLElement {
       h(
         "div",
         { class: "soft", style: "margin-top: 6px; font-size: 13px; max-width: 64ch" },
-        "Each credential belongs to one user and inherits that user's allowed senders. Paste the username + secret into Gmail's \"Send mail as\" form.",
+        "Each credential belongs to one user and inherits that user's allowed senders. Use the username + secret in any SMTP client.",
       ),
     ),
     h(
@@ -175,7 +175,7 @@ function paint(root: HTMLElement, credentials: SmtpCredential[], users: User[], 
     search: (row) => `${row.name} ${row.username} ${row.user_email} ${row.id}`,
     searchPlaceholder: "Search credentials…",
     emptyTitle: "No SMTP credentials",
-    emptyHint: "Create the first credential for a user; this is the password Gmail \"Send mail as\" will store.",
+    emptyHint: "Create the first SMTP credential for a user or application.",
     emptyAction: h(
       "button",
       {
@@ -246,15 +246,15 @@ export function openNewCredential(users: User[], senders: Sender[], onCreated: (
         name: "name",
         label: "Label",
         required: true,
-        placeholder: "Gmail · laptop",
+        placeholder: "Laptop mail client",
         hint: "Just for your reference — never sent over the wire.",
       },
       {
         name: "username",
         label: "Username",
         required: true,
-        placeholder: "gmail-relay",
-        hint: "Paste this into Gmail as the SMTP username.",
+        placeholder: "smtp-relay",
+        hint: "Use this as the SMTP username.",
       },
     ],
     async (raw) => {
@@ -339,7 +339,7 @@ export function revealCredential(result: CreateSecretResult, onDone: () => void)
       { label: "Username", value: result.username ?? "", mono: true },
     ],
     secret: result.secret,
-    warning: "Paste this into Gmail's \"Send mail as\" form now. We cannot show it again.",
+    warning: "Save this SMTP password now. We cannot show it again.",
   });
   openModal({
     title: "Credential created",

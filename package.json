@@ -2,7 +2,7 @@
   "name": "cf-mail-relay",
   "version": "0.0.0",
   "private": true,
-  "description": "Turnkey SMTP-to-Cloudflare-Email-Sending bridge. See IMPLEMENTATION_PLAN.md.",
+  "description": "SMTP submission relay backed by Cloudflare Email Sending.",
   "license": "Apache-2.0",
   "packageManager": "pnpm@9.0.0",
   "engines": {
@@ -11,11 +11,7 @@
   "scripts": {
     "build": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' build",
     "typecheck": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' typecheck",
-    "test": "pnpm -r --filter='./worker' --filter='./shared' test && node --test infra/ms0/*.test.mjs infra/wrangler/*.test.mjs infra/setup/*.test.mjs",
-    "ms0:spike:dev": "pnpm --filter @cf-mail-relay/worker spike:dev",
-    "ms0:spike:deploy": "pnpm --filter @cf-mail-relay/worker spike:deploy",
-    "ms0:preflight": "node infra/ms0/preflight.mjs",
-    "ms0:spike:send": "node infra/ms0/send-fixture.mjs",
+    "test": "pnpm -r --filter='./worker' --filter='./shared' test && node --test infra/wrangler/*.test.mjs infra/setup/*.test.mjs",
     "setup": "node infra/wrangler/setup.mjs",
     "access:setup": "node infra/wrangler/access-app.mjs",
     "access:apply": "node infra/wrangler/access-apply.mjs",

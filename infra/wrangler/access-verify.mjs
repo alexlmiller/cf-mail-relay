@@ -36,7 +36,7 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   const checks = [];
 
   checks.push(checkConfiguredValue("access_team_domain", teamDomain, ["your-team.cloudflareaccess.com", "REPLACE_WITH_ACCESS_TEAM_DOMAIN"]));
-  checks.push(checkConfiguredValue("access_audience", audience, ["MS1_NOT_USED", "REPLACE_WITH_ACCESS_APPLICATION_AUD"]));
+  checks.push(checkConfiguredValue("access_audience", audience, ["REPLACE_WITH_ACCESS_APPLICATION_AUD", "REPLACE_WITH_ACCESS_APPLICATION_AUD"]));
   checks.push(checkCorsOrigin(corsOrigin, options.pagesUrl));
 
   if (checks.every((check) => check.status !== "fail")) {
@@ -306,7 +306,7 @@ function stripScheme(value) {
 function usage() {
   return `Usage: node infra/wrangler/access-verify.mjs [options]
 
-Verifies the MS3 Cloudflare Access gate from local config and live endpoints.
+Verifies the Cloudflare Access gate from local config and live endpoints.
 
 Options:
   --config <path>            wrangler.toml path (default: worker/wrangler.toml)

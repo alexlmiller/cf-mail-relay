@@ -235,7 +235,7 @@ function trimTrailingSlash(value) {
 function usage(code) {
   console.log(`Usage: node infra/wrangler/access-app.mjs --account-id <id> --allow-email <email> [options]
 
-Creates or updates the Cloudflare Access app required by MS3.
+Creates or updates the Cloudflare Access app for the admin UI.
 
 Options:
   --token-env <name>          Environment variable containing an Access-capable Cloudflare API token

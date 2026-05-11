@@ -26,7 +26,7 @@ describe("access-apply helper", () => {
 [vars]
 REQUIRED_D1_SCHEMA_VERSION = "1"
 ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
-ACCESS_AUDIENCE = "MS1_NOT_USED"
+ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
 ADMIN_CORS_ORIGIN = "https://old.example.com" # keep comment
 CF_ACCOUNT_ID = "account"
 

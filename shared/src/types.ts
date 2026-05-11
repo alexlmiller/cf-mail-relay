@@ -1,5 +1,4 @@
-// Shared types. MS2 fleshes these out to match D1 row shapes.
-// See IMPLEMENTATION_PLAN.md § D1 Schema.
+// Shared public contract types.
 
 export type UserRole = "admin" | "sender";
 export type DomainStatus = "pending" | "verified" | "sandbox" | "disabled";
