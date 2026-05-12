@@ -212,10 +212,16 @@ html[data-theme="dark"] {
   color: var(--bg);
   display: grid;
   place-items: center;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0;
+  flex-shrink: 0;
+}
+.brand-mark svg {
+  width: 16px;
+  height: 9px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .brand-name { font-size: 13.5px; }
 

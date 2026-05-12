@@ -1,21 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="CF Mail Relay">
   <style>
     .bg { fill: #0F1115; }
-    .fg { fill: #FAFAFA; }
+    .fg { stroke: #FAFAFA; }
     @media (prefers-color-scheme: dark) {
       .bg { fill: #FAFAFA; }
-      .fg { fill: #0F1115; }
+      .fg { stroke: #0F1115; }
     }
   </style>
   <rect class="bg" width="32" height="32" rx="6" />
-  <text
-    class="fg"
-    x="16"
-    y="21.5"
-    text-anchor="middle"
-    font-family="ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace"
-    font-weight="700"
-    font-size="13"
-    letter-spacing="-0.3"
-  >CR</text>
+  <g class="fg" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Envelope body whose right edge tapers into a forward-pointing arrowhead. -->
+    <path d="M5 10 L22 10 L27 16 L22 22 L5 22 Z" />
+    <!-- Inner flap fold from the top corners to the body's centerline. -->
+    <path d="M5 10 L13.5 16 L22 10" />
+  </g>
 </svg>

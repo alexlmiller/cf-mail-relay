@@ -47,6 +47,25 @@ let appRoot: HTMLElement | null = null;
 let routeRoot: HTMLElement | null = null;
 let topbarUserSlot: HTMLElement | null = null;
 
+/**
+ * The brand glyph used in the topbar brand-mark. Same envelope-as-arrow
+ * geometry as ui/public/favicon.svg, but without the dark background
+ * (the .brand-mark element provides that).
+ */
+function brandGlyph(): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 22 12");
+  svg.setAttribute("aria-hidden", "true");
+  const body = document.createElementNS(ns, "path");
+  body.setAttribute("d", "M0 0 L17 0 L22 6 L17 12 L0 12 Z");
+  const flap = document.createElementNS(ns, "path");
+  flap.setAttribute("d", "M0 0 L8.5 6 L17 0");
+  svg.appendChild(body);
+  svg.appendChild(flap);
+  return svg;
+}
+
 export function boot() {
   appRoot = document.getElementById("app");
   if (!appRoot) return;
@@ -106,8 +125,8 @@ function buildAdminShell() {
   const brand = h(
     "a",
     { class: "brand", href: "#/", title: "CF Mail Relay" },
-    h("span", { class: "brand-mark" }, "CR"),
-    h("span", { class: "brand-name" }, "Mail Relay"),
+    h("span", { class: "brand-mark" }, brandGlyph()),
+    h("span", { class: "brand-name" }, "CF Mail Relay"),
   );
 
   const navEl = h("nav", { class: "nav", "aria-label": "Primary" });
@@ -151,8 +170,8 @@ function buildSenderShell() {
   const brand = h(
     "a",
     { class: "brand", href: "#/me", title: "CF Mail Relay" },
-    h("span", { class: "brand-mark" }, "CR"),
-    h("span", { class: "brand-name" }, "Mail Relay"),
+    h("span", { class: "brand-mark" }, brandGlyph()),
+    h("span", { class: "brand-name" }, "CF Mail Relay"),
   );
 
   // Sender has no nav links — there's only one page.
