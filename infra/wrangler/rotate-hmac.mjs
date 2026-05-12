@@ -10,9 +10,10 @@
 //   pnpm rotate:hmac                   # print the new secret + runbook
 //   pnpm rotate:hmac --json            # machine-readable output
 //
-// The relay accepts RELAY_HMAC_SECRET_CURRENT or RELAY_HMAC_SECRET_PREVIOUS for
-// up to 1 hour after rotation, which is the grace window for the relay's
-// Docker container restart.
+// The worker accepts RELAY_HMAC_SECRET_CURRENT and RELAY_HMAC_SECRET_PREVIOUS
+// for as long as both secrets are set — there's no time-based expiry. Delete
+// PREVIOUS once the relay is on the new value to remove the dual-acceptance
+// window. The runbook recommends ~1 hour as a sensible operator-side ceiling.
 
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -56,8 +57,9 @@ export function buildRunbook(newSecret, now = new Date()) {
     ``,
     `     pnpm exec wrangler secret delete RELAY_HMAC_SECRET_PREVIOUS --force`,
     ``,
-    `Worker rejects RELAY_HMAC_SECRET_PREVIOUS that's older than the grace`,
-    `window, so leaving it set indefinitely is harmless but cluttered.`,
+    `The worker accepts PREVIOUS for as long as it's set — there's no built-in`,
+    `expiry. Aim to clear it within ~${Math.round(overlapWindowSeconds / 60)} minutes so a leaked old secret can't be`,
+    `used indefinitely. Leaving it set is dual-acceptance, not "harmless".`,
     ``,
   ];
   return lines.join("\n");

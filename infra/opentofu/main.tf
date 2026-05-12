@@ -97,9 +97,25 @@ resource "cloudflare_access_application" "admin" {
   domain           = local.admin_host
   session_duration = var.session_duration
 
+  // Path-scoped. The relay's HMAC /relay/*, the bearer /send, the bootstrap
+  // token /bootstrap/admin, and the public /healthz are deliberately NOT
+  // gated by Access — they have their own auth and their clients can't carry
+  // an Access cookie.
   destinations {
     type = "public"
-    uri  = local.admin_host
+    uri  = "${local.admin_host}/"
+  }
+  destinations {
+    type = "public"
+    uri  = "${local.admin_host}/_astro/*"
+  }
+  destinations {
+    type = "public"
+    uri  = "${local.admin_host}/admin/api/*"
+  }
+  destinations {
+    type = "public"
+    uri  = "${local.admin_host}/self/api/*"
   }
 
   cors_headers {

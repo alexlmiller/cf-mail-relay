@@ -21,8 +21,12 @@ export const defaults = {
 const platformHostnameSuffixes = [".pages.dev", ".workers.dev"];
 
 export function buildBodies(config) {
-  // Same-origin model: the Worker serves both the UI and the API at one
-  // hostname, so the Access app gates a single destination — the admin host.
+  // Same-origin model: the Worker serves the UI and the API at one hostname,
+  // but the Access app only gates the UI + admin/self API paths. The relay's
+  // HMAC-authenticated /relay/*, the bearer-authenticated /send, the
+  // bootstrap-token-authenticated /bootstrap/admin, and the public /healthz
+  // MUST NOT carry an Access JWT requirement — they have their own auth and
+  // their clients can't carry an Access cookie. Path-scoped destinations:
   const adminHost = withoutScheme(config.pagesUrl);
   return {
     app: {
@@ -30,13 +34,16 @@ export function buildBodies(config) {
       type: "self_hosted",
       domain: adminHost,
       destinations: [
-        { type: "public", uri: adminHost },
+        { type: "public", uri: `${adminHost}/` },
+        { type: "public", uri: `${adminHost}/_astro/*` },
+        { type: "public", uri: `${adminHost}/admin/api/*` },
+        { type: "public", uri: `${adminHost}/self/api/*` },
       ],
       session_duration: config.sessionDuration,
       app_launcher_visible: true,
       cors_headers: {
         allow_credentials: true,
-        allowed_methods: ["GET", "POST", "OPTIONS"],
+        allowed_methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allowed_headers: ["content-type"],
         allowed_origins: [config.pagesUrl],
         max_age: 600,

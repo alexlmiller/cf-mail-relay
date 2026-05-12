@@ -127,7 +127,10 @@ const errorMessages: Record<string, string> = {
   missing_from: "From address missing on the request body.",
   from_header_mismatch: "MIME From: header doesn't match the authorized sender.",
   sender_header_not_allowed: "MIME Sender: header isn't on the allowed-senders list.",
-  singleton_header_duplicated: "Duplicate identity header (From/Sender/Reply-To/Message-ID) rejected.",
+  duplicate_from_header: "MIME message had multiple From: headers.",
+  duplicate_sender_header: "MIME message had multiple Sender: headers.",
+  duplicate_message_id_header: "MIME message had multiple Message-ID: headers.",
+  multiple_from_addresses: "MIME From: header contained multiple addresses; exactly one is required.",
   idempotency_key_conflict: "Idempotency key reused with a different request body.",
   missing_signed_headers: "Relay HMAC missing the X-Relay-Signed-Headers list.",
   missing_required_signed_header: "Relay HMAC didn't sign a required header.",
@@ -139,6 +142,8 @@ const errorMessages: Record<string, string> = {
   user_disabled: "User is disabled — re-enable from the user detail page.",
   user_not_provisioned: "Your Cloudflare Access identity isn't provisioned as a user in this relay yet.",
   no_fields_to_update: "PATCH body had no recognised fields.",
+  invalid_enabled: "`enabled` must be a JSON boolean (true or false), not a string.",
+  invalid_status: "Status must be one of: pending, verified, sandbox, disabled.",
   rate_limited: "Send quota exceeded for this scope.",
 
   // Bootstrap-specific

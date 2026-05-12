@@ -549,11 +549,11 @@ export async function updateDomain(env: Env, id: string, body: Record<string, un
   const params: unknown[] = [];
   if ("enabled" in body) {
     fields.push("enabled = ?");
-    params.push(body.enabled ? 1 : 0);
+    params.push(requireBoolean(body.enabled, "enabled") ? 1 : 0);
   }
   if ("status" in body) {
     fields.push("status = ?");
-    params.push(statusOrDefault(body.status));
+    params.push(requireStatus(body.status));
   }
   if ("cloudflare_zone_id" in body) {
     const value = body.cloudflare_zone_id;
@@ -583,7 +583,7 @@ export async function updateSender(env: Env, id: string, body: Record<string, un
   const params: unknown[] = [];
   if ("enabled" in body) {
     fields.push("enabled = ?");
-    params.push(body.enabled ? 1 : 0);
+    params.push(requireBoolean(body.enabled, "enabled") ? 1 : 0);
   }
   if (fields.length === 0) {
     throw new Error("no_fields_to_update");
@@ -732,6 +732,20 @@ function requireString(value: unknown, field: string): string {
 
 function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function requireBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`invalid_${field}`);
+  }
+  return value;
+}
+
+function requireStatus(value: unknown): string {
+  if (value === "pending" || value === "verified" || value === "sandbox" || value === "disabled") {
+    return value;
+  }
+  throw new Error("invalid_status");
 }
 
 function requireRole(value: unknown): "admin" | "sender" {

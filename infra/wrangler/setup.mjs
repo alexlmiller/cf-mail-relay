@@ -162,15 +162,25 @@ export async function runApply(ctx) {
     steps.push({ step: "migrations_applied" });
   }
 
-  // 6. Push the generated secrets via wrangler. CF_API_TOKEN re-uses the
-  //    operator's CLOUDFLARE_API_TOKEN if not in the generated set.
+  // 6. Push the generated secrets via wrangler. CF_API_TOKEN is NOT pushed
+  //    automatically: the operator's setup token has D1/KV/Access scopes,
+  //    but the worker's runtime token should be least-privilege (Email
+  //    Sending Edit only). The runbook documents the manual step.
+  //    Opt-in: --push-cf-api-token reuses the setup token (with a warning).
   if (secrets !== null) {
     for (const [name, value] of Object.entries(secrets)) {
       await execImpl("wrangler", ["secret", "put", name], { cwd: options.workerDir, stdin: value });
     }
-    // CF_API_TOKEN is set separately from the operator's CLI token.
-    await execImpl("wrangler", ["secret", "put", "CF_API_TOKEN"], { cwd: options.workerDir, stdin: env[options.tokenEnv] ?? "" });
-    steps.push({ step: "secrets_pushed", count: Object.keys(secrets).length + 1 });
+    let cfTokenPushed = false;
+    if (options.pushCfApiToken && env[options.tokenEnv]) {
+      process.stderr.write(
+        "warning: --push-cf-api-token reuses your setup token as the worker's runtime CF_API_TOKEN.\n" +
+        "         Create a least-privilege Email-Sending-Edit-only token and rotate this after first send.\n",
+      );
+      await execImpl("wrangler", ["secret", "put", "CF_API_TOKEN"], { cwd: options.workerDir, stdin: env[options.tokenEnv] ?? "" });
+      cfTokenPushed = true;
+    }
+    steps.push({ step: "secrets_pushed", count: Object.keys(secrets).length + (cfTokenPushed ? 1 : 0), cf_api_token_pushed: cfTokenPushed });
   }
 
   // 7. Build UI (outputs into worker/public/) and deploy worker.
@@ -180,7 +190,10 @@ export async function runApply(ctx) {
     steps.push({ step: "deployed", admin_url: options.adminUrl });
   }
 
-  // 8. Bootstrap the first admin and delete the bootstrap token.
+  // 8. Bootstrap the first admin and delete the bootstrap token. If the
+  //    bootstrap fails the whole wizard fails — leaving an unbootstrapped
+  //    relay with a live BOOTSTRAP_SETUP_TOKEN is a worse state to be in
+  //    than partial setup with a clear error.
   if (secrets !== null && !options.skipBootstrap) {
     const adminEmail = options.allowEmails[0];
     const bootstrapResponse = await fetchImpl(`${options.adminUrl}/bootstrap/admin`, {
@@ -191,13 +204,18 @@ export async function runApply(ctx) {
       },
       body: JSON.stringify({ email: adminEmail }),
     });
-    if (bootstrapResponse.ok) {
-      steps.push({ step: "bootstrap_admin", email: adminEmail });
-      await execImpl("wrangler", ["secret", "delete", "BOOTSTRAP_SETUP_TOKEN", "--force"], { cwd: options.workerDir });
-      steps.push({ step: "bootstrap_token_cleared" });
-    } else {
-      steps.push({ step: "bootstrap_admin", email: adminEmail, ok: false, status: bootstrapResponse.status });
+    if (!bootstrapResponse.ok) {
+      const bodyText = await bootstrapResponse.text().catch(() => "");
+      throw new Error(
+        `Bootstrap admin failed: HTTP ${bootstrapResponse.status} ${bodyText}\n` +
+        `The relay is deployed but no admin user was created.\n` +
+        `BOOTSTRAP_SETUP_TOKEN is still active — delete it once you've manually bootstrapped:\n` +
+        `  pnpm --dir worker exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN --force`,
+      );
     }
+    steps.push({ step: "bootstrap_admin", email: adminEmail });
+    await execImpl("wrangler", ["secret", "delete", "BOOTSTRAP_SETUP_TOKEN", "--force"], { cwd: options.workerDir });
+    steps.push({ step: "bootstrap_token_cleared" });
   }
 
   // 9. Emit per-adopter RUNBOOK.md so the operator has a single source of
@@ -312,6 +330,20 @@ export function renderRunbook(input) {
       `Plus a DNS-only A record for the relay: \`smtp.${input.domains[0]}\` -> your relay host IP.`,
       ``,
     ]),
+    `## Set the runtime CF_API_TOKEN (do this once, with a least-privilege token)`,
+    ``,
+    `The wizard's setup token has D1/KV/Access scopes — too broad for the`,
+    `worker's runtime needs. Create a least-privilege Cloudflare API token`,
+    `with only **Account · Email Sending · Edit**, then push it as the`,
+    `worker secret:`,
+    ``,
+    `    pnpm --dir worker exec wrangler secret put CF_API_TOKEN`,
+    ``,
+    `Until you do this the worker's dashboard will show CF API health as`,
+    `unhealthy and \`send_raw\` calls will fail. The wizard does NOT auto-set`,
+    `this secret on purpose; pass \`--push-cf-api-token\` to override (you'll`,
+    `get a warning).`,
+    ``,
     `## Day-2`,
     ``,
     `See \`docs/operations.md\` for secret rotation, ops actions, and idempotency semantics.`,
@@ -340,6 +372,7 @@ export function parseArgs(argv, env = process.env) {
     help: false,
     kvNamespaceId: "",
     kvNamespaceTitle: "cf-mail-relay-hot",
+    pushCfApiToken: false,
     regenerateSecrets: false,
     relayKeyId: "rel_01",
     repoRoot,
@@ -374,6 +407,7 @@ export function parseArgs(argv, env = process.env) {
       case "--kv-id":
         options.kvNamespaceId = readValue(argv, index, arg); index += 1; break;
       case "--kv-namespace-title": options.kvNamespaceTitle = readValue(argv, index, arg); index += 1; break;
+      case "--push-cf-api-token": options.pushCfApiToken = true; break;
       case "--regenerate-secrets": options.regenerateSecrets = true; break;
       case "--relay-key-id": options.relayKeyId = readValue(argv, index, arg); index += 1; break;
       case "--skip-bootstrap": options.skipBootstrap = true; break;
@@ -625,6 +659,10 @@ Apply flags (--apply):
   --kv-id <id>              Use existing KV namespace instead of creating.
   --relay-key-id <id>       RELAY_HMAC_KEY_ID (default rel_01).
   --regenerate-secrets      Force regenerate even if worker/wrangler.toml exists.
+  --push-cf-api-token       Push your setup CLOUDFLARE_API_TOKEN as the worker's
+                             runtime CF_API_TOKEN secret. NOT recommended — your
+                             setup token has broad scopes; the runtime token
+                             should only have Email Sending Edit. Default off.
   --force                   Overwrite existing worker/wrangler.toml.
   --skip-migrations         Skip 'wrangler d1 migrations apply'.
   --skip-build-deploy       Skip UI build + worker deploy.

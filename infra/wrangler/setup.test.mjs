@@ -229,6 +229,56 @@ routes = [
     assert.match(runbook, /smtp\.example\.com/);
   });
 
+  it("throws when bootstrap admin returns non-2xx (don't leave a half-bootstrapped relay)", async () => {
+    const fetchImpl = async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") {
+        return json({ success: true, result: [] });
+      }
+      if (path === "/client/v4/accounts/acc/d1/database" && init.method === "POST") {
+        return json({ success: true, result: { uuid: "d1_new" } });
+      }
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") {
+        return json({ success: true, result: [] });
+      }
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && init.method === "POST") {
+        return json({ success: true, result: { id: "kv_new" } });
+      }
+      if (path === "/bootstrap/admin") {
+        return json({ ok: false, error: "bootstrap_already_completed" }, 409);
+      }
+      throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
+    };
+
+    const options = parseArgs([
+      "--account-id", "acc",
+      "--admin-url", "https://mail.milf.red",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+      "--apply",
+    ], {});
+    options.workerDir = "/repo/worker";
+    options.repoRoot = "/repo";
+    options.wranglerExamplePath = "/repo/worker/wrangler.toml.example";
+    options.wranglerPath = "/repo/worker/wrangler.toml";
+    options.runbookPath = "/repo/RUNBOOK.md";
+
+    await assert.rejects(
+      runApply({
+        options,
+        env: { CLOUDFLARE_API_TOKEN: "token" },
+        client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
+        execImpl: async () => {},
+        readFileImpl: () => "",
+        writeFileImpl: () => {},
+        existsImpl: () => false,
+        accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+        fetchImpl,
+      }),
+      /Bootstrap admin failed/,
+    );
+  });
+
   it("runApply orchestrates create-or-reuse, secret push, deploy, bootstrap", async () => {
     const execCalls = [];
     const writes = new Map();

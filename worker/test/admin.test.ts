@@ -251,6 +251,21 @@ describe("admin PATCH/DELETE endpoints", () => {
     expect(dom?.params[0]).toBe(0);
   });
 
+  it("rejects truthy non-boolean enabled values on PATCH", async () => {
+    const { db } = makeRecordingD1();
+    // The audit flagged that string "false" would have been truthy under the
+    // old loose check — verify it's now rejected.
+    await expect(updateDomain(envWith(db), "dom_1", { enabled: "false" as unknown as boolean })).rejects.toThrow("invalid_enabled");
+    await expect(updateDomain(envWith(db), "dom_1", { enabled: 0 as unknown as boolean })).rejects.toThrow("invalid_enabled");
+    await expect(updateDomain(envWith(db), "dom_1", { enabled: null as unknown as boolean })).rejects.toThrow("invalid_enabled");
+  });
+
+  it("rejects invalid status values on PATCH instead of defaulting to pending", async () => {
+    const { db } = makeRecordingD1();
+    await expect(updateDomain(envWith(db), "dom_1", { status: "verifeid" })).rejects.toThrow("invalid_status");
+    await expect(updateDomain(envWith(db), "dom_1", { status: "" })).rejects.toThrow("invalid_status");
+  });
+
   it("disables a sender via enabled=false", async () => {
     const { db, capture } = makeRecordingD1();
     await updateSender(envWith(db), "snd_1", { enabled: false });

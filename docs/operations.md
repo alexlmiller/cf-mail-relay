@@ -8,7 +8,7 @@ and adopter setup is in the project `README.md`.
 
 | Secret | Where | When to rotate | Grace window |
 |---|---|---|---|
-| `RELAY_HMAC_SECRET_CURRENT` | Worker secret + relay env | Yearly, or when the relay host is suspected compromised | 1 h overlap via `RELAY_HMAC_SECRET_PREVIOUS` |
+| `RELAY_HMAC_SECRET_CURRENT` | Worker secret + relay env | Yearly, or when the relay host is suspected compromised | Dual-accept via `RELAY_HMAC_SECRET_PREVIOUS`; no built-in expiry — operator clears it after restart. |
 | `CF_API_TOKEN` | Worker secret | When the token is rotated in the Cloudflare dashboard | None — single shot |
 | `CREDENTIAL_PEPPER` | Worker secret | Avoid — rotating invalidates every stored SMTP credential and API key hash | None |
 | `METADATA_PEPPER` | Worker secret | Avoid — rotating breaks audit-log hash continuity | None |
@@ -30,7 +30,9 @@ steps are:
 3. Update the relay container's `RELAY_HMAC_SECRET` env and `docker compose
    up -d relay` to restart with the new value.
 4. After the relay is healthy (next successful authed SMTP submission), delete
-   `RELAY_HMAC_SECRET_PREVIOUS`.
+   `RELAY_HMAC_SECRET_PREVIOUS`. The Worker accepts it as long as it's set —
+   there is no time-based auto-expiry — so leaving it around indefinitely
+   extends the dual-acceptance window. Aim to clear it within ~1 hour.
 
 The HMAC contract binds the request body **and** the relay headers that affect
 authorization. Both sides include a sorted `signedHeaders` block (names +
@@ -81,8 +83,9 @@ The Worker rejects messages where:
   `from` → `from_header_mismatch` (403).
 - A `Sender:` header is present but not on the user's allowed-senders list
   → `sender_header_not_allowed` (403).
-- Multiple `From:` / `Sender:` / `Reply-To:` / `Message-ID:` headers are present
-  → `singleton_header_duplicated` (400).
+- Multiple `From:` headers → `duplicate_from_header` (400).
+- Multiple `Sender:` headers → `duplicate_sender_header` (400).
+- Multiple `Message-ID:` headers → `duplicate_message_id_header` (400).
 - The MIME bytes are not UTF-8 → `mime_not_utf8_json_safe` (422).
 
 Outbound, the Worker strips `Bcc:`, `Received:`, `X-Received:`, and
