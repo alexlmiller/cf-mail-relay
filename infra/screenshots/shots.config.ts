@@ -65,16 +65,16 @@ export function shots(): Shot[] {
       fixtures: adminFixtures(),
       route: "/events",
       setup: async (page) => {
-        // Wait for first row, then click to open the drawer on the policy_rejected event.
-        await page.waitForSelector("table tbody tr, .table tbody tr, [data-event-id]");
-        // Click the third row (policy_rejected) to surface a failure reason in the drawer.
-        const target = page.locator("tbody tr").nth(3);
+        await page.waitForSelector(".compact-row");
+        // Click the fourth row (policy_rejected) to surface a failure reason in the drawer.
+        const rows = page.locator(".compact-row");
+        const target = rows.nth(3);
         if (await target.count()) {
           await target.click();
         } else {
-          await page.locator("tbody tr").first().click();
+          await rows.first().click();
         }
-        await page.waitForSelector(".drawer, [data-drawer-open], [role='complementary']", { timeout: 3000 }).catch(() => {});
+        await page.waitForSelector(".drawer", { timeout: 3000 }).catch(() => {});
         await page.waitForTimeout(150);
       },
     },
@@ -174,13 +174,13 @@ export function shots(): Shot[] {
       waitFor: ".health-grid .health-item",
     },
 
-    // 14 — Mobile events: card-layout list + drawer
+    // 14 — Mobile events: compact 2-line activity feed
     {
       name: "14-mobile-events",
       fixtures: adminFixtures(),
       route: "/events",
       viewport: { width: 390, height: 844 },
-      waitFor: "tbody tr",
+      waitFor: ".compact-row",
     },
 
     // 15 — Mobile credential reveal: full-screen modal

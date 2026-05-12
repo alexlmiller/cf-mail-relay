@@ -58,6 +58,22 @@ export interface TableOptions<Row> {
    * label in card mode. Use for read-heavy mobile flows (events, failures).
    */
   cardMode?: boolean;
+  /**
+   * Render rows as a 2-line button list (homepage-style activity feed)
+   * instead of a table. Drops the column headers — `defaultSort` pins the
+   * order. Columns still drive search + chip filtering. Mutually exclusive
+   * with cardMode (compact wins).
+   */
+  compact?: CompactRender<Row>;
+}
+
+export interface CompactRender<Row> {
+  /** Left-side dot/icon. Use a coloured marker to convey status at a glance. */
+  marker?: (row: Row) => Child;
+  /** First line — typically status pill + main identifier + minor inline detail. */
+  primary: (row: Row) => Child;
+  /** Second line — typically a soft mono line of timestamp + ids. */
+  secondary: (row: Row) => Child;
 }
 
 interface State {
@@ -158,14 +174,19 @@ export function buildTable<Row>(options: TableOptions<Row>): { root: HTMLElement
   const tbody = h("tbody");
   const table = h("table", { class: "list" }, thead, tbody);
   const tableWrap = h("div", { class: "table-wrap" }, table);
+  const compactList = h("div", { class: "compact-list" });
   const empty = h("div", { class: "empty hidden" });
+  const useCompact = options.compact !== undefined;
+  const shellAttrs = useCompact
+    ? { class: "table-shell compact-shell" }
+    : options.cardMode
+      ? { class: "table-shell", "data-cards": "1" }
+      : { class: "table-shell" };
   const shell = h(
     "div",
-    options.cardMode
-      ? { class: "table-shell", "data-cards": "1" }
-      : { class: "table-shell" },
+    shellAttrs,
     options.chips || !options.hideToolsWhenEmpty || options.rows.length > 0 ? toolbar : false,
-    tableWrap,
+    useCompact ? compactList : tableWrap,
     empty,
   );
 
@@ -227,10 +248,12 @@ export function buildTable<Row>(options: TableOptions<Row>): { root: HTMLElement
     syncSort();
     updateChipCounts();
     const visible = filtered();
+    const surface = useCompact ? compactList : tableWrap;
     setChildren(tbody);
+    setChildren(compactList);
     if (visible.length === 0) {
       empty.classList.remove("hidden");
-      tableWrap.classList.add("hidden");
+      surface.classList.add("hidden");
       if (allRows.length === 0) {
         // Truly empty
         setChildren(
@@ -250,7 +273,12 @@ export function buildTable<Row>(options: TableOptions<Row>): { root: HTMLElement
       return;
     }
     empty.classList.add("hidden");
-    tableWrap.classList.remove("hidden");
+    surface.classList.remove("hidden");
+
+    if (useCompact) {
+      renderCompact(visible);
+      return;
+    }
 
     const frag = document.createDocumentFragment();
     for (const row of visible) {
@@ -279,6 +307,33 @@ export function buildTable<Row>(options: TableOptions<Row>): { root: HTMLElement
       frag.appendChild(tr);
     }
     tbody.appendChild(frag);
+  }
+
+  function renderCompact(rows: Row[]) {
+    if (!options.compact) return;
+    const compact = options.compact;
+    const frag = document.createDocumentFragment();
+    for (const row of rows) {
+      const btn = h(
+        "button",
+        { type: "button", class: "compact-row" },
+        compact.marker ? h("span", { class: "marker" }, compact.marker(row)) : false,
+        h(
+          "span",
+          { class: "label" },
+          h("span", { class: "primary" }, compact.primary(row)),
+          h("span", { class: "secondary" }, compact.secondary(row)),
+        ),
+        options.onRowClick ? h("span", { class: "go" }, icon("chevronRight", 12)) : false,
+      );
+      if (options.onRowClick) {
+        on(btn, "click", () => options.onRowClick!(row));
+      } else {
+        btn.disabled = true;
+      }
+      frag.appendChild(btn);
+    }
+    compactList.appendChild(frag);
   }
 
   syncSort();

@@ -108,70 +108,11 @@ async function loadTable(mode: Mode): Promise<{ table: HTMLElement; raw: Array<S
 
 function sendEventTable(events: SendEvent[]): HTMLElement {
   const built = buildTable<SendEvent>({
+    // Columns drive sort + search + chip filtering even in compact mode.
     columns: [
-      {
-        key: "ts",
-        label: "Time",
-        render: (row) =>
-          h(
-            "span",
-            { class: "mono num", title: formatAbsolute(row.ts) },
-            formatShort(row.ts),
-          ),
-        sort: (row) => row.ts,
-        width: 130,
-      },
-      {
-        key: "status",
-        label: "Status",
-        render: (row) => eventStatusPill(row.status),
-        sort: (row) => row.status,
-        width: 150,
-      },
-      {
-        key: "source",
-        label: "Src",
-        render: (row) => h("span", { class: "soft uppercase", style: "font-size: 11px" }, row.source),
-        sort: (row) => row.source,
-        width: 50,
-      },
-      {
-        key: "from",
-        label: "From",
-        render: (row) => h("span", { class: "id" }, row.envelope_from),
-        sort: (row) => row.envelope_from,
-      },
-      {
-        key: "count",
-        label: "Recipients",
-        right: true,
-        render: (row) => h("span", { class: "num" }, String(row.recipient_count)),
-        sort: (row) => row.recipient_count,
-        width: 110,
-      },
-      {
-        key: "size",
-        label: "Size",
-        right: true,
-        render: (row) => h("span", { class: "mono num" }, formatBytes(row.mime_size_bytes)),
-        sort: (row) => row.mime_size_bytes,
-        width: 90,
-      },
-      {
-        key: "smtp",
-        label: "SMTP",
-        right: true,
-        render: (row) => h("span", { class: "mono num" }, row.smtp_code ?? "—"),
-        sort: (row) => row.smtp_code ?? "",
-        width: 70,
-      },
-      {
-        key: "id",
-        label: "ID",
-        cell: "mono",
-        render: (row) => copyable({ value: row.id, display: truncateMiddle(row.id, 8, 4), title: row.id }),
-        width: 130,
-      },
+      { key: "ts", label: "Time", render: () => null, sort: (row) => row.ts },
+      { key: "status", label: "Status", render: () => null, sort: (row) => row.status },
+      { key: "from", label: "From", render: () => null, sort: (row) => row.envelope_from },
     ],
     rows: events,
     defaultSort: { key: "ts", dir: "desc" },
@@ -182,7 +123,35 @@ function sendEventTable(events: SendEvent[]): HTMLElement {
     onRowClick: (row) => navigate("/events", { mode: "sends", id: row.id }),
     emptyTitle: "No send events yet",
     emptyHint: "Once a message flows through the relay, it's recorded here. Try `pnpm doctor:delivery` once your relay is up.",
-    cardMode: true,
+    compact: {
+      marker: (row) => {
+        const kind = eventStatusKind(row.status);
+        const color = kind === "ok" ? "var(--ok)" : kind === "bad" ? "var(--bad)" : kind === "warn" ? "var(--warn)" : "var(--surface-3)";
+        const dot = h("span", { class: "dot", style: `display:block;width:10px;height:10px;border-radius:99px;background:${color}` });
+        return dot;
+      },
+      primary: (row) => h(
+        "span",
+        { class: "row", style: "gap: 8px; flex-wrap: wrap; align-items: center" },
+        eventStatusPill(row.status),
+        h("span", { class: "id", style: "color: var(--text)" }, row.envelope_from),
+        h(
+          "span",
+          { class: "soft", style: "font-size: 12px" },
+          `→ ${row.recipient_count} ${row.recipient_count === 1 ? "recipient" : "recipients"}`,
+        ),
+        h("span", { class: "soft uppercase", style: "font-size: 10.5px" }, row.source),
+        h("span", { class: "soft mono num", style: "font-size: 11.5px" }, formatBytes(row.mime_size_bytes)),
+      ),
+      secondary: (row) => h(
+        "span",
+        null,
+        h("span", { title: formatAbsolute(row.ts) }, formatShort(row.ts)),
+        " · ",
+        h("span", null, truncateMiddle(row.id, 10, 4)),
+        row.smtp_code ? h("span", null, " · ", row.smtp_code) : false,
+      ),
+    },
   });
   return built.root;
 }
@@ -190,40 +159,9 @@ function sendEventTable(events: SendEvent[]): HTMLElement {
 function authFailureTable(rows: AuthFailure[]): HTMLElement {
   const built = buildTable<AuthFailure>({
     columns: [
-      {
-        key: "ts",
-        label: "Time",
-        render: (row) => h("span", { class: "mono num", title: formatAbsolute(row.ts) }, formatShort(row.ts)),
-        sort: (row) => row.ts,
-        width: 150,
-      },
-      {
-        key: "username",
-        label: "Username",
-        render: (row) => h("span", { class: "id" }, row.attempted_username ?? "—"),
-        sort: (row) => row.attempted_username ?? "",
-      },
-      {
-        key: "reason",
-        label: "Reason",
-        render: (row) => pill(reasonLabel(row.reason), reasonKind(row.reason)),
-        sort: (row) => row.reason ?? "",
-        width: 160,
-      },
-      {
-        key: "source",
-        label: "Source",
-        render: (row) => sourcePill(row.source),
-        sort: (row) => row.source,
-        width: 110,
-      },
-      {
-        key: "id",
-        label: "ID",
-        cell: "mono",
-        render: (row) => copyable({ value: row.id, display: truncateMiddle(row.id, 8, 4), title: row.id }),
-        width: 130,
-      },
+      { key: "ts", label: "Time", render: () => null, sort: (row) => row.ts },
+      { key: "reason", label: "Reason", render: () => null, sort: (row) => row.reason ?? "" },
+      { key: "source", label: "Source", render: () => null, sort: (row) => row.source },
     ],
     rows,
     defaultSort: { key: "ts", dir: "desc" },
@@ -233,7 +171,27 @@ function authFailureTable(rows: AuthFailure[]): HTMLElement {
     searchPlaceholder: "Search by username or reason…",
     emptyTitle: "No authentication failures",
     emptyHint: "If someone tries to AUTH with a bad username or password, it'll land here.",
-    cardMode: true,
+    compact: {
+      marker: (row) => {
+        const kind = reasonKind(row.reason);
+        const color = kind === "warn" ? "var(--warn)" : kind === "muted" ? "var(--surface-3)" : "var(--bad)";
+        return h("span", { class: "dot", style: `display:block;width:10px;height:10px;border-radius:99px;background:${color}` });
+      },
+      primary: (row) => h(
+        "span",
+        { class: "row", style: "gap: 8px; flex-wrap: wrap; align-items: center" },
+        pill(reasonLabel(row.reason), reasonKind(row.reason)),
+        h("span", { class: "id", style: "color: var(--text)" }, row.attempted_username ?? "—"),
+        sourcePill(row.source),
+      ),
+      secondary: (row) => h(
+        "span",
+        null,
+        h("span", { title: formatAbsolute(row.ts) }, formatShort(row.ts)),
+        " · ",
+        h("span", null, truncateMiddle(row.id, 10, 4)),
+      ),
+    },
   });
   return built.root;
 }

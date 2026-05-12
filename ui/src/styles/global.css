@@ -484,6 +484,57 @@ select.input { appearance: none; padding-right: 24px; background-image: linear-g
 .card-body { padding: 16px; }
 .card.pad-0 .card-body { padding: 0; }
 
+/* Compact list — 2-line activity-feed rendering used by buildTable when
+   options.compact is set (Events, Auth failures, dashboard recent activity).
+   Visually matches the dashboard's first-run checklist rows. */
+.compact-list { display: flex; flex-direction: column; }
+.compact-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  width: 100%;
+  background: transparent;
+  cursor: pointer;
+  transition: background .1s;
+}
+.compact-row:last-child { border-bottom: 0; }
+.compact-row:hover { background: var(--surface-hov); }
+.compact-row[disabled] { cursor: default; }
+.compact-row > .marker {
+  width: 10px;
+  height: 10px;
+  border-radius: 99px;
+  flex-shrink: 0;
+}
+.compact-row > .label {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.compact-row > .label > .primary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.compact-row > .label > .secondary {
+  color: var(--text-mute);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  letter-spacing: -0.005em;
+}
+.compact-row > .go {
+  color: var(--text-faint);
+  flex-shrink: 0;
+  transition: color .1s;
+}
+.compact-row:hover > .go { color: var(--accent); }
+
 /* Native <details> collapsible card. No JS, native a11y. */
 details.card { padding: 0; }
 details.card > summary {
