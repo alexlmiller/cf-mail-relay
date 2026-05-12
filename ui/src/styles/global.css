@@ -1318,19 +1318,18 @@ table.list tbody td.right { text-align: right; }
   #route {
     gap: 18px;
   }
-  /* Collapse the page-head grid to a single column on narrow viewports so the
-     action button sits on its own row beneath the title rather than squeezing
-     beside it. */
+  /* Keep the primary action aligned with the title on phones when it fits;
+     the description still spans the full width underneath. */
   .page-head {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
     row-gap: 10px;
   }
   .page-head > div:first-child > .crumbs { grid-column: 1; grid-row: 1; }
   .page-head > div:first-child > h1 { grid-column: 1; grid-row: 2; }
-  .page-head > div:first-child > :not(.crumbs):not(h1) { grid-column: 1; grid-row: 3; }
+  .page-head > div:first-child > :not(.crumbs):not(h1) { grid-column: 1 / -1; grid-row: 3; }
   .page-head > .actions {
-    grid-column: 1;
-    grid-row: 4;
+    grid-column: 2;
+    grid-row: 2;
     justify-content: flex-end;
   }
   .nav-toggle { display: inline-grid; }
@@ -1358,10 +1357,29 @@ table.list tbody td.right { text-align: right; }
   }
 }
 
-/* ─── Phones (≤540px): single-col, full-screen overlays ─── */
+/* ─── Phones (≤540px): tighter grids, full-screen overlays ─── */
 @media (max-width: 540px) {
-  .stats { grid-template-columns: 1fr; }
-  .health-grid { grid-template-columns: 1fr; }
+  /* Keep stats + health as 2-column grids so the dashboard reads as a
+     coherent block instead of a long tower of half-empty cards. */
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+
+  /* Shrink the metric numeral a touch so values like "1,284" don't overflow
+     the narrower tile. */
+  .stat .stat-value { font-size: 26px; }
+  .stat { padding: 12px 14px; }
+
+  /* Recent-activity row content was clipping on the right because the inner
+     .row uses flex with no wrap. Let it wrap so long sender addresses can
+     break to a second line. */
+  .checklist-item .label .row { flex-wrap: wrap; }
+  .checklist-item .label .id { overflow-wrap: anywhere; min-width: 0; }
+
+  /* Probe-detail text often contains unbreakable tokens
+     (REQUIRED_D1_SCHEMA_VERSION, ULIDs). Allow it to break anywhere so it
+     doesn't clip the half-width tile. */
+  .health-item .soft { overflow-wrap: anywhere; }
+
   .page-head h1 { font-size: 19px; }
 
   /* Drawer covers viewport on phones. */
