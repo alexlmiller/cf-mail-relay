@@ -34,7 +34,6 @@ type config struct {
 	WorkerURL         string
 	HMACKeyID         string
 	HMACSecret        string
-	AllowedSenders    []string
 	MaxMessageBytes   int64
 	AllowInsecureAuth bool
 	ConnPerMinute     int
@@ -67,7 +66,6 @@ func main() {
 				Timeout: 30 * time.Second,
 			},
 		},
-		allowedSenders:  cfg.AllowedSenders,
 		maxMessageBytes: cfg.MaxMessageBytes,
 		throttle:        newThrottle(cfg.ConnPerMinute, cfg.AuthPerMinute, cfg.AuthLockoutBase),
 	}
@@ -90,7 +88,6 @@ func main() {
 
 type backend struct {
 	client          *workerclient.Client
-	allowedSenders  []string
 	maxMessageBytes int64
 	throttle        *throttle
 }
@@ -156,11 +153,10 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 			return smtpError(552, smtp.EnhancedCode{5, 3, 4}, "message too large")
 		}
 	}
-	allowedSenders := s.backend.allowedSenders
-	if s.authDecision != nil {
-		allowedSenders = s.authDecision.AllowedSenders
+	if s.authDecision == nil {
+		return smtp.ErrAuthRequired
 	}
-	if !senderAllowed(from, allowedSenders) {
+	if !senderAllowed(from, s.authDecision.AllowedSenders) {
 		return smtpError(553, smtp.EnhancedCode{5, 7, 1}, "sender not allowed")
 	}
 	s.mailFrom = from
@@ -262,7 +258,6 @@ func loadConfig() (config, error) {
 		WorkerURL:       strings.TrimRight(os.Getenv("RELAY_WORKER_URL"), "/"),
 		HMACKeyID:       os.Getenv("RELAY_KEY_ID"),
 		HMACSecret:      os.Getenv("RELAY_HMAC_SECRET"),
-		AllowedSenders:  splitCSV(os.Getenv("RELAY_ALLOWED_SENDERS")),
 		MaxMessageBytes: defaultMaxMessageBytes,
 		ConnPerMinute:   60,
 		AuthPerMinute:   20,
@@ -303,7 +298,6 @@ func loadConfig() (config, error) {
 		"RELAY_WORKER_URL":      cfg.WorkerURL,
 		"RELAY_KEY_ID":          cfg.HMACKeyID,
 		"RELAY_HMAC_SECRET":     cfg.HMACSecret,
-		"RELAY_ALLOWED_SENDERS": "worker-policy-ms2",
 	} {
 		if value == "" {
 			return config{}, fmt.Errorf("%s is required", name)
@@ -344,17 +338,6 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func splitCSV(raw string) []string {
-	var values []string
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			values = append(values, part)
-		}
-	}
-	return values
 }
 
 type throttle struct {
