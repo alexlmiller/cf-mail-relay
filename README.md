@@ -6,6 +6,12 @@ or any SMTP-capable client that needs authenticated outbound mail.
 
 ![Admin dashboard — service health, ops actions, recent send activity](docs/images/01-dashboard.png)
 
+[Live demo: explore the admin UI with sample data](https://relay-demo.alexmiller.net)
+
+The demo uses the real UI with an in-browser mock API. You can click through
+domains, senders, users, credentials, API keys, and events without sending mail
+or changing Cloudflare resources.
+
 The project has two deployable pieces:
 
 - A Cloudflare Worker that enforces policy, calls Email Sending `send_raw`, and
@@ -15,10 +21,12 @@ The project has two deployable pieces:
 - A Go SMTP relay you run on a public Docker host.
 
 Most of the stack runs on Cloudflare. The SMTP relay is the exception: SMTP
-clients need a public raw TCP listener on port `587`, which Cloudflare
-Workers/Containers do not currently provide. Run the relay anywhere you
-already operate Docker, or on a small public VM such as a GCP free-tier
-eligible `e2-micro` instance in one of Google's supported free-tier regions.
+clients need a raw TCP listener on port `587`, which Cloudflare
+Workers/Containers do not currently provide. That listener only needs to be
+reachable from your SMTP clients; it can be public for Gmail-style send-as
+workflows or private for internal applications. Run the relay anywhere you
+already operate Docker, or on a small VM such as a GCP free-tier eligible
+`e2-micro` instance in one of Google's supported free-tier regions.
 
 ```mermaid
 flowchart LR
@@ -40,6 +48,19 @@ flowchart LR
 - Multi-domain sending from one Cloudflare account.
 - Metadata-only audit log, idempotency, quotas, and basic operational doctors.
 
+## Demo
+
+Try the admin UI without connecting it to Cloudflare:
+
+```text
+https://relay-demo.alexmiller.net
+```
+
+The demo uses the real UI with an in-browser mock API and sample data. Actions
+such as creating credentials, refreshing domains, rolling API keys, and opening
+event drawers are simulated locally; no email is sent and no Cloudflare
+resources are changed.
+
 ## What It Does Not Do
 
 - No inbound email handling.
@@ -60,9 +81,12 @@ flowchart LR
   relay's control plane.
 - Each sending domain must use Cloudflare DNS and have Cloudflare Email Sending
   enabled and verified.
-- A Docker host reachable on TCP `587` for the SMTP relay. This can be existing
-  infrastructure or a small VM such as a GCP free-tier eligible `e2-micro`
-  instance. Check the provider's current free-tier region and egress limits.
+- A Docker host reachable on TCP `587` from the clients or services that will
+  submit mail. It only needs to be public if public clients such as Gmail need
+  to connect to it; for private applications, it can live behind your firewall
+  or on an internal network. This can be existing infrastructure or a small VM
+  such as a GCP free-tier eligible `e2-micro` instance. Check the provider's
+  current free-tier region and egress limits.
 - Local `pnpm`, `wrangler`, and `docker`.
 
 ## Setup

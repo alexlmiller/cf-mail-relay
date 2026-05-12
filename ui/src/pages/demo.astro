@@ -2,13 +2,13 @@
 import "../styles/global.css";
 ---
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="light" data-demo="true">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <meta name="referrer" content="strict-origin-when-cross-origin" />
-    <title>CF Mail Relay</title>
+    <title>CF Mail Relay Demo</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="preconnect" href="https://api.fontshare.com" crossorigin />
@@ -20,17 +20,15 @@ import "../styles/global.css";
     <div id="app">
       <noscript>
         <div style="padding:40px;font-family:system-ui;text-align:center">
-          <p><strong>CF Mail Relay</strong> requires JavaScript to render the admin UI.</p>
+          <p><strong>CF Mail Relay Demo</strong> requires JavaScript to render the admin UI.</p>
         </div>
       </noscript>
     </div>
     <script>
       import { boot } from "../lib/app";
-      import { installDemoApi, shouldEnableDemoForLocation } from "../lib/demo/api";
+      import { installDemoApi } from "../lib/demo/api";
 
-      if (shouldEnableDemoForLocation(window.location)) {
-        installDemoApi();
-      }
+      installDemoApi();
       boot();
     </script>
   </body>
