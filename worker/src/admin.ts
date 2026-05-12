@@ -183,6 +183,21 @@ export async function revokeSmtpCredential(env: Env, id: string): Promise<void> 
   await bumpPolicyVersion(env);
 }
 
+export async function rollSmtpCredential(env: Env, id: string): Promise<{ id: string; username: string; secret: string }> {
+  const existing = await env.D1_MAIN.prepare("SELECT id, username FROM smtp_credentials WHERE id = ? AND revoked_at IS NULL")
+    .bind(id)
+    .first<{ id: string; username: string }>();
+  if (!existing) throw new Error("credential_not_found");
+  const secret = randomSecret();
+  await env.D1_MAIN.prepare(
+    "UPDATE smtp_credentials SET secret_hash = ?, hash_version = hash_version + 1, last_used_at = NULL, last_used_ip_hash = NULL WHERE id = ? AND revoked_at IS NULL",
+  )
+    .bind(await hmacSha256Hex(env.CREDENTIAL_PEPPER, secret), id)
+    .run();
+  await bumpPolicyVersion(env);
+  return { id: existing.id, username: existing.username, secret };
+}
+
 export async function listApiKeys(env: Env): Promise<unknown[]> {
   const result = await env.D1_MAIN.prepare(
     `SELECT k.id, k.user_id, u.email AS user_email, k.name, k.key_prefix, k.scopes_json, k.allowed_sender_ids_json, k.created_at, k.last_used_at, k.revoked_at
@@ -232,6 +247,29 @@ export async function createApiKey(env: Env, body: Record<string, unknown>): Pro
 export async function revokeApiKey(env: Env, id: string): Promise<void> {
   await env.D1_MAIN.prepare("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL").bind(nowSeconds(), id).run();
   await bumpPolicyVersion(env);
+}
+
+export async function rollApiKey(env: Env, id: string): Promise<{ id: string; key_prefix: string; secret: string }> {
+  const existing = await env.D1_MAIN.prepare("SELECT id FROM api_keys WHERE id = ? AND revoked_at IS NULL").bind(id).first<{ id: string }>();
+  if (!existing) throw new Error("api_key_not_found");
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const secret = randomSecret();
+    const keyPrefix = secret.slice(0, 8);
+    try {
+      await env.D1_MAIN.prepare(
+        "UPDATE api_keys SET key_prefix = ?, secret_hash = ?, hash_version = hash_version + 1, last_used_at = NULL WHERE id = ? AND revoked_at IS NULL",
+      )
+        .bind(keyPrefix, await hmacSha256Hex(env.CREDENTIAL_PEPPER, secret), id)
+        .run();
+      await bumpPolicyVersion(env);
+      return { id, key_prefix: keyPrefix, secret };
+    } catch (error) {
+      if (!String(error instanceof Error ? error.message : error).toLowerCase().includes("unique")) {
+        throw error;
+      }
+    }
+  }
+  throw new Error("api_key_prefix_collision");
 }
 
 export async function listSendEvents(env: Env): Promise<unknown[]> {

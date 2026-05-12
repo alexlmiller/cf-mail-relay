@@ -86,10 +86,14 @@ export const selfApi = {
     request<CreateSecretResult>("/self/api/smtp-credentials", { method: "POST", body: JSON.stringify(body) }),
   revokeSmtpCredential: (id: string) =>
     request<{ revoked: true }>(`/self/api/smtp-credentials/${encodeURIComponent(id)}/revoke`, { method: "POST", body: "{}" }),
+  rollSmtpCredential: (id: string) =>
+    request<CreateSecretResult>(`/self/api/smtp-credentials/${encodeURIComponent(id)}/roll`, { method: "POST", body: "{}" }),
   apiKeys: () => request<ApiKey[]>("/self/api/api-keys"),
   createApiKey: (body: { name: string }) =>
     request<CreateSecretResult>("/self/api/api-keys", { method: "POST", body: JSON.stringify(body) }),
   revokeApiKey: (id: string) =>
     request<{ revoked: true }>(`/self/api/api-keys/${encodeURIComponent(id)}/revoke`, { method: "POST", body: "{}" }),
+  rollApiKey: (id: string) =>
+    request<CreateSecretResult>(`/self/api/api-keys/${encodeURIComponent(id)}/roll`, { method: "POST", body: "{}" }),
   sendEvents: () => request<SendEvent[]>("/self/api/send-events"),
 };

@@ -131,12 +131,22 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  rollSmtpCredential: (id: string) =>
+    request<CreateSecretResult>(`/admin/api/smtp-credentials/${encodeURIComponent(id)}/roll`, {
+      method: "POST",
+      body: "{}",
+    }),
 
   listApiKeys: () => request<ApiKey[]>("/admin/api/api-keys"),
   createApiKey: (body: { user_id: string; name: string; allowed_sender_ids?: string[] }) =>
     request<CreateSecretResult>("/admin/api/api-keys", { method: "POST", body: JSON.stringify(body) }),
   revokeApiKey: (id: string) =>
     request<{ revoked: true }>(`/admin/api/api-keys/${encodeURIComponent(id)}/revoke`, {
+      method: "POST",
+      body: "{}",
+    }),
+  rollApiKey: (id: string) =>
+    request<CreateSecretResult>(`/admin/api/api-keys/${encodeURIComponent(id)}/roll`, {
       method: "POST",
       body: "{}",
     }),

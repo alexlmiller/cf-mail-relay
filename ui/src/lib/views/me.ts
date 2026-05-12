@@ -268,23 +268,44 @@ function credentialRow(root: HTMLElement, credential: SmtpCredential): HTMLEleme
     credential.revoked_at
       ? h("span", { class: "soft", style: "font-size: 12px" }, formatAbsolute(credential.revoked_at))
       : h(
-          "button",
-          {
-            type: "button",
-            class: "btn ghost sm danger",
-            "on:click": async () => {
-              if (!confirm(`Revoke ${credential.username}? This is immediate and cannot be undone.`)) return;
-              try {
-                await selfApi.revokeSmtpCredential(credential.id);
-                toast(`${credential.username} revoked`);
-                await renderMe(root);
-              } catch (error) {
-                const message = describeError(error, "Could not revoke");
-                toast(message, "err");
-              }
+          "div",
+          { class: "row", style: "gap: 4px" },
+          h(
+            "button",
+            {
+              type: "button",
+              class: "btn ghost sm",
+              title: "Generate a new password on this same credential",
+              "on:click": async () => {
+                if (!confirm(`Roll ${credential.username}? The old password will stop working immediately; paste the new one into Gmail.`)) return;
+                try {
+                  const result = await selfApi.rollSmtpCredential(credential.id);
+                  revealCredential(result, () => renderMe(root));
+                } catch (error) {
+                  toast(describeError(error, "Could not roll"), "err");
+                }
+              },
             },
-          },
-          "Revoke",
+            "Roll",
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "btn ghost sm danger",
+              "on:click": async () => {
+                if (!confirm(`Revoke ${credential.username}? This is immediate and cannot be undone.`)) return;
+                try {
+                  await selfApi.revokeSmtpCredential(credential.id);
+                  toast(`${credential.username} revoked`);
+                  await renderMe(root);
+                } catch (error) {
+                  toast(describeError(error, "Could not revoke"), "err");
+                }
+              },
+            },
+            "Revoke",
+          ),
         ),
   );
 }
@@ -368,23 +389,44 @@ function apiKeyRow(root: HTMLElement, key: ApiKey): HTMLElement {
     key.revoked_at
       ? h("span", { class: "soft", style: "font-size: 12px" }, formatAbsolute(key.revoked_at))
       : h(
-          "button",
-          {
-            type: "button",
-            class: "btn ghost sm danger",
-            "on:click": async () => {
-              if (!confirm(`Revoke ${key.name}? This is immediate and cannot be undone.`)) return;
-              try {
-                await selfApi.revokeApiKey(key.id);
-                toast(`${key.name} revoked`);
-                await renderMe(root);
-              } catch (error) {
-                const message = describeError(error, "Could not revoke");
-                toast(message, "err");
-              }
+          "div",
+          { class: "row", style: "gap: 4px" },
+          h(
+            "button",
+            {
+              type: "button",
+              class: "btn ghost sm",
+              title: "Generate a new bearer token on this same key",
+              "on:click": async () => {
+                if (!confirm(`Roll ${key.name}? The old token will stop working immediately.`)) return;
+                try {
+                  const result = await selfApi.rollApiKey(key.id);
+                  revealApiKey(result, () => renderMe(root));
+                } catch (error) {
+                  toast(describeError(error, "Could not roll"), "err");
+                }
+              },
             },
-          },
-          "Revoke",
+            "Roll",
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "btn ghost sm danger",
+              "on:click": async () => {
+                if (!confirm(`Revoke ${key.name}? This is immediate and cannot be undone.`)) return;
+                try {
+                  await selfApi.revokeApiKey(key.id);
+                  toast(`${key.name} revoked`);
+                  await renderMe(root);
+                } catch (error) {
+                  toast(describeError(error, "Could not revoke"), "err");
+                }
+              },
+            },
+            "Revoke",
+          ),
         ),
   );
 }

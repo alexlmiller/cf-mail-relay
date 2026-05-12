@@ -4,6 +4,8 @@ import {
   selfCreateSmtpCredential,
   selfRevokeApiKey,
   selfRevokeSmtpCredential,
+  selfRollApiKey,
+  selfRollSmtpCredential,
   selfSendEvents,
   selfSenders,
   selfSmtpCredentials,
@@ -165,6 +167,38 @@ describe("self-service endpoints", () => {
     expect(revokeUpdate?.params).toContain("usr_self");
     expect(revokeUpdate?.params).toContain("cred_mine");
     expect(revokeUpdate?.sql).toMatch(/WHERE id = \? AND user_id = \?/);
+  });
+
+  it("rolls a credential belonging to the user with a fresh secret", async () => {
+    const { db, updates } = makeD1({ rows: { credentials: [{ id: "cred_mine", username: "gmail-relay" }] } });
+    const result = await selfRollSmtpCredential(makeEnv(db), "usr_self", "cred_mine");
+    expect(result.username).toBe("gmail-relay");
+    expect(result.secret.length).toBeGreaterThan(20);
+    const rollUpdate = updates.find((u) => u.sql.includes("UPDATE smtp_credentials") && u.sql.includes("secret_hash"));
+    expect(rollUpdate?.sql).toMatch(/WHERE id = \? AND user_id = \? AND revoked_at IS NULL/);
+    expect(rollUpdate?.params).toContain("usr_self");
+    expect(rollUpdate?.params).toContain("cred_mine");
+  });
+
+  it("refuses to roll a credential owned by a different user", async () => {
+    const { db } = makeD1({ rows: { credentials: [] } });
+    await expect(selfRollSmtpCredential(makeEnv(db), "usr_self", "cred_other")).rejects.toThrow("credential_not_found");
+  });
+
+  it("rolls an api key belonging to the user with a fresh prefix + secret", async () => {
+    const { db, updates } = makeD1({ rows: { api_keys: [{ id: "key_mine" }] } });
+    const result = await selfRollApiKey(makeEnv(db), "usr_self", "key_mine");
+    expect(result.key_prefix.length).toBe(8);
+    expect(result.secret.length).toBeGreaterThan(20);
+    const rollUpdate = updates.find((u) => u.sql.includes("UPDATE api_keys") && u.sql.includes("key_prefix"));
+    expect(rollUpdate?.sql).toMatch(/WHERE id = \? AND user_id = \? AND revoked_at IS NULL/);
+    expect(rollUpdate?.params).toContain("usr_self");
+    expect(rollUpdate?.params).toContain("key_mine");
+  });
+
+  it("refuses to roll an api key owned by a different user", async () => {
+    const { db } = makeD1({ rows: { api_keys: [] } });
+    await expect(selfRollApiKey(makeEnv(db), "usr_self", "key_other")).rejects.toThrow("api_key_not_found");
   });
 
   it("scopes send-events to the calling user", async () => {

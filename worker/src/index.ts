@@ -18,6 +18,8 @@ import {
   listUsers,
   revokeApiKey,
   revokeSmtpCredential,
+  rollApiKey,
+  rollSmtpCredential,
 } from "./admin";
 import { requireAdmin, requireAuthenticated } from "./access";
 import {
@@ -27,6 +29,8 @@ import {
   selfProfile,
   selfRevokeApiKey,
   selfRevokeSmtpCredential,
+  selfRollApiKey,
+  selfRollSmtpCredential,
   selfSendEvents,
   selfSenders,
   selfSmtpCredentials,
@@ -68,7 +72,6 @@ export interface Env {
   RELAY_HMAC_KEY_ID?: string;
   RELAY_AUTH_USERNAME?: string;
   RELAY_AUTH_PASSWORD?: string;
-  RELAY_ALLOWED_SENDERS?: string;
   BOOTSTRAP_SETUP_TOKEN?: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUDIENCE: string;
@@ -358,6 +361,9 @@ app.post("/admin/api/smtp-credentials/:id/revoke", async (c) =>
     return { revoked: true };
   }),
 );
+app.post("/admin/api/smtp-credentials/:id/roll", async (c) =>
+  adminJson(c, async () => rollSmtpCredential(c.env, c.req.param("id"))),
+);
 app.get("/admin/api/api-keys", async (c) => adminJson(c, () => listApiKeys(c.env)));
 app.post("/admin/api/api-keys", async (c) => adminJson(c, async () => createApiKey(c.env, await readJsonObject(c.req.raw)), 201));
 app.post("/admin/api/api-keys/:id/revoke", async (c) =>
@@ -365,6 +371,9 @@ app.post("/admin/api/api-keys/:id/revoke", async (c) =>
     await revokeApiKey(c.env, c.req.param("id"));
     return { revoked: true };
   }),
+);
+app.post("/admin/api/api-keys/:id/roll", async (c) =>
+  adminJson(c, async () => rollApiKey(c.env, c.req.param("id"))),
 );
 app.get("/admin/api/send-events", async (c) => adminJson(c, () => listSendEvents(c.env)));
 app.get("/admin/api/auth-failures", async (c) => adminJson(c, () => listAuthFailures(c.env)));
@@ -398,12 +407,18 @@ app.post("/self/api/smtp-credentials", async (c) =>
 app.post("/self/api/smtp-credentials/:id/revoke", async (c) =>
   selfJson(c, (userId) => selfRevokeSmtpCredential(c.env, userId, c.req.param("id"))),
 );
+app.post("/self/api/smtp-credentials/:id/roll", async (c) =>
+  selfJson(c, (userId) => selfRollSmtpCredential(c.env, userId, c.req.param("id"))),
+);
 app.get("/self/api/api-keys", async (c) => selfJson(c, (userId) => selfApiKeys(c.env, userId)));
 app.post("/self/api/api-keys", async (c) =>
   selfJson(c, async (userId) => selfCreateApiKey(c.env, userId, await readJsonObject(c.req.raw)), 201),
 );
 app.post("/self/api/api-keys/:id/revoke", async (c) =>
   selfJson(c, (userId) => selfRevokeApiKey(c.env, userId, c.req.param("id"))),
+);
+app.post("/self/api/api-keys/:id/roll", async (c) =>
+  selfJson(c, (userId) => selfRollApiKey(c.env, userId, c.req.param("id"))),
 );
 app.get("/self/api/send-events", async (c) => selfJson(c, (userId) => selfSendEvents(c.env, userId)));
 

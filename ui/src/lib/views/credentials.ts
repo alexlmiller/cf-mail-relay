@@ -148,26 +148,48 @@ function paint(root: HTMLElement, credentials: SmtpCredential[], users: User[], 
           row.revoked_at
             ? h("span", { class: "soft" }, "—")
             : h(
-                "button",
-                {
-                  type: "button",
-                  class: "btn ghost sm danger",
-                  "on:click": async (event: Event) => {
-                    event.stopPropagation();
-                    if (!confirm(`Revoke ${row.username}? This is immediate and cannot be undone.`)) return;
-                    try {
-                      await api.revokeSmtpCredential(row.id);
-                      toast(`${row.username} revoked`);
-                      await renderCredentials(root);
-                    } catch (error) {
-                      const message = describeError(error, "Could not revoke");
-                      toast(message, "err");
-                    }
+                "div",
+                { class: "row", style: "gap: 4px; justify-content: flex-end" },
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "btn ghost sm",
+                    title: "Generate a new secret on this same credential",
+                    "on:click": async (event: Event) => {
+                      event.stopPropagation();
+                      if (!confirm(`Roll ${row.username}? The old password will stop working immediately; the new one needs to be pasted into Gmail.`)) return;
+                      try {
+                        const result = await api.rollSmtpCredential(row.id);
+                        revealCredential(result, () => renderCredentials(root));
+                      } catch (error) {
+                        toast(describeError(error, "Could not roll"), "err");
+                      }
+                    },
                   },
-                },
-                "Revoke",
+                  "Roll",
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "btn ghost sm danger",
+                    "on:click": async (event: Event) => {
+                      event.stopPropagation();
+                      if (!confirm(`Revoke ${row.username}? This is immediate and cannot be undone.`)) return;
+                      try {
+                        await api.revokeSmtpCredential(row.id);
+                        toast(`${row.username} revoked`);
+                        await renderCredentials(root);
+                      } catch (error) {
+                        toast(describeError(error, "Could not revoke"), "err");
+                      }
+                    },
+                  },
+                  "Revoke",
+                ),
               ),
-        width: 100,
+        width: 150,
       },
     ],
     rows: credentials,

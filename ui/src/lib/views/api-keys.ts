@@ -155,26 +155,48 @@ function paint(root: HTMLElement, keys: ApiKey[], users: User[], senders: Sender
           row.revoked_at
             ? h("span", { class: "soft" }, "—")
             : h(
-                "button",
-                {
-                  type: "button",
-                  class: "btn ghost sm danger",
-                  "on:click": async (event: Event) => {
-                    event.stopPropagation();
-                    if (!confirm(`Revoke ${row.name}? This is immediate and cannot be undone.`)) return;
-                    try {
-                      await api.revokeApiKey(row.id);
-                      toast(`${row.name} revoked`);
-                      await renderApiKeys(root);
-                    } catch (error) {
-                      const message = describeError(error, "Could not revoke");
-                      toast(message, "err");
-                    }
+                "div",
+                { class: "row", style: "gap: 4px; justify-content: flex-end" },
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "btn ghost sm",
+                    title: "Generate a new bearer token on this same key",
+                    "on:click": async (event: Event) => {
+                      event.stopPropagation();
+                      if (!confirm(`Roll ${row.name}? The old token will stop working immediately; replace it in any application that uses it.`)) return;
+                      try {
+                        const result = await api.rollApiKey(row.id);
+                        revealApiKey(result, () => renderApiKeys(root));
+                      } catch (error) {
+                        toast(describeError(error, "Could not roll"), "err");
+                      }
+                    },
                   },
-                },
-                "Revoke",
+                  "Roll",
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "btn ghost sm danger",
+                    "on:click": async (event: Event) => {
+                      event.stopPropagation();
+                      if (!confirm(`Revoke ${row.name}? This is immediate and cannot be undone.`)) return;
+                      try {
+                        await api.revokeApiKey(row.id);
+                        toast(`${row.name} revoked`);
+                        await renderApiKeys(root);
+                      } catch (error) {
+                        toast(describeError(error, "Could not revoke"), "err");
+                      }
+                    },
+                  },
+                  "Revoke",
+                ),
               ),
-        width: 100,
+        width: 150,
       },
     ],
     rows: keys,

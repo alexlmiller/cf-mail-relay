@@ -6,8 +6,8 @@ import { formatAbsolute, formatRelative, initialsFor } from "../format";
 import { pill } from "../status";
 import { toast } from "../toast";
 import { openNewSender } from "./senders";
-import { openNewCredential } from "./credentials";
-import { openNewApiKey } from "./api-keys";
+import { openNewCredential, revealCredential } from "./credentials";
+import { openNewApiKey, revealApiKey } from "./api-keys";
 import type { ApiKey, Domain, Sender, SmtpCredential, User } from "../types";
 
 interface DetailData {
@@ -316,23 +316,44 @@ function credentialRow(credential: SmtpCredential, root: HTMLElement): HTMLEleme
     credential.revoked_at
       ? h("span", { class: "soft", style: "font-size: 12px" }, formatAbsolute(credential.revoked_at))
       : h(
-          "button",
-          {
-            type: "button",
-            class: "btn ghost sm danger",
-            "on:click": async () => {
-              if (!confirm(`Revoke ${credential.username}?`)) return;
-              try {
-                await api.revokeSmtpCredential(credential.id);
-                toast(`${credential.username} revoked`);
-                await renderUserDetail(root, credential.user_id);
-              } catch (error) {
-                const message = describeError(error, "Could not revoke");
-                toast(message, "err");
-              }
+          "div",
+          { class: "row", style: "gap: 4px" },
+          h(
+            "button",
+            {
+              type: "button",
+              class: "btn ghost sm",
+              title: "Generate a new secret on this same credential",
+              "on:click": async () => {
+                if (!confirm(`Roll ${credential.username}? The old password will stop working immediately.`)) return;
+                try {
+                  const result = await api.rollSmtpCredential(credential.id);
+                  revealCredential(result, () => renderUserDetail(root, credential.user_id));
+                } catch (error) {
+                  toast(describeError(error, "Could not roll"), "err");
+                }
+              },
             },
-          },
-          "Revoke",
+            "Roll",
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "btn ghost sm danger",
+              "on:click": async () => {
+                if (!confirm(`Revoke ${credential.username}?`)) return;
+                try {
+                  await api.revokeSmtpCredential(credential.id);
+                  toast(`${credential.username} revoked`);
+                  await renderUserDetail(root, credential.user_id);
+                } catch (error) {
+                  toast(describeError(error, "Could not revoke"), "err");
+                }
+              },
+            },
+            "Revoke",
+          ),
         ),
   );
 }
@@ -420,23 +441,44 @@ function apiKeyRow(key: ApiKey, root: HTMLElement): HTMLElement {
     key.revoked_at
       ? h("span", { class: "soft", style: "font-size: 12px" }, formatAbsolute(key.revoked_at))
       : h(
-          "button",
-          {
-            type: "button",
-            class: "btn ghost sm danger",
-            "on:click": async () => {
-              if (!confirm(`Revoke ${key.name}?`)) return;
-              try {
-                await api.revokeApiKey(key.id);
-                toast(`${key.name} revoked`);
-                await renderUserDetail(root, key.user_id);
-              } catch (error) {
-                const message = describeError(error, "Could not revoke");
-                toast(message, "err");
-              }
+          "div",
+          { class: "row", style: "gap: 4px" },
+          h(
+            "button",
+            {
+              type: "button",
+              class: "btn ghost sm",
+              title: "Generate a new bearer token on this same key",
+              "on:click": async () => {
+                if (!confirm(`Roll ${key.name}? The old token will stop working immediately.`)) return;
+                try {
+                  const result = await api.rollApiKey(key.id);
+                  revealApiKey(result, () => renderUserDetail(root, key.user_id));
+                } catch (error) {
+                  toast(describeError(error, "Could not roll"), "err");
+                }
+              },
             },
-          },
-          "Revoke",
+            "Roll",
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "btn ghost sm danger",
+              "on:click": async () => {
+                if (!confirm(`Revoke ${key.name}?`)) return;
+                try {
+                  await api.revokeApiKey(key.id);
+                  toast(`${key.name} revoked`);
+                  await renderUserDetail(root, key.user_id);
+                } catch (error) {
+                  toast(describeError(error, "Could not revoke"), "err");
+                }
+              },
+            },
+            "Revoke",
+          ),
         ),
   );
 }
