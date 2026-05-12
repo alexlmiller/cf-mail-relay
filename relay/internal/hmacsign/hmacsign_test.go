@@ -21,6 +21,7 @@ type vector struct {
 	Nonce      string `json:"nonce"`
 	BodySHA256 string `json:"body_sha256"`
 	KeyID      string `json:"key_id"`
+	Headers    map[string]string `json:"headers"`
 	Canonical  string `json:"canonical"`
 	Signature  string `json:"signature"`
 }
@@ -48,6 +49,7 @@ func TestVectors(t *testing.T) {
 				Nonce:      vector.Nonce,
 				BodySHA256: vector.BodySHA256,
 				KeyID:      vector.KeyID,
+				Headers:    vector.Headers,
 			}
 			if got := CanonicalString(input); got != vector.Canonical {
 				t.Fatalf("canonical mismatch:\nwant %q\n got %q", vector.Canonical, got)

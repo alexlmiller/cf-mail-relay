@@ -129,7 +129,7 @@ CREATE TABLE auth_failures (
   source             TEXT NOT NULL,
   remote_ip_hash     TEXT,                                                -- HMAC(METADATA_PEPPER, ip)
   attempted_username TEXT,
-  reason             TEXT                                                 -- categorical: bad_creds|disabled|tls_required|throttled
+  reason             TEXT                                                 -- categorical failure reason, including bootstrap/auth setup failures
 );
 CREATE INDEX idx_auth_failures_ts ON auth_failures(ts DESC);
 
@@ -139,9 +139,9 @@ CREATE INDEX idx_auth_failures_ts ON auth_failures(ts DESC);
 
 CREATE TABLE rate_reservations (
   id          TEXT PRIMARY KEY,
-  scope_type  TEXT NOT NULL,                                              -- sender_day|domain_day|credential_day|global_day
+  scope_type  TEXT NOT NULL,                                              -- sender_minute|sender_day|domain_day|credential_day|global_day
   scope_key   TEXT NOT NULL,
-  day         TEXT NOT NULL,                                              -- YYYY-MM-DD UTC
+  day         TEXT NOT NULL,                                              -- UTC bucket: YYYY-MM-DD or YYYY-MM-DDTHH:MM
   count       INTEGER NOT NULL DEFAULT 0,
   updated_at  INTEGER NOT NULL,
   UNIQUE (scope_type, scope_key, day)

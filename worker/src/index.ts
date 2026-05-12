@@ -37,8 +37,10 @@ import {
 } from "./self";
 import {
   canonicalRelayString,
+  collectSignedHeaders,
   normalizeBodySha256,
   parseRelayHmacHeaders,
+  parseSignedHeaderNames,
   sha256Hex,
   signRelayRequest,
   timingSafeEqualString,
@@ -52,7 +54,9 @@ import {
   computeHttpIdempotencyKey,
   computeSmtpIdempotencyKey,
   extractHeader,
+  extractHeaders,
   policyVersionFromD1,
+  recordBootstrapFailure,
   recordSendEvent,
   reserveSendQuota,
   senderAllowedForApiKey,
@@ -70,8 +74,6 @@ export interface Env {
   RELAY_HMAC_SECRET_CURRENT: string;
   RELAY_HMAC_SECRET_PREVIOUS?: string;
   RELAY_HMAC_KEY_ID?: string;
-  RELAY_AUTH_USERNAME?: string;
-  RELAY_AUTH_PASSWORD?: string;
   BOOTSTRAP_SETUP_TOKEN?: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUDIENCE: string;
@@ -81,18 +83,20 @@ export interface Env {
 }
 
 const app = new Hono<{ Bindings: Env }>();
-const workerVersion = "0.1.0-ms5";
+const workerVersion = "0.1.0-ms7";
+const gitSha = "ms7";
+const requiredSchemaVersionDefault = "2";
 const maxRelayBodyBytes = 6 * 1024 * 1024;
 
 app.get("/healthz", async (c) => {
-  const requiredSchemaVersion = c.env.REQUIRED_D1_SCHEMA_VERSION || "1";
+  const requiredSchemaVersion = c.env.REQUIRED_D1_SCHEMA_VERSION || requiredSchemaVersionDefault;
   const actualSchemaVersion = await schemaVersionFromD1(c.env);
   if (actualSchemaVersion !== requiredSchemaVersion) {
     return c.json(
       {
         ok: false,
         version: workerVersion,
-        git_sha: "ms5",
+        git_sha: gitSha,
         error: "schema_version_mismatch",
         required_schema_version: requiredSchemaVersion,
         actual_schema_version: actualSchemaVersion,
@@ -103,7 +107,7 @@ app.get("/healthz", async (c) => {
   return c.json({
     ok: true,
     version: workerVersion,
-    git_sha: "ms5",
+    git_sha: gitSha,
     schema_version: actualSchemaVersion,
   });
 });
@@ -119,6 +123,9 @@ app.post("/bootstrap/admin", async (c) => {
   const token = c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
   const result = await bootstrapAdmin(c.env, token, body);
   if (!result.ok) {
+    if (result.status === 401) {
+      await recordBootstrapFailure(c.env, c.req.header("cf-connecting-ip") ?? undefined, result.error);
+    }
     return c.json({ ok: false, error: result.error }, result.status);
   }
   return c.json(result);
@@ -161,13 +168,19 @@ app.post("/relay/send", async (c) => {
     return c.json({ ok: false, error: "message_too_large" }, 413);
   }
 
-  const from = c.req.header("x-relay-envelope-from")?.trim() ?? "";
-  const recipients = parseRecipients(c.req.header("x-relay-recipients"));
+  const from = normalizeEmail(c.req.header("x-relay-envelope-from") ?? "");
+  const recipients = uniqueAddresses(parseRecipients(c.req.header("x-relay-recipients")).map(normalizeEmail).filter((recipient) => recipient.length > 0));
   if (from.length === 0) {
     return c.json({ ok: false, error: "missing_envelope_from" }, 400);
   }
+  if (!isValidMailbox(from)) {
+    return c.json({ ok: false, error: "invalid_envelope_from" }, 400);
+  }
   if (recipients.length === 0) {
     return c.json({ ok: false, error: "missing_recipients" }, 400);
+  }
+  if (!recipients.every(isValidMailbox)) {
+    return c.json({ ok: false, error: "invalid_recipients" }, 400);
   }
   if (recipients.length > 50) {
     return c.json({ ok: false, error: "too_many_recipients" }, 400);
@@ -199,6 +212,22 @@ app.post("/relay/send", async (c) => {
   if (decoded === null) {
     return c.json({ ok: false, error: "mime_not_utf8_json_safe" }, 422);
   }
+  const headerValidation = validateSingletonHeaders(decoded);
+  if (!headerValidation.ok) {
+    return c.json({ ok: false, error: headerValidation.error }, 400);
+  }
+  const mimeFrom = extractSingleEmailAddress(headerValidation.from);
+  if (!mimeFrom.ok) {
+    return c.json({ ok: false, error: mimeFrom.error }, 400);
+  }
+  if (normalizeEmail(from) !== mimeFrom.address) {
+    return c.json({ ok: false, error: "from_header_mismatch" }, 403);
+  }
+  const senderHeader = extractHeader(decoded, "sender");
+  if (senderHeader.length > 0 && !allAddressesAllowed(senderHeader, senderPolicy.allowedSenders)) {
+    return c.json({ ok: false, error: "sender_header_not_allowed" }, 403);
+  }
+
   const mimeMessage = stripCaptureHopHeaders(decoded);
   const mimeMessageBytes = new TextEncoder().encode(mimeMessage);
   const strippedMimeSha256 = await sha256Hex(mimeMessageBytes);
@@ -209,9 +238,13 @@ app.post("/relay/send", async (c) => {
     messageIdHeader,
     mimeSha256: strippedMimeSha256,
   });
-  const idempotency = await beginIdempotentRequest(c.env, idempotencyKey, idempotencyKey);
+  const requestHash = idempotencyKey;
+  const idempotency = await beginIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp");
   if (idempotency.status === "pending") {
     return c.json({ ok: false, error: "idempotency_pending" }, 409);
+  }
+  if (idempotency.status === "conflict") {
+    return c.json({ ok: false, error: "idempotency_key_conflict" }, 409);
   }
   if (idempotency.status === "replay") {
     for (const [name, value] of Object.entries(idempotency.response.headers ?? {})) {
@@ -238,7 +271,7 @@ app.post("/relay/send", async (c) => {
         smtpCode: "451",
         errorCode: "rate_limited",
       }),
-      completeIdempotentRequest(c.env, idempotencyKey, false, {
+      completeIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp", false, {
         ok: false,
         status: 429,
         body: responseBody,
@@ -320,7 +353,7 @@ app.post("/relay/send", async (c) => {
       errorCode: deliveryOk ? undefined : allBounced ? "all_recipients_bounced" : "cloudflare_send_raw_rejected",
       cfErrorCode: cfResult.errorCode,
     }),
-    completeIdempotentRequest(c.env, idempotencyKey, deliveryOk, {
+    completeIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp", deliveryOk, {
       ok: deliveryOk,
       status: responseStatus,
       body: responseBody,
@@ -433,11 +466,17 @@ app.post("/send", async (c) => {
     return c.json({ ok: false, error: "invalid_api_key", reason: apiKey.reason }, 401);
   }
 
-  let body: { raw?: unknown };
+  let body: { from?: unknown; recipients?: unknown; raw?: unknown };
   try {
-    body = (await c.req.json()) as { raw?: unknown };
+    body = (await c.req.json()) as { from?: unknown; recipients?: unknown; raw?: unknown };
   } catch {
     return c.json({ ok: false, error: "invalid_json" }, 400);
+  }
+  if (typeof body.from !== "string" || body.from.trim().length === 0) {
+    return c.json({ ok: false, error: "missing_from" }, 400);
+  }
+  if (!Array.isArray(body.recipients) || !body.recipients.every((recipient) => typeof recipient === "string")) {
+    return c.json({ ok: false, error: "invalid_recipients" }, 400);
   }
   if (typeof body.raw !== "string" || body.raw.length === 0) {
     return c.json({ ok: false, error: "invalid_raw" }, 400);
@@ -451,19 +490,26 @@ app.post("/send", async (c) => {
     return c.json({ ok: false, error: "message_too_large" }, 413);
   }
 
-  const mimeMessage = decodeUtf8(rawMimeBytes);
-  if (mimeMessage === null) {
+  const decodedMimeMessage = decodeUtf8(rawMimeBytes);
+  if (decodedMimeMessage === null) {
     return c.json({ ok: false, error: "mime_not_utf8_json_safe" }, 422);
   }
 
-  const from = extractFirstEmailAddress(extractHeader(mimeMessage, "from"));
-  const recipients = uniqueAddresses([
-    ...extractEmailAddresses(extractHeader(mimeMessage, "to")),
-    ...extractEmailAddresses(extractHeader(mimeMessage, "cc")),
-    ...extractEmailAddresses(extractHeader(mimeMessage, "bcc")),
-  ]);
-  if (from === null) {
-    return c.json({ ok: false, error: "missing_from_header" }, 400);
+  const from = normalizeEmail(body.from);
+  const recipients = uniqueAddresses(body.recipients.map((recipient) => normalizeEmail(recipient)).filter((recipient) => recipient.length > 0));
+  if (!isValidMailbox(from)) {
+    return c.json({ ok: false, error: "invalid_from" }, 400);
+  }
+  if (!recipients.every(isValidMailbox)) {
+    return c.json({ ok: false, error: "invalid_recipients" }, 400);
+  }
+  const headerValidation = validateSingletonHeaders(decodedMimeMessage);
+  if (!headerValidation.ok) {
+    return c.json({ ok: false, error: headerValidation.error }, 400);
+  }
+  const mimeFrom = extractSingleEmailAddress(headerValidation.from);
+  if (!mimeFrom.ok) {
+    return c.json({ ok: false, error: mimeFrom.error }, 400);
   }
   if (recipients.length === 0) {
     return c.json({ ok: false, error: "missing_recipients" }, 400);
@@ -471,6 +517,15 @@ app.post("/send", async (c) => {
   if (recipients.length > 50) {
     return c.json({ ok: false, error: "too_many_recipients" }, 400);
   }
+  if (mimeFrom.address !== from) {
+    return c.json({ ok: false, error: "from_header_mismatch" }, 403);
+  }
+  const senderHeader = extractHeader(decodedMimeMessage, "sender");
+  if (senderHeader.length > 0 && !allAddressesAllowed(senderHeader, apiKey.allowed_senders)) {
+    return c.json({ ok: false, error: "sender_header_not_allowed" }, 403);
+  }
+  const mimeMessage = stripCaptureHopHeaders(decodedMimeMessage);
+  const mimeMessageBytes = new TextEncoder().encode(mimeMessage);
   const messageIdHeader = extractHeader(mimeMessage, "message-id");
   if (!senderAllowedForApiKey(from, apiKey.allowed_senders)) {
     await recordSendEvent(c.env, {
@@ -489,17 +544,21 @@ app.post("/send", async (c) => {
   }
 
   const rawMimeSha256 = await sha256Hex(rawMimeBytes);
+  const strippedMimeSha256 = await sha256Hex(mimeMessageBytes);
   const requestHash = await computeHttpIdempotencyKey({
     envelopeFrom: from,
     recipients,
     messageIdHeader,
-    mimeSha256: rawMimeSha256,
+    mimeSha256: strippedMimeSha256,
   });
   const suppliedIdempotencyKey = c.req.header("idempotency-key")?.trim();
-  const idempotencyKey = suppliedIdempotencyKey && suppliedIdempotencyKey.length > 0 ? suppliedIdempotencyKey : requestHash;
+  const idempotencyKey = suppliedIdempotencyKey && suppliedIdempotencyKey.length > 0 ? `http:${apiKey.api_key_id}:${suppliedIdempotencyKey}` : requestHash;
   const idempotency = await beginIdempotentRequest(c.env, idempotencyKey, requestHash, "http");
   if (idempotency.status === "pending") {
     return c.json({ ok: false, error: "idempotency_pending" }, 409);
+  }
+  if (idempotency.status === "conflict") {
+    return c.json({ ok: false, error: "idempotency_key_conflict" }, 409);
   }
   if (idempotency.status === "replay") {
     for (const [name, value] of Object.entries(idempotency.response.headers ?? {})) {
@@ -525,7 +584,7 @@ app.post("/send", async (c) => {
         status: "rate_limited",
         errorCode: "rate_limited",
       }),
-      completeIdempotentRequest(c.env, idempotencyKey, false, {
+      completeIdempotentRequest(c.env, idempotencyKey, requestHash, "http", false, {
         ok: false,
         status: 429,
         body: responseBody,
@@ -563,7 +622,9 @@ app.post("/send", async (c) => {
     from,
     recipients,
     raw_mime_size_bytes: rawMimeBytes.byteLength,
+    stripped_mime_size_bytes: mimeMessageBytes.byteLength,
     raw_mime_sha256: rawMimeSha256,
+    stripped_mime_sha256: strippedMimeSha256,
     idempotency_key: idempotencyKey,
     cf_status: cfResponse.status,
     cf_ray_id: cfRayId,
@@ -590,7 +651,7 @@ app.post("/send", async (c) => {
       errorCode: deliveryOk ? undefined : allBounced ? "all_recipients_bounced" : "cloudflare_send_raw_rejected",
       cfErrorCode: cfResult.errorCode,
     }),
-    completeIdempotentRequest(c.env, idempotencyKey, deliveryOk, {
+    completeIdempotentRequest(c.env, idempotencyKey, requestHash, "http", deliveryOk, {
       ok: deliveryOk,
       status: responseStatus,
       body: responseBody,
@@ -611,11 +672,16 @@ export function parseRecipients(raw: string | undefined): string[] {
 }
 
 export function stripCaptureHopHeaders(mimeMessage: string): string {
+  return stripMimeHeaders(mimeMessage, ["received", "x-received", "x-gm-message-state", "bcc"]);
+}
+
+function stripMimeHeaders(mimeMessage: string, names: string[]): string {
   const normalized = mimeMessage.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
   const headerEnd = normalized.indexOf("\n\n");
   if (headerEnd === -1) {
     return mimeMessage;
   }
+  const blocked = new Set(names.map((name) => name.toLowerCase()));
 
   const headerBlock = normalized.slice(0, headerEnd);
   const body = normalized.slice(headerEnd + 2);
@@ -630,7 +696,7 @@ export function stripCaptureHopHeaders(mimeMessage: string): string {
 
   const kept = unfolded.filter((header) => {
     const name = header.split(":", 1)[0]?.toLowerCase() ?? "";
-    return !["received", "x-received", "x-gm-message-state"].includes(name);
+    return !blocked.has(name);
   });
 
   return `${kept.join("\r\n")}\r\n\r\n${body.replaceAll("\n", "\r\n")}`;
@@ -655,6 +721,14 @@ async function verifyRelayHmac(
   if (!isSupportedRelayVersion(headers.version)) {
     return { ok: false, status: 426, error: "unsupported_relay_version" };
   }
+  const signedHeaderNames = parseSignedHeaderNames(headers.signedHeaders);
+  if (signedHeaderNames.length === 0) {
+    return { ok: false, status: 401, error: "missing_signed_headers" };
+  }
+  const requiredSignedHeaders = requiredRelaySignedHeaders(new URL(request.url).pathname);
+  if (!requiredSignedHeaders.every((name) => signedHeaderNames.includes(name))) {
+    return { ok: false, status: 401, error: "missing_required_signed_header" };
+  }
 
   const bodySha256 = await sha256Hex(bodyBytes);
   if (normalizeBodySha256(headers.bodySha256) !== bodySha256) {
@@ -674,6 +748,7 @@ async function verifyRelayHmac(
     nonce: headers.nonce,
     bodySha256,
     keyId: headers.keyId,
+    signedHeaders: collectSignedHeaders(request.headers, signedHeaderNames),
   };
   const current = await signRelayRequest(input, env.RELAY_HMAC_SECRET_CURRENT);
   const previous =
@@ -684,13 +759,35 @@ async function verifyRelayHmac(
     return { ok: false, status: 401, error: "invalid_signature" };
   }
 
-  const nonceKey = `nonce:${headers.keyId}:${headers.nonce}`;
-  if ((await env.KV_HOT.get(nonceKey)) !== null) {
+  const nonceInserted = await reserveRelayNonce(env, headers.keyId, headers.nonce);
+  if (!nonceInserted) {
     return { ok: false, status: 401, error: "replay_nonce" };
   }
-  await env.KV_HOT.put(nonceKey, "1", { expirationTtl: 120 });
 
   return { ok: true };
+}
+
+async function reserveRelayNonce(env: Env, keyId: string, nonce: string): Promise<boolean> {
+  const now = Math.floor(Date.now() / 1000);
+  const result = await env.D1_MAIN.prepare("INSERT OR IGNORE INTO relay_nonces (key_id, nonce, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    .bind(keyId, nonce, now, now + 120)
+    .run();
+  return result.meta.changes > 0;
+}
+
+async function cleanupExpiredRows(env: Env): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await env.D1_MAIN.batch([
+    env.D1_MAIN.prepare("DELETE FROM relay_nonces WHERE expires_at < ?").bind(now),
+    env.D1_MAIN.prepare("DELETE FROM idempotency_keys WHERE expires_at < ?").bind(now),
+  ]);
+}
+
+function requiredRelaySignedHeaders(path: string): string[] {
+  if (path === "/relay/send") {
+    return ["x-relay-credential-id", "x-relay-envelope-from", "x-relay-recipients", "x-relay-version"];
+  }
+  return ["x-relay-version"];
 }
 
 function decodeUtf8(bytes: Uint8Array): string | null {
@@ -707,7 +804,7 @@ function decodeUtf8(bytes: Uint8Array): string | null {
 }
 
 function isSupportedRelayVersion(version: string): boolean {
-  return version === "0.1.0-ms1" || version.startsWith("0.1.0-");
+  return /^0\.1\.0-ms(?:[7-9]|\d{2,})$/.test(version);
 }
 
 function sendRawUrl(accountId: string): string {
@@ -731,6 +828,8 @@ async function adminJson(
   successStatus: 200 | 201 = 200,
 ) {
   setAdminCors(c);
+  const csrf = rejectUnsafeCrossOrigin(c);
+  if (csrf !== null) return csrf;
   const admin = await requireAdmin(c.req.raw, c.env);
   if (!admin.ok) {
     return c.json({ ok: false, error: admin.error }, admin.status);
@@ -749,6 +848,8 @@ async function selfJson(
   successStatus: 200 | 201 = 200,
 ) {
   setAdminCors(c);
+  const csrf = rejectUnsafeCrossOrigin(c);
+  if (csrf !== null) return csrf;
   const session = await requireAuthenticated(c.req.raw, c.env);
   if (!session.ok) {
     return c.json({ ok: false, error: session.error }, session.status);
@@ -766,7 +867,7 @@ async function selfJson(
 function setAdminCors(c: Context<{ Bindings: Env }>): void {
   const origin = c.req.header("origin");
   const allowedOrigin = c.env.ADMIN_CORS_ORIGIN;
-  if (origin !== undefined && (allowedOrigin === "*" || origin === allowedOrigin)) {
+  if (origin !== undefined && allowedOrigin !== "*" && origin === trustedAdminOrigin(c)) {
     c.header("access-control-allow-origin", origin);
     c.header("access-control-allow-credentials", "true");
     c.header("vary", "Origin");
@@ -774,6 +875,31 @@ function setAdminCors(c: Context<{ Bindings: Env }>): void {
   c.header("access-control-allow-methods", "GET,POST,OPTIONS");
   c.header("access-control-allow-headers", "content-type");
   c.header("access-control-max-age", "600");
+}
+
+function rejectUnsafeCrossOrigin(c: Context<{ Bindings: Env }>): Response | null {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(c.req.method.toUpperCase())) {
+    return null;
+  }
+  if (c.env.ADMIN_CORS_ORIGIN === "*") {
+    return c.json({ ok: false, error: "invalid_admin_cors_origin" }, 403);
+  }
+  const origin = c.req.header("origin");
+  if (origin === undefined && c.req.header("sec-fetch-site") === undefined && c.req.header("sec-fetch-mode") === undefined) {
+    return null;
+  }
+  if (origin !== trustedAdminOrigin(c)) {
+    return c.json({ ok: false, error: "csrf_origin_denied" }, 403);
+  }
+  return null;
+}
+
+function trustedAdminOrigin(c: Context<{ Bindings: Env }>): string {
+  const configured = c.env.ADMIN_CORS_ORIGIN;
+  if (configured !== undefined && configured.length > 0 && configured !== "*") {
+    return configured.replace(/\/$/, "");
+  }
+  return new URL(c.req.url).origin;
 }
 
 async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
@@ -833,16 +959,75 @@ function decodeBase64(raw: string): Uint8Array | null {
   }
 }
 
-function extractFirstEmailAddress(raw: string): string | null {
-  return extractEmailAddresses(raw)[0] ?? null;
+function validateSingletonHeaders(mimeMessage: string): { ok: true; from: string } | { ok: false; error: string } {
+  const fromHeaders = extractHeaders(mimeMessage, "from");
+  if (fromHeaders.length === 0) {
+    return { ok: false, error: "missing_from_header" };
+  }
+  if (fromHeaders.length > 1) {
+    return { ok: false, error: "duplicate_from_header" };
+  }
+  if (extractHeaders(mimeMessage, "sender").length > 1) {
+    return { ok: false, error: "duplicate_sender_header" };
+  }
+  if (extractHeaders(mimeMessage, "message-id").length > 1) {
+    return { ok: false, error: "duplicate_message_id_header" };
+  }
+  return { ok: true, from: fromHeaders[0]! };
+}
+
+function extractSingleEmailAddress(raw: string): { ok: true; address: string } | { ok: false; error: "missing_from_header" | "multiple_from_addresses" } {
+  const addresses = extractEmailAddresses(raw);
+  if (addresses.length === 0) {
+    return { ok: false, error: "missing_from_header" };
+  }
+  if (addresses.length > 1) {
+    return { ok: false, error: "multiple_from_addresses" };
+  }
+  return { ok: true, address: addresses[0]! };
 }
 
 function extractEmailAddresses(raw: string): string[] {
-  return [...raw.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map((match) => match[0].toLowerCase());
+  const withoutQuotedStrings = raw.replace(/"([^"\\]|\\.)*"/g, "");
+  return [...withoutQuotedStrings.matchAll(/[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map((match) => match[0].toLowerCase());
+}
+
+function allAddressesAllowed(raw: string, allowedSenders: string[]): boolean {
+  const addresses = extractEmailAddresses(raw);
+  return addresses.length > 0 && addresses.every((address) => senderAllowedForApiKey(address, allowedSenders));
+}
+
+function isValidMailbox(value: string): boolean {
+  if (value.length > 254) {
+    return false;
+  }
+  const at = value.lastIndexOf("@");
+  if (at <= 0 || at === value.length - 1 || at > 64) {
+    return false;
+  }
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  if (!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(local) || local.includes("..")) {
+    return false;
+  }
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(domain)) {
+    return false;
+  }
+  return true;
 }
 
 function uniqueAddresses(addresses: string[]): string[] {
   return [...new Set(addresses)];
 }
+
+export async function scheduled(_controller: unknown, env: Env): Promise<void> {
+  await cleanupExpiredRows(env);
+}
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase().replace(/^<|>$/g, "").trim();
+}
+
+(app as typeof app & { scheduled: typeof scheduled }).scheduled = scheduled;
 
 export default app;

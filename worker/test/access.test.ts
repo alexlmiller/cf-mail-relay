@@ -86,6 +86,7 @@ describe("Cloudflare Access JWT validation", () => {
       sub: "access-subject",
       aud: "aud-123",
       iss: "https://team.cloudflareaccess.com",
+      type: "app",
       exp: Math.floor(Date.now() / 1000) + 300,
       email: "alex@example.net",
     });
@@ -101,6 +102,8 @@ describe("Cloudflare Access JWT validation", () => {
     const token = await fixture.sign({
       sub: "access-subject",
       aud: "wrong-aud",
+      iss: "https://team.cloudflareaccess.com",
+      type: "app",
       exp: Math.floor(Date.now() / 1000) + 300,
     });
 
@@ -115,6 +118,8 @@ describe("Cloudflare Access JWT validation", () => {
     const token = await fixture.sign({
       sub: "access-subject",
       aud: "aud-123",
+      iss: "https://team.cloudflareaccess.com",
+      type: "app",
       exp: Math.floor(Date.now() / 1000) - 1,
     });
 
@@ -124,11 +129,27 @@ describe("Cloudflare Access JWT validation", () => {
     });
   });
 
+  it("rejects tokens without Cloudflare Access issuer and app type", async () => {
+    const fixture = await makeJwtFixture();
+    const token = await fixture.sign({
+      sub: "access-subject",
+      aud: "aud-123",
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+
+    await expect(verifyAccessJwt(token, makeEnv(fixture.jwks) as never)).resolves.toMatchObject({
+      ok: false,
+      error: "invalid_access_jwt_type",
+    });
+  });
+
   it("serves admin session for an authorized admin", async () => {
     const fixture = await makeJwtFixture();
     const token = await fixture.sign({
       sub: "access-subject",
       aud: "aud-123",
+      iss: "https://team.cloudflareaccess.com",
+      type: "app",
       exp: Math.floor(Date.now() / 1000) + 300,
       email: "alex@example.net",
     });

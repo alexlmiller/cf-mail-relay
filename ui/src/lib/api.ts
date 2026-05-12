@@ -54,8 +54,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     // text/plain keeps the request CORS-"simple", so the browser doesn't issue
     // an OPTIONS preflight that Cloudflare Access would challenge with a 403.
     // The Worker's c.req.json() parses any text body, so the content-type
-    // doesn't matter to the server. See docs/security.md for the broader CORS
-    // and Access interaction.
+    // doesn't matter to the server. The Worker still enforces Origin on
+    // state-changing admin/self requests.
     headers.set("content-type", "text/plain;charset=UTF-8");
   }
   const response = await fetch(`${apiBase}${path}`, {

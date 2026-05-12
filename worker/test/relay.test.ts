@@ -17,7 +17,8 @@ function makeKv(): KVNamespace {
 }
 
 interface FakeD1State {
-  idempotency: Map<string, { status: string; response_json: string | null }>;
+  idempotency: Map<string, { status: string; request_hash: string; source: string; response_json: string | null }>;
+  relayNonces: Set<string>;
   settings: Map<string, string>;
   rates: Map<string, number>;
   sendEvents: unknown[][];
@@ -27,9 +28,10 @@ interface FakeD1State {
 function makeD1(): D1Database & { state: FakeD1State } {
   const state: FakeD1State = {
     idempotency: new Map(),
+    relayNonces: new Set(),
     settings: new Map([
       ["policy_version", "7"],
-      ["schema_version", "1"],
+      ["schema_version", "2"],
     ]),
     rates: new Map(),
     sendEvents: [],
@@ -120,11 +122,25 @@ function makeD1(): D1Database & { state: FakeD1State } {
       if (state.idempotency.has(key)) {
         return { meta: { changes: 0 } };
       }
-      state.idempotency.set(key, { status: "pending", response_json: null });
+      state.idempotency.set(key, { status: "pending", request_hash: String(args[1]), source: String(args[2]), response_json: null });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("INSERT OR IGNORE INTO relay_nonces")) {
+      const key = `${String(args[0])}:${String(args[1])}`;
+      if (state.relayNonces.has(key)) {
+        return { meta: { changes: 0 } };
+      }
+      state.relayNonces.add(key);
       return { meta: { changes: 1 } };
     }
     if (sql.includes("UPDATE idempotency_keys SET status = ?")) {
-      state.idempotency.set(String(args[3]), { status: String(args[0]), response_json: String(args[1]) });
+      const existing = state.idempotency.get(String(args[3]));
+      state.idempotency.set(String(args[3]), {
+        status: String(args[0]),
+        request_hash: existing?.request_hash ?? "",
+        source: existing?.source ?? "smtp",
+        response_json: String(args[1]),
+      });
       return { meta: { changes: 1 } };
     }
     if (sql.includes("INSERT INTO send_events")) {
@@ -195,6 +211,7 @@ async function signedHeaders(path: string, body: Uint8Array, nonce: string): Pro
       nonce,
       bodySha256,
       keyId,
+      signedHeaders: { "x-relay-version": "0.1.0-ms7" },
     },
     hmacSecret,
   );
@@ -204,7 +221,42 @@ async function signedHeaders(path: string, body: Uint8Array, nonce: string): Pro
     "x-relay-timestamp": timestamp,
     "x-relay-nonce": nonce,
     "x-relay-body-sha256": bodySha256,
-    "x-relay-version": "0.1.0-ms1",
+    "x-relay-version": "0.1.0-ms7",
+    "x-relay-signed-headers": "x-relay-version",
+    "x-relay-signature": signature,
+  };
+}
+
+async function signedSendHeaders(body: Uint8Array, nonce: string, headers: Record<string, string>): Promise<Record<string, string>> {
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const bodySha256 = await sha256Hex(body);
+  const signedHeaders = {
+    "x-relay-credential-id": headers["x-relay-credential-id"] ?? "",
+    "x-relay-envelope-from": headers["x-relay-envelope-from"] ?? "",
+    "x-relay-recipients": headers["x-relay-recipients"] ?? "",
+    "x-relay-version": "0.1.0-ms7",
+  };
+  const signature = await signRelayRequest(
+    {
+      method: "POST",
+      path: "/relay/send",
+      timestamp,
+      nonce,
+      bodySha256,
+      keyId,
+      signedHeaders,
+    },
+    hmacSecret,
+  );
+
+  return {
+    ...headers,
+    "x-relay-key-id": keyId,
+    "x-relay-timestamp": timestamp,
+    "x-relay-nonce": nonce,
+    "x-relay-body-sha256": bodySha256,
+    "x-relay-version": "0.1.0-ms7",
+    "x-relay-signed-headers": "x-relay-credential-id;x-relay-envelope-from;x-relay-recipients;x-relay-version",
     "x-relay-signature": signature,
   };
 }
@@ -233,22 +285,22 @@ describe("relay endpoints", () => {
   });
 
   it("reports D1 schema mismatch on /healthz", async () => {
-    const response = await app.request("/healthz", { method: "GET" }, makeEnv({ REQUIRED_D1_SCHEMA_VERSION: "2" }));
+    const response = await app.request("/healthz", { method: "GET" }, makeEnv({ REQUIRED_D1_SCHEMA_VERSION: "3" }));
 
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toMatchObject({
       ok: false,
       error: "schema_version_mismatch",
-      required_schema_version: "2",
-      actual_schema_version: "1",
+      required_schema_version: "3",
+      actual_schema_version: "2",
     });
   });
 
   it("reports healthy schema on /healthz", async () => {
-    const response = await app.request("/healthz", { method: "GET" }, makeEnv({ REQUIRED_D1_SCHEMA_VERSION: "1" }));
+    const response = await app.request("/healthz", { method: "GET" }, makeEnv({ REQUIRED_D1_SCHEMA_VERSION: "2" }));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ ok: true, version: "0.1.0-ms5", schema_version: "1" });
+    await expect(response.json()).resolves.toMatchObject({ ok: true, version: "0.1.0-ms7", schema_version: "2" });
   });
 
   it("authenticates SMTP credentials with HMAC-protected /relay/auth", async () => {
@@ -266,7 +318,7 @@ describe("relay endpoints", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
-      ttl_seconds: 60,
+      ttl_seconds: 5,
       policy_version: "7",
       credential_id: "cred_1",
       allowed_senders: ["gmail@alexmiller.net"],
@@ -306,12 +358,11 @@ describe("relay endpoints", () => {
       "/relay/send",
       {
         method: "POST",
-        headers: {
-          ...(await signedHeaders("/relay/send", body, "send-nonce")),
+        headers: await signedSendHeaders(body, "send-nonce", {
           "x-relay-envelope-from": "gmail@alexmiller.net",
           "x-relay-recipients": "alex@example.net",
           "x-relay-credential-id": "cred_1",
-        },
+        }),
         body,
       },
       makeEnv(),
@@ -328,12 +379,11 @@ describe("relay endpoints", () => {
       "/relay/send",
       {
         method: "POST",
-        headers: {
-          ...(await signedHeaders("/relay/send", body, "blocked-sender-nonce")),
+        headers: await signedSendHeaders(body, "blocked-sender-nonce", {
           "x-relay-envelope-from": "blocked@example.net",
           "x-relay-recipients": "alex@example.net",
           "x-relay-credential-id": "cred_1",
-        },
+        }),
         body,
       },
       makeEnv(),
@@ -341,6 +391,46 @@ describe("relay endpoints", () => {
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ ok: false, error: "sender_not_allowed" });
+  });
+
+  it("rejects SMTP sends when the MIME From header differs from the authorized envelope", async () => {
+    const body = new TextEncoder().encode("From: CEO <ceo@alexmiller.net>\r\n\r\nBody\r\n");
+    const response = await app.request(
+      "/relay/send",
+      {
+        method: "POST",
+        headers: await signedSendHeaders(body, "spoofed-from-nonce", {
+          "x-relay-envelope-from": "gmail@alexmiller.net",
+          "x-relay-recipients": "alex@example.net",
+          "x-relay-credential-id": "cred_1",
+        }),
+        body,
+      },
+      makeEnv(),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "from_header_mismatch" });
+  });
+
+  it("rejects duplicate MIME From headers before sending", async () => {
+    const body = new TextEncoder().encode("From: Alex <gmail@alexmiller.net>\r\nFrom: CEO <ceo@example.net>\r\n\r\nBody\r\n");
+    const response = await app.request(
+      "/relay/send",
+      {
+        method: "POST",
+        headers: await signedSendHeaders(body, "duplicate-from-nonce", {
+          "x-relay-envelope-from": "gmail@alexmiller.net",
+          "x-relay-recipients": "alex@example.net",
+          "x-relay-credential-id": "cred_1",
+        }),
+        body,
+      },
+      makeEnv(),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "duplicate_from_header" });
   });
 
   it("replays completed idempotency responses from D1", async () => {
@@ -358,12 +448,11 @@ describe("relay endpoints", () => {
       "/relay/send",
       {
         method: "POST",
-        headers: {
-          ...(await signedHeaders("/relay/send", body, "idem-nonce-1")),
+        headers: await signedSendHeaders(body, "idem-nonce-1", {
           "x-relay-envelope-from": "gmail@alexmiller.net",
           "x-relay-recipients": "alex@example.net",
           "x-relay-credential-id": "cred_1",
-        },
+        }),
         body,
       },
       env,
@@ -373,12 +462,11 @@ describe("relay endpoints", () => {
       "/relay/send",
       {
         method: "POST",
-        headers: {
-          ...(await signedHeaders("/relay/send", body, "idem-nonce-2")),
+        headers: await signedSendHeaders(body, "idem-nonce-2", {
           "x-relay-envelope-from": "gmail@alexmiller.net",
           "x-relay-recipients": "alex@example.net",
           "x-relay-credential-id": "cred_1",
-        },
+        }),
         body,
       },
       env,
@@ -398,12 +486,20 @@ describe("relay endpoints", () => {
         from: "gmail@alexmiller.net",
         recipients: ["alex@example.net", "copy@example.net", "hidden@example.net"],
         mime_message:
-          "From: Alex <gmail@alexmiller.net>\r\nTo: alex@example.net\r\nCc: Copy <copy@example.net>\r\nBcc: hidden@example.net\r\nSubject: API\r\n\r\nBody\r\n",
+          "From: Alex <gmail@alexmiller.net>\r\nTo: alex@example.net\r\nCc: Copy <copy@example.net>\r\nSubject: API\r\n\r\nBody\r\n",
       });
-      return new Response(JSON.stringify({ success: true, errors: [], messages: [], result: { delivered: [], queued: [], permanent_bounces: [] } }), {
-        status: 200,
-        headers: { "content-type": "application/json", "cf-ray": "ray-1", "cf-request-id": "req-1" },
-      });
+      return new Response(
+        JSON.stringify({
+          success: true,
+          errors: [],
+          messages: [],
+          result: { delivered: [{ email: "alex@example.net", status: "delivered" }], queued: [], permanent_bounces: [] },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json", "cf-ray": "ray-1", "cf-request-id": "req-1" },
+        },
+      );
     });
     vi.stubGlobal("fetch", cfFetch);
 
@@ -418,7 +514,11 @@ describe("relay endpoints", () => {
           "content-type": "application/json",
           "idempotency-key": "http-idem-1",
         },
-        body: JSON.stringify({ raw: Buffer.from(mime, "utf8").toString("base64") }),
+        body: JSON.stringify({
+          from: "gmail@alexmiller.net",
+          recipients: ["alex@example.net", "copy@example.net", "hidden@example.net"],
+          raw: Buffer.from(mime, "utf8").toString("base64"),
+        }),
       },
       env,
     );
@@ -427,15 +527,68 @@ describe("relay endpoints", () => {
     expect(cfFetch).toHaveBeenCalledOnce();
     expect((env.D1_MAIN as D1Database & { state: FakeD1State }).state.sendEvents[0]?.[3]).toBe("http");
     expect((env.D1_MAIN as D1Database & { state: FakeD1State }).state.sendEvents[0]?.[6]).toBe("key_1");
+    expect(JSON.parse(String((env.D1_MAIN as D1Database & { state: FakeD1State }).state.sendEvents[0]?.[15]))).toEqual({
+      count: 1,
+      categories: ["delivered"],
+    });
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       from: "gmail@alexmiller.net",
       recipients: ["alex@example.net", "copy@example.net", "hidden@example.net"],
-      idempotency_key: "http-idem-1",
+      idempotency_key: "http:key_1:http-idem-1",
       cf_status: 200,
       cf_ray_id: "ray-1",
       cf_request_id: "req-1",
     });
+  });
+
+  it("rejects malformed HTTP envelope recipients", async () => {
+    const mime = "From: gmail@alexmiller.net\r\nTo: alex@example.net\r\nSubject: API\r\n\r\nBody\r\n";
+    const response = await app.request(
+      "/send",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiSecret}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ from: "gmail@alexmiller.net", recipients: ["not a mailbox"], raw: Buffer.from(mime, "utf8").toString("base64") }),
+      },
+      makeEnv(),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "invalid_recipients" });
+  });
+
+  it("rejects HTTP idempotency key reuse for a different request", async () => {
+    const env = makeEnv();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ success: true, errors: [], messages: [], result: { delivered: [], queued: [], permanent_bounces: [] } }), { status: 200 })),
+    );
+    const request = (subject: string) => {
+      const mime = `From: gmail@alexmiller.net\r\nTo: alex@example.net\r\nSubject: ${subject}\r\n\r\nBody\r\n`;
+      return app.request(
+        "/send",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${apiSecret}`,
+            "content-type": "application/json",
+            "idempotency-key": "same-client-key",
+          },
+          body: JSON.stringify({ from: "gmail@alexmiller.net", recipients: ["alex@example.net"], raw: Buffer.from(mime, "utf8").toString("base64") }),
+        },
+        env,
+      );
+    };
+
+    expect((await request("One")).status).toBe(200);
+    const conflict = await request("Two");
+
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toMatchObject({ ok: false, error: "idempotency_key_conflict" });
   });
 
   it("requires a bearer API key on /send", async () => {
@@ -444,7 +597,7 @@ describe("relay endpoints", () => {
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ raw: "RnJvbTogZ21haWxAYWxleG1pbGxlci5uZXQNCg0K" }),
+        body: JSON.stringify({ from: "gmail@alexmiller.net", recipients: ["alex@example.net"], raw: "RnJvbTogZ21haWxAYWxleG1pbGxlci5uZXQNCg0K" }),
       },
       makeEnv(),
     );
@@ -463,7 +616,7 @@ describe("relay endpoints", () => {
           authorization: `Bearer ${apiSecret}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ raw: Buffer.from(mime, "utf8").toString("base64") }),
+        body: JSON.stringify({ from: "blocked@example.net", recipients: ["alex@example.net"], raw: Buffer.from(mime, "utf8").toString("base64") }),
       },
       makeEnv(),
     );
@@ -494,7 +647,7 @@ describe("relay endpoints", () => {
             "content-type": "application/json",
             "idempotency-key": idempotencyKey,
           },
-          body: JSON.stringify({ raw: Buffer.from(mime, "utf8").toString("base64") }),
+          body: JSON.stringify({ from: "gmail@alexmiller.net", recipients: ["alex@example.net"], raw: Buffer.from(mime, "utf8").toString("base64") }),
         },
         env,
       );
@@ -506,11 +659,41 @@ describe("relay endpoints", () => {
     await expect(limited.json()).resolves.toMatchObject({ ok: false, error: "rate_limited", scope: "global_day", limit: 1 });
     expect(cfFetch).toHaveBeenCalledOnce();
   });
+
+  it("rejects cross-origin admin POSTs before Access authorization", async () => {
+    const response = await app.request(
+      "/admin/api/users",
+      {
+        method: "POST",
+        headers: { origin: "https://evil.example", "content-type": "text/plain" },
+        body: JSON.stringify({ email: "next@example.net", role: "sender" }),
+      },
+      makeEnv({ ADMIN_CORS_ORIGIN: "https://cf-mail-relay-ui.pages.dev" }),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "csrf_origin_denied" });
+  });
+
+  it("allows non-browser admin scripts without Origin to reach Access authorization", async () => {
+    const response = await app.request(
+      "/admin/api/users",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "next@example.net", role: "sender" }),
+      },
+      makeEnv({ ADMIN_CORS_ORIGIN: "https://cf-mail-relay-ui.pages.dev" }),
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "missing_access_jwt" });
+  });
 });
 
 describe("stripCaptureHopHeaders", () => {
-  it("preserves user-authored headers and body", () => {
-    expect(stripCaptureHopHeaders("Received: x\r\nFrom: a@example.com\r\nSubject: Test\r\n\r\nHello\r\n")).toBe(
+  it("removes capture-hop and Bcc headers while preserving user-authored headers and body", () => {
+    expect(stripCaptureHopHeaders("Received: x\r\nFrom: a@example.com\r\nBcc: hidden@example.net\r\nSubject: Test\r\n\r\nHello\r\n")).toBe(
       "From: a@example.com\r\nSubject: Test\r\n\r\nHello\r\n",
     );
   });

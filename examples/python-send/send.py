@@ -24,7 +24,11 @@ body = os.environ.get("CF_MAIL_RELAY_BODY", "hello from cf-mail-relay")
 idempotency_key = os.environ.get("CF_MAIL_RELAY_IDEMPOTENCY_KEY", str(uuid.uuid4()))
 
 mime = f"From: {from_addr}\r\nTo: {to_addr}\r\nSubject: {subject}\r\n\r\n{body}\r\n"
-payload = json.dumps({"raw": base64.b64encode(mime.encode("utf-8")).decode("ascii")}).encode("utf-8")
+payload = json.dumps({
+    "from": from_addr,
+    "recipients": [to_addr],
+    "raw": base64.b64encode(mime.encode("utf-8")).decode("ascii"),
+}).encode("utf-8")
 request = urllib.request.Request(
     f"{worker_url}/send",
     data=payload,

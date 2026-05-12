@@ -14,7 +14,7 @@ const response = await fetch(`${workerUrl.replace(/\/$/, "")}/send`, {
     "content-type": "application/json",
     "idempotency-key": idempotencyKey,
   },
-  body: JSON.stringify({ raw: Buffer.from(mime, "utf8").toString("base64") }),
+  body: JSON.stringify({ from, recipients: [to], raw: Buffer.from(mime, "utf8").toString("base64") }),
 });
 
 const payload = await response.json();

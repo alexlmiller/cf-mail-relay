@@ -6,6 +6,7 @@ export interface AccessClaims {
   exp: number;
   nbf?: number;
   iss?: string;
+  type?: string;
   email?: string;
   name?: string;
 }
@@ -91,6 +92,9 @@ export async function verifyAccessJwt(token: string, env: Env): Promise<{ ok: tr
   if (typeof claims.sub !== "string" || typeof claims.exp !== "number") {
     return { ok: false, status: 401, error: "invalid_access_jwt_claims" };
   }
+  if (claims.type !== "app") {
+    return { ok: false, status: 401, error: "invalid_access_jwt_type" };
+  }
   if (!audienceMatches(claims.aud, env.ACCESS_AUDIENCE)) {
     return { ok: false, status: 401, error: "invalid_access_jwt_audience" };
   }
@@ -98,7 +102,7 @@ export async function verifyAccessJwt(token: string, env: Env): Promise<{ ok: tr
   if (claims.exp <= now || (typeof claims.nbf === "number" && claims.nbf > now + 60)) {
     return { ok: false, status: 401, error: "expired_access_jwt" };
   }
-  if (claims.iss !== undefined && claims.iss !== `https://${env.ACCESS_TEAM_DOMAIN}`) {
+  if (claims.iss !== `https://${env.ACCESS_TEAM_DOMAIN}`) {
     return { ok: false, status: 401, error: "invalid_access_jwt_issuer" };
   }
 

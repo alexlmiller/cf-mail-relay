@@ -5,6 +5,7 @@ export interface RelayHmacInput {
   nonce: string;
   bodySha256: string;
   keyId: string;
+  signedHeaders?: Record<string, string>;
 }
 
 export interface RelayHmacHeaders {
@@ -13,10 +14,12 @@ export interface RelayHmacHeaders {
   nonce: string;
   bodySha256: string;
   version: string;
+  signedHeaders: string;
   signature: string;
 }
 
 export function canonicalRelayString(input: RelayHmacInput): string {
+  const signedHeaders = canonicalSignedHeaders(input.signedHeaders ?? {});
   return [
     input.method.toUpperCase(),
     input.path,
@@ -24,6 +27,8 @@ export function canonicalRelayString(input: RelayHmacInput): string {
     input.nonce,
     input.bodySha256.toLowerCase(),
     input.keyId,
+    signedHeaders.names,
+    signedHeaders.values,
   ].join("\n");
 }
 
@@ -51,6 +56,7 @@ export function parseRelayHmacHeaders(headers: Headers): RelayHmacHeaders | { er
     nonce: headers.get("x-relay-nonce") ?? "",
     bodySha256: normalizeBodySha256(headers.get("x-relay-body-sha256") ?? ""),
     version: headers.get("x-relay-version") ?? "",
+    signedHeaders: headers.get("x-relay-signed-headers") ?? "",
     signature: headers.get("x-relay-signature") ?? "",
   };
 
@@ -68,6 +74,22 @@ export function parseRelayHmacHeaders(headers: Headers): RelayHmacHeaders | { er
   }
 
   return parsed;
+}
+
+export function parseSignedHeaderNames(value: string): string[] {
+  return value
+    .split(";")
+    .map((name) => name.trim().toLowerCase())
+    .filter((name, index, names) => name.length > 0 && names.indexOf(name) === index)
+    .sort();
+}
+
+export function collectSignedHeaders(headers: Headers, names: string[]): Record<string, string> {
+  const collected: Record<string, string> = {};
+  for (const name of names) {
+    collected[name] = normalizeHeaderValue(headers.get(name) ?? "");
+  }
+  return collected;
 }
 
 export function normalizeBodySha256(value: string): string {
@@ -91,6 +113,18 @@ function base64UrlEncode(bytes: Uint8Array): string {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function canonicalSignedHeaders(headers: Record<string, string>): { names: string; values: string } {
+  const names = Object.keys(headers).map((name) => name.toLowerCase()).sort();
+  return {
+    names: names.join(";"),
+    values: names.map((name) => `${name}:${normalizeHeaderValue(headers[name] ?? "")}`).join("\n"),
+  };
+}
+
+function normalizeHeaderValue(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function toSnakeCase(value: string): string {

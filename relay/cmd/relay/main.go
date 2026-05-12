@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -23,7 +24,7 @@ import (
 	"github.com/emersion/go-smtp"
 )
 
-const version = "0.1.0-ms2"
+const version = "0.1.0-ms7"
 const defaultMaxMessageBytes = 4_718_592
 
 type config struct {
@@ -81,6 +82,9 @@ func main() {
 	server.WriteTimeout = 2 * time.Minute
 
 	log.Printf("cf-mail-relay %s listening on %s", version, cfg.ListenAddr)
+	if cfg.AllowInsecureAuth {
+		log.Printf("WARNING: RELAY_ALLOW_INSECURE_AUTH is enabled; SMTP AUTH is allowed before STARTTLS")
+	}
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
@@ -292,6 +296,9 @@ func loadConfig() (config, error) {
 		cfg.AuthLockoutBase = time.Duration(parsed) * time.Second
 	}
 	cfg.AllowInsecureAuth = os.Getenv("RELAY_ALLOW_INSECURE_AUTH") == "1" || os.Getenv("RELAY_ALLOW_INSECURE_AUTH") == "true"
+	if err := validateWorkerURL(cfg.WorkerURL); err != nil {
+		return config{}, err
+	}
 	for name, value := range map[string]string{
 		"RELAY_TLS_CERT_FILE":   cfg.CertFile,
 		"RELAY_TLS_KEY_FILE":    cfg.KeyFile,
@@ -304,6 +311,20 @@ func loadConfig() (config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func validateWorkerURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("invalid RELAY_WORKER_URL")
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	if parsed.Scheme == "http" && (os.Getenv("RELAY_ALLOW_INSECURE_WORKER_URL") == "1" || os.Getenv("RELAY_ALLOW_INSECURE_WORKER_URL") == "true") {
+		return nil
+	}
+	return errors.New("RELAY_WORKER_URL must use https")
 }
 
 func senderAllowed(sender string, allowed []string) bool {

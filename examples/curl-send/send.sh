@@ -16,4 +16,4 @@ curl -fsSL "$worker_url/send" \
   -H "Authorization: Bearer $api_key" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: $idempotency_key" \
-  -d "{\"raw\":\"$raw\"}"
+  -d "{\"from\":\"$from\",\"recipients\":[\"$to\"],\"raw\":\"$raw\"}"

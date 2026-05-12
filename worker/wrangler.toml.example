@@ -11,13 +11,16 @@ compatibility_flags = ["nodejs_compat"]
 # Worker schema version that the code expects to find in D1's settings table.
 # Mismatch -> Worker boots with /healthz returning 500 + schema_version_mismatch.
 [vars]
-REQUIRED_D1_SCHEMA_VERSION = "1"
+REQUIRED_D1_SCHEMA_VERSION = "2"
 ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
 ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
 CF_ACCOUNT_ID = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
 RELAY_HMAC_KEY_ID = "rel_REPLACE_ME"
 # Set when the admin UI is served from a different hostname than the Worker API.
 # ADMIN_CORS_ORIGIN = "https://cf-mail-relay-ui.pages.dev"
+
+[triggers]
+crons = ["17 3 * * *"]
 
 [[d1_databases]]
 binding = "D1_MAIN"

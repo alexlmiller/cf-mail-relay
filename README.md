@@ -92,6 +92,11 @@ pnpm --dir worker exec wrangler secret put RELAY_HMAC_SECRET_CURRENT
 pnpm --dir worker exec wrangler secret put BOOTSTRAP_SETUP_TOKEN
 ```
 
+Apply D1 migrations, including `0002_security_hardening.sql`, before deploying
+a newer Worker. `/healthz` checks the schema version and returns
+`schema_version_mismatch` until the database is at the version expected by the
+code.
+
 Create the Cloudflare Access app for the admin UI:
 
 ```sh
@@ -197,6 +202,12 @@ curl -fsS https://<worker-host>/send \
 ```
 
 The API key must belong to a user allowed to send as the `from` address.
+The MIME `From:` header must also match `from`; `Bcc:` is stripped before
+delivery. Duplicate `From:`, `Sender:`, or `Message-ID:` headers are rejected.
+
+Breaking change: `/send` clients must pass `from` and `recipients` explicitly in
+the JSON body. The Worker no longer derives the delivery envelope from `To:`,
+`Cc:`, or `Bcc:` MIME headers.
 
 ## Verification and Operations
 
@@ -219,6 +230,10 @@ Operational notes:
 - Rotate leaked SMTP credentials or API keys from the admin UI.
 - D1 is the source of truth. KV is cache only.
 - D1 Time Travel can restore production databases, but restore is destructive.
+- The Worker includes a daily Cron cleanup for expired replay and idempotency
+  rows. Keep the `[triggers]` section from `worker/wrangler.toml.example`.
+- Provider delivery arrays in `send_events` are stored as privacy-preserving
+  summaries with counts and categorical reason/status codes only.
 - Keep attachments under about 3.25 MiB before encoding; MIME/base64 overhead can
   push larger files over Cloudflare's 5 MiB Email Sending limit.
 

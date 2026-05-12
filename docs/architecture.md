@@ -52,9 +52,13 @@ and egress limits, so deployment docs should avoid promising zero cost.
 - The relay is trusted infrastructure but still treated as revocable: Worker
   re-checks credentials, sender policy, quotas, and idempotency.
 - Relay-to-Worker auth is HMAC. Cloudflare Access is not used on the SMTP data
-  path.
+  path. Relay HMAC signatures bind the request body and the relay headers that
+  affect authorization.
 - Admin UI auth is Cloudflare Access. The Worker validates the Access JWT for
-  `/admin/api/*`.
+  `/admin/api/*` and `/self/api/*`, including issuer, audience, expiry, and
+  Access token type. Unsafe browser admin/self methods also enforce the
+  configured `Origin`; non-browser scripts without `Origin` or Fetch Metadata
+  headers proceed to Access JWT authorization.
 - Message bodies are not stored. `send_events` stores metadata only.
 
 ## SMTP Flow
@@ -68,8 +72,10 @@ and egress limits, so deployment docs should avoid promising zero cost.
    returned sender policy allow it.
 6. Relay sends raw MIME bytes to `/relay/send` with HMAC headers and an
    idempotency key.
-7. Worker re-checks policy, reserves quota, strips capture-hop headers, calls
-   Cloudflare Email Sending `send_raw`, and records a metadata audit row.
+7. Worker re-checks policy, rejects duplicate singleton identity headers,
+   requires the MIME `From:` header to match the authorized SMTP envelope,
+   reserves quota, strips capture-hop and `Bcc` headers, calls Cloudflare Email
+   Sending `send_raw`, and records a metadata audit row.
 8. Relay maps the Worker result to an SMTP status for the client.
 
 ## HTTP Flow
@@ -77,9 +83,12 @@ and egress limits, so deployment docs should avoid promising zero cost.
 `POST /send` accepts raw MIME from application clients.
 
 - Auth: `Authorization: Bearer <api-key>`.
-- Body: `from`, `recipients`, and base64/base64url raw MIME.
+- Body: `from`, `recipients`, and base64/base64url raw MIME. The MIME `From:`
+  header must match `from`; recipients must be valid mailbox addresses; `Bcc:`
+  is stripped before delivery.
 - Idempotency: `Idempotency-Key` header, with a deterministic fallback when
-  absent.
+  absent. Supplied HTTP keys are scoped to the API key and cannot replay a
+  different request hash.
 - Authorization: API key user must be allowed to send as the `from` address.
 
 ## HMAC Contract
@@ -90,6 +99,7 @@ Relay requests include:
 - `x-relay-timestamp`
 - `x-relay-nonce`
 - `x-relay-body-sha256`
+- `x-relay-signed-headers`
 - `x-relay-signature`
 
 Canonical string:
@@ -99,12 +109,23 @@ Canonical string:
 <PATH_WITH_QUERY>\n
 <TIMESTAMP>\n
 <NONCE>\n
-<BODY_SHA256_HEX>
+<BODY_SHA256_HEX>\n
+<KEY_ID>\n
+<SIGNED_HEADER_NAMES>\n
+<SIGNED_HEADER_VALUES>
 ```
 
 Signature is HMAC-SHA256 over the canonical string using the relay shared
 secret. Worker accepts current and previous secrets for rotation. Replay
-protection uses timestamp skew plus nonce caching.
+protection uses timestamp skew plus D1-backed nonce reservations, with
+idempotency as the authoritative duplicate-send defense.
+
+`/relay/send` must sign:
+
+- `x-relay-credential-id`
+- `x-relay-envelope-from`
+- `x-relay-recipients`
+- `x-relay-version`
 
 Shared test vectors live in `shared/test-vectors.json` and are exercised by both
 the Go relay and TypeScript Worker tests.
@@ -123,12 +144,15 @@ Important tables:
 - `send_events`
 - `auth_failures`
 - `idempotency_keys`
+- `relay_nonces`
 - `rate_reservations`
 - `settings`
 
 Credential and API key hashes use HMAC-SHA256 keyed with `CREDENTIAL_PEPPER`.
 Audit metadata that could reveal recipient domains, message IDs, or IPs uses
-`METADATA_PEPPER`.
+`METADATA_PEPPER`. Cloudflare delivery arrays are summarized before storage so
+audit rows do not persist full recipient addresses from provider responses; the
+summary keeps only counts and categorical reason/status codes.
 
 ## Limits and Policy
 
@@ -143,8 +167,8 @@ Quotas:
 
 - Relay: connection rate per remote IP, auth attempts per username, exponential
   auth-failure lockout.
-- Worker: per-sender minute soft cap in KV; daily global/domain/sender/credential
-  caps in D1 reservation rows.
+- Worker: per-sender minute and daily global/domain/sender/credential caps in
+  D1 reservation rows.
 
 ## Routes
 

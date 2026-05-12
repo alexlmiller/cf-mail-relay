@@ -33,6 +33,12 @@ func TestClientSignsAuthRequest(t *testing.T) {
 			Nonce:      r.Header.Get("X-Relay-Nonce"),
 			BodySHA256: r.Header.Get("X-Relay-Body-SHA256"),
 			KeyID:      r.Header.Get("X-Relay-Key-Id"),
+			Headers: map[string]string{
+				"x-relay-version": r.Header.Get("X-Relay-Version"),
+			},
+		}
+		if got := r.Header.Get("X-Relay-Signed-Headers"); got != "x-relay-version" {
+			t.Fatalf("signed headers = %s", got)
 		}
 		if ts, err := time.ParseDuration(r.Header.Get("X-Relay-Timestamp") + "s"); err != nil || ts <= 0 {
 			t.Fatalf("bad timestamp")
@@ -75,6 +81,26 @@ func TestClientSendsEnvelopeHeaders(t *testing.T) {
 		}
 		if got := r.Header.Get("X-Relay-Trace-Id"); got != "trace_test" {
 			t.Fatalf("trace id = %s", got)
+		}
+		if got := r.Header.Get("X-Relay-Signed-Headers"); got != "x-relay-credential-id;x-relay-envelope-from;x-relay-recipients;x-relay-version" {
+			t.Fatalf("signed headers = %s", got)
+		}
+		input := hmacsign.Input{
+			Method:     r.Method,
+			Path:       r.URL.Path,
+			Timestamp:  r.Header.Get("X-Relay-Timestamp"),
+			Nonce:      r.Header.Get("X-Relay-Nonce"),
+			BodySHA256: r.Header.Get("X-Relay-Body-SHA256"),
+			KeyID:      r.Header.Get("X-Relay-Key-Id"),
+			Headers: map[string]string{
+				"x-relay-credential-id": r.Header.Get("X-Relay-Credential-Id"),
+				"x-relay-envelope-from": r.Header.Get("X-Relay-Envelope-From"),
+				"x-relay-recipients":    r.Header.Get("X-Relay-Recipients"),
+				"x-relay-version":       r.Header.Get("X-Relay-Version"),
+			},
+		}
+		if got, want := r.Header.Get("X-Relay-Signature"), hmacsign.Sign(input, "secret"); got != want {
+			t.Fatalf("signature = %s want %s", got, want)
 		}
 		w.Header().Set("content-type", "application/json")
 		json.NewEncoder(w).Encode(SendResponse{OK: true, CFStatus: 200})

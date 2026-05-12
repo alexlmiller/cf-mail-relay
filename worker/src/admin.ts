@@ -89,7 +89,7 @@ export async function listUsers(env: Env): Promise<unknown[]> {
 
 export async function createUser(env: Env, body: Record<string, unknown>): Promise<{ id: string }> {
   const email = requireEmail(body.email, "email").toLowerCase();
-  const role = body.role === "sender" ? "sender" : "admin";
+  const role = requireRole(body.role);
   const id = prefixedId("usr");
   const now = nowSeconds();
   await env.D1_MAIN.prepare(
@@ -136,10 +136,19 @@ export async function listSenders(env: Env): Promise<unknown[]> {
 export async function createSender(env: Env, body: Record<string, unknown>): Promise<{ id: string }> {
   const id = prefixedId("snd");
   const now = nowSeconds();
+  const domainId = requireString(body.domain_id, "domain_id");
+  const domain = await env.D1_MAIN.prepare("SELECT domain FROM domains WHERE id = ? AND enabled = 1").bind(domainId).first<{ domain: string }>();
+  if (domain === null) {
+    throw new Error("domain_not_found");
+  }
+  const email = requireEmailOrWildcard(body.email);
+  if (!senderBelongsToDomain(email, domain.domain)) {
+    throw new Error("sender_domain_mismatch");
+  }
   await env.D1_MAIN.prepare(
     "INSERT INTO allowlisted_senders (id, domain_id, email, user_id, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
   )
-    .bind(id, requireString(body.domain_id, "domain_id"), requireEmailOrWildcard(body.email), optionalString(body.user_id), now, now)
+    .bind(id, domainId, email, optionalString(body.user_id), now, now)
     .run();
   await bumpPolicyVersion(env);
   return { id };
@@ -317,6 +326,13 @@ function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function requireRole(value: unknown): "admin" | "sender" {
+  if (value === "admin" || value === "sender") {
+    return value;
+  }
+  throw new Error("invalid_role");
+}
+
 function requireEmail(value: unknown, field: string): string {
   const email = requireString(value, field);
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
@@ -331,6 +347,12 @@ function requireEmailOrWildcard(value: unknown): string {
     return email;
   }
   throw new Error("invalid_email");
+}
+
+function senderBelongsToDomain(email: string, domain: string): boolean {
+  const normalizedDomain = domain.toLowerCase();
+  const senderDomain = email.split("@").at(-1)?.toLowerCase() ?? "";
+  return senderDomain === normalizedDomain;
 }
 
 function requireDomain(value: unknown): string {

@@ -1,6 +1,6 @@
 {
   "$comment": "Canonical HMAC test vectors. Both the relay (Go) and Worker (TS) test suites consume these vectors.",
-  "version": 1,
+  "version": 2,
   "algorithm": "HMAC-SHA256",
   "vectors": [
     {
@@ -12,8 +12,14 @@
       "nonce": "AAECAwQFBgcICQoLDA0ODw",
       "body_sha256": "4f778123369d2553daa9601084340f25426669eed437f76f465233e1b583984f",
       "key_id": "rel_test_1",
-      "canonical": "POST\n/relay/send\n1778515200\nAAECAwQFBgcICQoLDA0ODw\n4f778123369d2553daa9601084340f25426669eed437f76f465233e1b583984f\nrel_test_1",
-      "signature": "97Z65QQIFjfznqmvIS8NxTWH41SPeOxNX5ki8M8Dq60"
+      "headers": {
+        "x-relay-credential-id": "cred_1",
+        "x-relay-envelope-from": "gmail@alexmiller.net",
+        "x-relay-recipients": "alex@example.net",
+        "x-relay-version": "0.1.0-ms7"
+      },
+      "canonical": "POST\n/relay/send\n1778515200\nAAECAwQFBgcICQoLDA0ODw\n4f778123369d2553daa9601084340f25426669eed437f76f465233e1b583984f\nrel_test_1\nx-relay-credential-id;x-relay-envelope-from;x-relay-recipients;x-relay-version\nx-relay-credential-id:cred_1\nx-relay-envelope-from:gmail@alexmiller.net\nx-relay-recipients:alex@example.net\nx-relay-version:0.1.0-ms7",
+      "signature": "cunT7BiRydCXNMVZVufjsjZnTckNiN5toXM3drMvBEE"
     },
     {
       "name": "relay-auth-json",
@@ -24,8 +30,11 @@
       "nonce": "Dw4NDAsKCQgHBgUEAwIBAA",
       "body_sha256": "a6f2f7af13f0ce35c0223f8a12ee93665921a367c4c2e64d74ce9f5b1453eaa4",
       "key_id": "rel_test_2",
-      "canonical": "POST\n/relay/auth\n1778515260\nDw4NDAsKCQgHBgUEAwIBAA\na6f2f7af13f0ce35c0223f8a12ee93665921a367c4c2e64d74ce9f5b1453eaa4\nrel_test_2",
-      "signature": "8FrrNoSOzzslSuyyorLTv5EUut5iPI60uU1yCZMhOFw"
+      "headers": {
+        "x-relay-version": "0.1.0-ms7"
+      },
+      "canonical": "POST\n/relay/auth\n1778515260\nDw4NDAsKCQgHBgUEAwIBAA\na6f2f7af13f0ce35c0223f8a12ee93665921a367c4c2e64d74ce9f5b1453eaa4\nrel_test_2\nx-relay-version\nx-relay-version:0.1.0-ms7",
+      "signature": "tWTUyuw7Zf9r592W42FYYiVTR2BYI6jiyEeafn5015w"
     },
     {
       "name": "lowercase-method-normalized",
@@ -36,8 +45,14 @@
       "nonce": "Zm9vLWJhci1ub25jZS0xMjM",
       "body_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "key_id": "rel_test_3",
-      "canonical": "POST\n/relay/send\n1778515320\nZm9vLWJhci1ub25jZS0xMjM\n0000000000000000000000000000000000000000000000000000000000000000\nrel_test_3",
-      "signature": "QGj0DRdObHGgmSkhC-Nx8IpVDX2pGjlrltLI0P2k-PQ"
+      "headers": {
+        "x-relay-credential-id": "cred_2",
+        "x-relay-envelope-from": "ops@example.com",
+        "x-relay-recipients": "one@example.net,two@example.net",
+        "x-relay-version": "0.1.0-ms7"
+      },
+      "canonical": "POST\n/relay/send\n1778515320\nZm9vLWJhci1ub25jZS0xMjM\n0000000000000000000000000000000000000000000000000000000000000000\nrel_test_3\nx-relay-credential-id;x-relay-envelope-from;x-relay-recipients;x-relay-version\nx-relay-credential-id:cred_2\nx-relay-envelope-from:ops@example.com\nx-relay-recipients:one@example.net,two@example.net\nx-relay-version:0.1.0-ms7",
+      "signature": "Vebq-fgRD5CgnT1PN7jYL3P9g39m5Bdi7ojcf13PS-s"
     }
   ]
 }

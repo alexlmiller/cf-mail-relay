@@ -23,6 +23,13 @@ HTTPS.
 | `RELAY_AUTH_PER_MIN` | AUTH attempts per username per minute | `20` |
 | `RELAY_AUTH_LOCKOUT_BASE_SECONDS` | Auth lockout base after failures | `30` |
 
+`RELAY_WORKER_URL` must use `https://`. For local-only development, set
+`RELAY_ALLOW_INSECURE_WORKER_URL=1` to permit `http://`.
+
+SMTP credential checks are cached for up to 5 seconds per relay process. This
+keeps revocation lag short, but high-throughput clients should expect one Worker
+auth round trip on most new SMTP sessions.
+
 ## Development
 
 ```sh

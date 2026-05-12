@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkCloudflareApiHealth, createApiKey, dashboard, revokeApiKey } from "../src/admin";
+import { checkCloudflareApiHealth, createApiKey, createUser, dashboard, revokeApiKey } from "../src/admin";
 import type { Env } from "../src/index";
 
 function makeD1(): D1Database {
@@ -133,5 +133,9 @@ describe("admin dashboard", () => {
     expect(created).not.toHaveProperty("secret_hash");
 
     await expect(revokeApiKey(makeEnv(), created.id)).resolves.toBeUndefined();
+  });
+
+  it("rejects missing user role instead of defaulting to admin", async () => {
+    await expect(createUser(makeEnv(), { email: "next@example.net" })).rejects.toThrow("invalid_role");
   });
 });

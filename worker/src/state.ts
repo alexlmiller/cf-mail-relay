@@ -42,6 +42,8 @@ interface SenderRow {
 
 interface IdempotencyRow {
   status: string;
+  request_hash: string;
+  source: string;
   response_json: string | null;
 }
 
@@ -72,6 +74,8 @@ export interface ReplayResponse {
   status: number;
   body: unknown;
   headers?: Record<string, string>;
+  request_hash?: string;
+  source?: "smtp" | "http";
 }
 
 export interface QuotaInput {
@@ -81,7 +85,7 @@ export interface QuotaInput {
   apiKeyId?: string;
 }
 
-const authDecisionTtlSeconds = 60;
+const authDecisionTtlSeconds = 5;
 const credentialCacheTtlSeconds = 300;
 const idempotencyTtlSeconds = 24 * 60 * 60;
 
@@ -215,6 +219,12 @@ export async function bootstrapAdmin(
   return { ok: true, user_id: userId };
 }
 
+export async function recordBootstrapFailure(env: Env, remoteIp: string | undefined, reason: string): Promise<void> {
+  await env.D1_MAIN.prepare("INSERT INTO auth_failures (id, ts, source, remote_ip_hash, attempted_username, reason) VALUES (?, ?, 'bootstrap', ?, NULL, ?)")
+    .bind(prefixedId("authfail"), nowSeconds(), remoteIp === undefined ? null : await hmacSha256Hex(env.METADATA_PEPPER, remoteIp), reason)
+    .run();
+}
+
 export async function policyVersionFromD1(env: Env): Promise<string> {
   const row = await env.D1_MAIN.prepare("SELECT value_json FROM settings WHERE key = 'policy_version'").first<{ value_json: string }>();
   if (row === null) {
@@ -269,12 +279,15 @@ export async function reserveSendQuota(
   input: QuotaInput,
 ): Promise<{ ok: true } | { ok: false; scope: string; limit: number; count: number }> {
   const sender = normalizeAddress(input.envelopeFrom);
+  const reservedScopes: Array<{ scopeType: string; scopeKey: string; bucket: string }> = [];
   const minuteLimit = await positiveIntegerSetting(env, "sender_minute_cap");
   if (minuteLimit !== null) {
-    const count = await incrementKvCounter(env, `rate:sender:${sender}:${utcMinuteBucket()}`, 120);
+    const minute = utcMinuteBucket();
+    const count = await reserveRateScope(env, "sender_minute", sender, minute, minuteLimit);
     if (count > minuteLimit) {
       return { ok: false, scope: "sender_minute", limit: minuteLimit, count };
     }
+    reservedScopes.push({ scopeType: "sender_minute", scopeKey: sender, bucket: minute });
   }
 
   const senderDomain = sender.split("@").at(-1) ?? "";
@@ -288,7 +301,7 @@ export async function reserveSendQuota(
     checks.push({ scopeType: "credential_day", scopeKey: `${input.source}:${actorKey}`, setting: "daily_cap_credential" });
   }
 
-  const reservedScopes: Array<{ scopeType: string; scopeKey: string }> = [];
+  const day = utcDayBucket();
   for (const check of checks) {
     if (check.scopeKey.length === 0) {
       continue;
@@ -297,12 +310,12 @@ export async function reserveSendQuota(
     if (limit === null) {
       continue;
     }
-    const count = await reserveDailyScope(env, check.scopeType, check.scopeKey, limit);
+    const count = await reserveRateScope(env, check.scopeType, check.scopeKey, day, limit);
     if (count > limit) {
-      await Promise.all(reservedScopes.map((scope) => rollbackDailyScope(env, scope.scopeType, scope.scopeKey)));
+      await Promise.all(reservedScopes.map((scope) => rollbackRateScope(env, scope.scopeType, scope.scopeKey, scope.bucket)));
       return { ok: false, scope: check.scopeType, limit, count };
     }
-    reservedScopes.push({ scopeType: check.scopeType, scopeKey: check.scopeKey });
+    reservedScopes.push({ scopeType: check.scopeType, scopeKey: check.scopeKey, bucket: day });
   }
 
   return { ok: true };
@@ -313,10 +326,14 @@ export async function beginIdempotentRequest(
   key: string,
   requestHash: string,
   source: "smtp" | "http" = "smtp",
-): Promise<{ status: "new" } | { status: "pending" } | { status: "replay"; response: ReplayResponse }> {
+): Promise<{ status: "new" } | { status: "pending" } | { status: "conflict" } | { status: "replay"; response: ReplayResponse }> {
   const cached = await env.KV_HOT.get(`idem:${key}`);
   if (cached !== null) {
-    return { status: "replay", response: parseReplayResponse(cached) };
+    const cachedResponse = parseReplayResponse(cached);
+    if (cachedResponse.request_hash !== requestHash || cachedResponse.source !== source) {
+      return { status: "conflict" };
+    }
+    return { status: "replay", response: cachedResponse };
   }
 
   const now = nowSeconds();
@@ -329,16 +346,26 @@ export async function beginIdempotentRequest(
     return { status: "new" };
   }
 
-  const existing = await env.D1_MAIN.prepare("SELECT status, response_json FROM idempotency_keys WHERE idempotency_key = ?").bind(key).first<IdempotencyRow>();
+  const existing = await env.D1_MAIN.prepare("SELECT status, request_hash, source, response_json FROM idempotency_keys WHERE idempotency_key = ?").bind(key).first<IdempotencyRow>();
   if (existing === null || existing.status === "pending" || existing.response_json === null) {
     return { status: "pending" };
+  }
+  if (existing.request_hash !== requestHash || existing.source !== source) {
+    return { status: "conflict" };
   }
   return { status: "replay", response: parseReplayResponse(existing.response_json) };
 }
 
-export async function completeIdempotentRequest(env: Env, key: string, success: boolean, response: ReplayResponse): Promise<void> {
+export async function completeIdempotentRequest(
+  env: Env,
+  key: string,
+  requestHash: string,
+  source: "smtp" | "http",
+  success: boolean,
+  response: ReplayResponse,
+): Promise<void> {
   const now = nowSeconds();
-  const responseJson = JSON.stringify(response);
+  const responseJson = JSON.stringify({ ...response, request_hash: requestHash, source });
   await env.D1_MAIN.prepare("UPDATE idempotency_keys SET status = ?, response_json = ?, updated_at = ? WHERE idempotency_key = ?")
     .bind(success ? "completed" : "failed", responseJson, now, key)
     .run();
@@ -373,9 +400,9 @@ export async function recordSendEvent(env: Env, event: SendEventInput): Promise<
       event.messageIdHeader.length > 0 ? await hmacSha256Hex(env.METADATA_PEPPER, event.messageIdHeader.trim()) : null,
       event.cfRequestId ?? null,
       event.cfRayId ?? null,
-      event.cfDeliveredJson ?? null,
-      event.cfQueuedJson ?? null,
-      event.cfBouncedJson ?? null,
+      event.cfDeliveredJson === null || event.cfDeliveredJson === undefined ? null : safeCloudflareArraySummary(event.cfDeliveredJson),
+      event.cfQueuedJson === null || event.cfQueuedJson === undefined ? null : safeCloudflareArraySummary(event.cfQueuedJson),
+      event.cfBouncedJson === null || event.cfBouncedJson === undefined ? null : safeCloudflareArraySummary(event.cfBouncedJson),
       event.status,
       event.smtpCode ?? null,
       event.errorCode ?? null,
@@ -385,10 +412,14 @@ export async function recordSendEvent(env: Env, event: SendEventInput): Promise<
 }
 
 export function extractHeader(mimeMessage: string, headerName: string): string {
+  return extractHeaders(mimeMessage, headerName)[0] ?? "";
+}
+
+export function extractHeaders(mimeMessage: string, headerName: string): string[] {
   const normalized = mimeMessage.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
   const headerEnd = normalized.indexOf("\n\n");
   if (headerEnd === -1) {
-    return "";
+    return [];
   }
   const target = headerName.toLowerCase();
   const unfolded: string[] = [];
@@ -399,11 +430,12 @@ export function extractHeader(mimeMessage: string, headerName: string): string {
       unfolded.push(line);
     }
   }
-  const found = unfolded.find((line) => {
-    const separator = line.indexOf(":");
-    return separator > 0 && line.slice(0, separator).toLowerCase() === target;
-  });
-  return found?.slice(found.indexOf(":") + 1).trim() ?? "";
+  return unfolded
+    .filter((line) => {
+      const separator = line.indexOf(":");
+      return separator > 0 && line.slice(0, separator).toLowerCase() === target;
+    })
+    .map((line) => line.slice(line.indexOf(":") + 1).trim());
 }
 
 export async function credentialHash(env: Env, password: string): Promise<string> {
@@ -477,7 +509,7 @@ async function allowedSendersForCredential(env: Env, credential: CredentialRow):
         WHERE s.id IN (${placeholders})
           AND s.enabled = 1
           AND d.enabled = 1
-          AND d.status != 'disabled'`,
+          AND d.status = 'verified'`,
     )
       .bind(...senderIds)
       .all<SenderRow>();
@@ -491,7 +523,7 @@ async function allowedSendersForCredential(env: Env, credential: CredentialRow):
       WHERE s.user_id = ?
         AND s.enabled = 1
         AND d.enabled = 1
-        AND d.status != 'disabled'`,
+        AND d.status = 'verified'`,
   )
     .bind(credential.user_id)
     .all<SenderRow>();
@@ -512,7 +544,7 @@ async function allowedSendersForApiKey(env: Env, key: ApiKeyRow): Promise<string
         WHERE s.id IN (${placeholders})
           AND s.enabled = 1
           AND d.enabled = 1
-          AND d.status != 'disabled'`,
+          AND d.status = 'verified'`,
     )
       .bind(...senderIds)
       .all<SenderRow>();
@@ -526,7 +558,7 @@ async function allowedSendersForApiKey(env: Env, key: ApiKeyRow): Promise<string
       WHERE s.user_id = ?
         AND s.enabled = 1
         AND d.enabled = 1
-        AND d.status != 'disabled'`,
+        AND d.status = 'verified'`,
   )
     .bind(key.user_id)
     .all<SenderRow>();
@@ -583,40 +615,32 @@ async function stringSetting(env: Env, key: string): Promise<string | null> {
   }
 }
 
-async function reserveDailyScope(env: Env, scopeType: string, scopeKey: string, limit: number): Promise<number> {
-  const day = utcDayBucket();
+async function reserveRateScope(env: Env, scopeType: string, scopeKey: string, bucket: string, limit: number): Promise<number> {
   const now = nowSeconds();
   await env.D1_MAIN.prepare(
     "INSERT OR IGNORE INTO rate_reservations (id, scope_type, scope_key, day, count, updated_at) VALUES (?, ?, ?, ?, 0, ?)",
   )
-    .bind(prefixedId("rate"), scopeType, scopeKey, day, now)
+    .bind(prefixedId("rate"), scopeType, scopeKey, bucket, now)
     .run();
-  await env.D1_MAIN.prepare("UPDATE rate_reservations SET count = count + 1, updated_at = ? WHERE scope_type = ? AND scope_key = ? AND day = ?")
-    .bind(now, scopeType, scopeKey, day)
+  const update = await env.D1_MAIN.prepare("UPDATE rate_reservations SET count = count + 1, updated_at = ? WHERE scope_type = ? AND scope_key = ? AND day = ? AND count < ?")
+    .bind(now, scopeType, scopeKey, bucket, limit)
     .run();
-  const row = await env.D1_MAIN.prepare("SELECT count FROM rate_reservations WHERE scope_type = ? AND scope_key = ? AND day = ?")
-    .bind(scopeType, scopeKey, day)
-    .first<{ count: number }>();
-  const count = row?.count ?? limit + 1;
-  if (count > limit) {
-    await env.D1_MAIN.prepare("UPDATE rate_reservations SET count = MAX(count - 1, 0), updated_at = ? WHERE scope_type = ? AND scope_key = ? AND day = ?")
-      .bind(now, scopeType, scopeKey, day)
-      .run();
+  if (update.meta.changes === 0) {
+    const row = await env.D1_MAIN.prepare("SELECT count FROM rate_reservations WHERE scope_type = ? AND scope_key = ? AND day = ?")
+      .bind(scopeType, scopeKey, bucket)
+      .first<{ count: number }>();
+    return Math.max(row?.count ?? limit, limit + 1);
   }
-  return count;
+  const row = await env.D1_MAIN.prepare("SELECT count FROM rate_reservations WHERE scope_type = ? AND scope_key = ? AND day = ?")
+    .bind(scopeType, scopeKey, bucket)
+    .first<{ count: number }>();
+  return row?.count ?? limit + 1;
 }
 
-async function rollbackDailyScope(env: Env, scopeType: string, scopeKey: string): Promise<void> {
+async function rollbackRateScope(env: Env, scopeType: string, scopeKey: string, bucket: string): Promise<void> {
   await env.D1_MAIN.prepare("UPDATE rate_reservations SET count = MAX(count - 1, 0), updated_at = ? WHERE scope_type = ? AND scope_key = ? AND day = ?")
-    .bind(nowSeconds(), scopeType, scopeKey, utcDayBucket())
+    .bind(nowSeconds(), scopeType, scopeKey, bucket)
     .run();
-}
-
-async function incrementKvCounter(env: Env, key: string, ttlSeconds: number): Promise<number> {
-  const current = Number.parseInt((await env.KV_HOT.get(key)) ?? "0", 10);
-  const next = Number.isFinite(current) ? current + 1 : 1;
-  await env.KV_HOT.put(key, String(next), { expirationTtl: ttlSeconds });
-  return next;
 }
 
 function apiKeyHasScope(rawScopes: string | null, expected: string): boolean {
@@ -654,6 +678,36 @@ function normalizeAddress(value: string): string {
 function parseReplayResponse(raw: string): ReplayResponse {
   const parsed = JSON.parse(raw) as ReplayResponse;
   return { ...parsed, status: parsed.status ?? (parsed.ok ? 200 : 502) };
+}
+
+function safeCloudflareArraySummary(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      const categories = cloudflareResponseCategories(parsed);
+      return JSON.stringify(categories.length > 0 ? { count: parsed.length, categories } : { count: parsed.length });
+    }
+  } catch {}
+  return JSON.stringify({ count: null });
+}
+
+function cloudflareResponseCategories(items: unknown[]): string[] {
+  const categories = new Set<string>();
+  for (const item of items) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      continue;
+    }
+    for (const key of ["category", "reason", "status", "code", "error_code", "errorCode", "type"]) {
+      const value = (item as Record<string, unknown>)[key];
+      if (typeof value === "string" || typeof value === "number") {
+        const category = String(value).trim().toLowerCase();
+        if (/^[a-z0-9_.:-]{1,64}$/.test(category) && !category.includes("@")) {
+          categories.add(category);
+        }
+      }
+    }
+  }
+  return [...categories].sort();
 }
 
 function prefixedId(prefix: string): string {

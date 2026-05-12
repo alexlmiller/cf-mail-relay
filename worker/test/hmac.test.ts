@@ -12,6 +12,7 @@ describe("relay HMAC contract", () => {
         nonce: vector.nonce,
         bodySha256: vector.body_sha256,
         keyId: vector.key_id,
+        signedHeaders: vector.headers,
       };
 
       expect(canonicalRelayString(input)).toBe(vector.canonical);

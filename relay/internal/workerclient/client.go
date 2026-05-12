@@ -162,8 +162,8 @@ func (c *Client) cachedAuth(key string) (*AuthResponse, bool) {
 
 func (c *Client) storeAuth(key string, response AuthResponse) {
 	ttl := response.TTLSeconds
-	if ttl <= 0 || ttl > 60 {
-		ttl = 60
+	if ttl <= 0 || ttl > 5 {
+		ttl = 5
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -196,6 +196,9 @@ func (c *Client) sign(request *http.Request, path string, body []byte) {
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
 	nonce := randomNonce()
 	bodySHA256 := hmacsign.SHA256Hex(body)
+	request.Header.Set("X-Relay-Version", c.Version)
+	signedHeaders := signedHeadersForRequest(request)
+	request.Header.Set("X-Relay-Signed-Headers", hmacsign.SignedHeaderNames(signedHeaders))
 	signature := hmacsign.Sign(hmacsign.Input{
 		Method:     request.Method,
 		Path:       path,
@@ -203,14 +206,28 @@ func (c *Client) sign(request *http.Request, path string, body []byte) {
 		Nonce:      nonce,
 		BodySHA256: bodySHA256,
 		KeyID:      c.KeyID,
+		Headers:    signedHeaders,
 	}, c.Secret)
 
 	request.Header.Set("X-Relay-Key-Id", c.KeyID)
 	request.Header.Set("X-Relay-Timestamp", timestamp)
 	request.Header.Set("X-Relay-Nonce", nonce)
 	request.Header.Set("X-Relay-Body-SHA256", bodySHA256)
-	request.Header.Set("X-Relay-Version", c.Version)
 	request.Header.Set("X-Relay-Signature", signature)
+}
+
+func signedHeadersForRequest(request *http.Request) map[string]string {
+	headers := map[string]string{
+		"x-relay-version": request.Header.Get("X-Relay-Version"),
+	}
+	// X-Relay-Trace-Id is intentionally unsigned; it is diagnostic only and
+	// must not affect authorization or replay semantics.
+	for _, name := range []string{"X-Relay-Envelope-From", "X-Relay-Recipients", "X-Relay-Credential-Id"} {
+		if value := request.Header.Get(name); value != "" {
+			headers[strings.ToLower(name)] = value
+		}
+	}
+	return headers
 }
 
 func authCacheKey(username, password string) string {
