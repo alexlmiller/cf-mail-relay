@@ -217,6 +217,7 @@ Quotas:
 | `POST /relay/send` | SMTP raw MIME send | HMAC |
 | `POST /send` | HTTP raw MIME send | API key |
 | `GET /` and `/_astro/*` | Admin UI bundle | none; API calls require Access |
+| `/self/api/login` | Browser login bounce back to the UI after Access auth | Cloudflare Access JWT |
 | `/admin/api/*` | Admin API | Cloudflare Access JWT + Origin on unsafe browser methods |
 | `/self/api/*` | Sender self-service API | Cloudflare Access JWT + Origin on unsafe browser methods |
 

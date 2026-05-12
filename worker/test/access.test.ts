@@ -163,6 +163,48 @@ describe("Cloudflare Access JWT validation", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, user: { id: "usr_1", role: "admin" } });
   });
+
+  it("redirects authenticated Access login bounces back to the UI", async () => {
+    const fixture = await makeJwtFixture();
+    const token = await fixture.sign({
+      sub: "access-subject",
+      aud: "aud-123",
+      iss: "https://team.cloudflareaccess.com",
+      type: "app",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      email: "alex@example.net",
+    });
+
+    const response = await app.request(
+      "/self/api/login?return_to=%2F%23%2Fcredentials",
+      { headers: { "cf-access-jwt-assertion": token }, redirect: "manual" },
+      makeEnv(fixture.jwks),
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/#/credentials");
+  });
+
+  it("does not allow login bounce open redirects", async () => {
+    const fixture = await makeJwtFixture();
+    const token = await fixture.sign({
+      sub: "access-subject",
+      aud: "aud-123",
+      iss: "https://team.cloudflareaccess.com",
+      type: "app",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      email: "alex@example.net",
+    });
+
+    const response = await app.request(
+      "/self/api/login?return_to=https%3A%2F%2Fevil.example",
+      { headers: { "cf-access-jwt-assertion": token }, redirect: "manual" },
+      makeEnv(fixture.jwks),
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/");
+  });
 });
 
 function base64Url(value: string | Uint8Array): string {

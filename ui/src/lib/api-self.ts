@@ -32,6 +32,11 @@ export function setSelfApiBase(value: string) {
   base = value.replace(/\/$/, "");
 }
 
+export function selfLoginUrl(returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`): string {
+  const target = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/";
+  return `${base}/self/api/login?return_to=${encodeURIComponent(target)}`;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers ?? {});
   if (init.body !== undefined && !headers.has("content-type")) {

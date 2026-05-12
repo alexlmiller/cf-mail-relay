@@ -135,6 +135,8 @@ The Worker serves the admin UI from the same hostname as the API; no separate
 Pages project is involved. The Access app must be path-scoped to
 `/admin/api/*` and `/self/api/*`. Do not put `/`, `/_astro/*`, `/relay/*`,
 `/send`, `/bootstrap/admin`, or `/healthz` behind Access.
+The UI's sign-in button navigates to `/self/api/login`, which is inside the
+Access-gated self-service path and redirects back to the UI after Access auth.
 
 Manual setup is still possible: copy `worker/wrangler.toml.example`, create D1
 and KV, apply all migrations before deploying, set secrets with `wrangler secret

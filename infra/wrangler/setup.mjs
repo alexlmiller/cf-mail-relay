@@ -208,7 +208,8 @@ export async function runApply(ctx) {
       );
     }
     steps.push({ step: "bootstrap_admin", email: adminEmail });
-    await runWrangler(execImpl, options.workerDir, ["secret", "delete", "BOOTSTRAP_SETUP_TOKEN"]);
+    await runWrangler(execImpl, options.workerDir, ["secret", "delete", "BOOTSTRAP_SETUP_TOKEN"], "y\n");
+    await verifyWranglerSecretDeleted(execImpl, options.workerDir, "BOOTSTRAP_SETUP_TOKEN");
     steps.push({ step: "bootstrap_token_cleared" });
   }
 
@@ -236,6 +237,28 @@ export async function runApply(ctx) {
 
 function runWrangler(execImpl, cwd, args, stdin) {
   return execImpl("pnpm", ["exec", "wrangler", ...args], stdin === undefined ? { cwd } : { cwd, stdin });
+}
+
+async function verifyWranglerSecretDeleted(execImpl, cwd, name) {
+  const output = await execImpl("pnpm", ["exec", "wrangler", "secret", "list", "--format", "json"], { cwd, captureStdout: true });
+  const names = parseWranglerSecretNames(String(output ?? ""));
+  if (names.includes(name)) {
+    throw new Error(`${name} is still present after deletion. Delete it manually: pnpm --dir worker exec wrangler secret delete ${name}`);
+  }
+}
+
+function parseWranglerSecretNames(output) {
+  const parsed = parseJsonOrText(output);
+  if (!Array.isArray(parsed)) {
+    throw new Error("Could not verify Worker secrets: `wrangler secret list --format json` did not return a JSON array.");
+  }
+  return parsed
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (typeof item === "object" && item !== null && typeof item.name === "string") return item.name;
+      return null;
+    })
+    .filter((name) => name !== null);
 }
 
 // ───────────────────────── Resource helpers ─────────────────────────
@@ -639,17 +662,26 @@ function withoutScheme(url) {
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
+    const captureStdout = options.captureStdout === true;
+    const stdout = [];
     const child = spawn(command, args, {
       cwd: options.cwd ?? process.cwd(),
       env: process.env,
-      stdio: options.stdin === undefined ? ["ignore", "inherit", "inherit"] : ["pipe", "inherit", "inherit"],
+      stdio: [
+        options.stdin === undefined ? "ignore" : "pipe",
+        captureStdout ? "pipe" : "inherit",
+        "inherit",
+      ],
     });
     if (options.stdin !== undefined && child.stdin !== null) {
       child.stdin.write(options.stdin);
       child.stdin.end();
     }
+    if (captureStdout && child.stdout !== null) {
+      child.stdout.on("data", (chunk) => stdout.push(chunk));
+    }
     child.on("close", (code) => {
-      if (code === 0) resolvePromise();
+      if (code === 0) resolvePromise(captureStdout ? Buffer.concat(stdout).toString("utf8") : undefined);
       else rejectPromise(new Error(`${command} ${args.join(" ")} exited with ${code}`));
     });
     child.on("error", rejectPromise);

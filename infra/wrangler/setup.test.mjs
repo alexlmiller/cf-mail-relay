@@ -327,6 +327,8 @@ routes = [
       client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
       execImpl: async (command, args) => {
         execCalls.push(`${command} ${args.join(" ")}`);
+        if (args.join(" ") === "exec wrangler secret list --format json") return JSON.stringify([{ name: "CF_API_TOKEN" }]);
+        return undefined;
       },
       readFileImpl: () => `account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
@@ -363,5 +365,51 @@ routes = [
     assert.ok(execCalls.some((call) => call.includes("secret put RELAY_HMAC_SECRET_CURRENT")));
     assert.ok(execCalls.some((call) => call.includes("wrangler deploy")));
     assert.ok(execCalls.some((call) => call.includes("secret delete BOOTSTRAP_SETUP_TOKEN")));
+    assert.ok(execCalls.some((call) => call.includes("secret list --format json")));
+  });
+
+  it("fails apply if the bootstrap token remains after deletion", async () => {
+    const fetchImpl = async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
+      if (path === "/client/v4/accounts/acc/d1/database" && init.method === "POST") return json({ success: true, result: { uuid: "d1_new" } });
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && init.method === "POST") return json({ success: true, result: { id: "kv_new" } });
+      if (path === "/bootstrap/admin") return json({ ok: true, user_id: "usr_admin" });
+      throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
+    };
+
+    const options = parseArgs([
+      "--account-id", "acc",
+      "--admin-url", "https://mail.milf.red",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+      "--apply",
+    ], {});
+    options.workerDir = "/repo/worker";
+    options.repoRoot = "/repo";
+    options.wranglerExamplePath = "/repo/worker/wrangler.toml.example";
+    options.wranglerPath = "/repo/worker/wrangler.toml";
+    options.runbookPath = "/repo/RUNBOOK.md";
+
+    await assert.rejects(
+      runApply({
+        options,
+        env: { CLOUDFLARE_API_TOKEN: "token" },
+        client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
+        execImpl: async (_command, args) => {
+          if (args.join(" ") === "exec wrangler secret list --format json") {
+            return JSON.stringify([{ name: "BOOTSTRAP_SETUP_TOKEN" }]);
+          }
+          return undefined;
+        },
+        readFileImpl: () => "",
+        writeFileImpl: () => {},
+        existsImpl: () => false,
+        accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+        fetchImpl,
+      }),
+      /BOOTSTRAP_SETUP_TOKEN is still present/,
+    );
   });
 });

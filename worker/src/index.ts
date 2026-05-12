@@ -388,6 +388,14 @@ app.get("/admin/api/session", async (c) => {
   return c.json({ ok: true, user: admin.user, access: { sub: admin.claims.sub, email: admin.claims.email ?? null } });
 });
 
+app.get("/admin/api/login", async (c) => {
+  const admin = await requireAdmin(c.req.raw, c.env);
+  if (!admin.ok) {
+    return c.json({ ok: false, error: admin.error }, admin.status);
+  }
+  return c.redirect(safeReturnPath(c.req.query("return_to")));
+});
+
 app.get("/admin/api/dashboard", async (c) => adminJson(c, () => dashboard(c.env)));
 app.get("/admin/api/users", async (c) => adminJson(c, () => listUsers(c.env)));
 app.post("/admin/api/users", async (c) => adminJson(c, async () => createUser(c.env, await readJsonObject(c.req.raw)), 201));
@@ -466,6 +474,12 @@ app.get("/self/api/session", async (c) => {
     user: session.user,
     access: { sub: session.claims.sub, email: session.claims.email ?? null },
   });
+});
+
+app.get("/self/api/login", async (c) => {
+  const session = await requireAuthenticated(c.req.raw, c.env);
+  if (!session.ok) return c.json({ ok: false, error: session.error }, session.status);
+  return c.redirect(safeReturnPath(c.req.query("return_to")));
 });
 
 app.get("/self/api/profile", async (c) => selfJson(c, (userId) => selfProfile(c.env, userId)));
@@ -937,6 +951,17 @@ function trustedAdminOrigin(c: Context<{ Bindings: Env }>): string {
     return configured.replace(/\/$/, "");
   }
   return new URL(c.req.url).origin;
+}
+
+function safeReturnPath(raw: string | undefined): string {
+  if (raw === undefined || raw.length === 0) return "/";
+  try {
+    const decoded = decodeURIComponent(raw);
+    if (!decoded.startsWith("/") || decoded.startsWith("//")) return "/";
+    return decoded;
+  } catch {
+    return "/";
+  }
 }
 
 async function readJsonObject(request: Request): Promise<Record<string, unknown>> {

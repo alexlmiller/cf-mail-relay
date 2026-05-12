@@ -4,7 +4,7 @@
 
 import { ApiError, setApiBase } from "./api";
 import { api } from "./api";
-import { selfApi, setSelfApiBase } from "./api-self";
+import { selfApi, selfLoginUrl, setSelfApiBase } from "./api-self";
 import { h, icon, on, setChildren } from "./dom";
 import { initialsFor } from "./format";
 import { openPalette, setPaletteItems, type PaletteItem } from "./palette";
@@ -493,7 +493,7 @@ function paintAccessGate(reason: string) {
             { class: "row" },
             h(
               "button",
-              { type: "button", class: "btn primary", "on:click": () => window.location.reload() },
+              { type: "button", class: "btn primary", "on:click": () => window.location.assign(selfLoginUrl()) },
               icon("refresh", 13),
               "Sign in again",
             ),
