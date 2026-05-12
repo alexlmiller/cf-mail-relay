@@ -4,6 +4,8 @@ SMTP submission relay for custom-domain sending through Cloudflare Email
 Sending. Use it with Gmail's **Send mail as**, internal applications, scripts,
 or any SMTP-capable client that needs authenticated outbound mail.
 
+![Admin dashboard — service health, ops actions, recent send activity](docs/images/01-dashboard.png)
+
 The project has two deployable pieces:
 
 - A Cloudflare Worker that enforces policy, calls Email Sending `send_raw`, and
