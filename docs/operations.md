@@ -45,10 +45,11 @@ normalized values) in the canonical string. Mismatched values surface as
 pnpm exec wrangler secret put CF_API_TOKEN --config worker/wrangler.toml
 ```
 
-`CF_API_TOKEN` is account-scoped (Email Sending Edit). Workers pick up the new
-value on the next request after `wrangler secret put` lands, so no overlap is
-needed. The dashboard's **Cloudflare API** health pill flips green within a
-minute.
+`CF_API_TOKEN` needs Account Email Sending Edit plus Zone Read for the sending
+zones. Email Sending is used for `send_raw`; Zone Read lets the admin API keep
+domain zone IDs and Email Sending status in sync. Workers pick up the new value
+on the next request after `wrangler secret put` lands, so no overlap is needed.
+The dashboard's **Cloudflare API** health pill flips green within a minute.
 
 ## Ops actions on the dashboard
 

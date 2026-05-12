@@ -122,9 +122,14 @@ pnpm run setup --apply \
   --domain example.com
 ```
 
+For each `--domain`, setup and the admin UI look up the Cloudflare zone and
+Email Sending status through the Cloudflare API. You should not need to copy
+zone IDs by hand.
+
 The wizard intentionally does **not** push its broad setup API token as the
 Worker runtime `CF_API_TOKEN`. After `--apply`, create a least-privilege
-Cloudflare API token with **Account -> Email Sending -> Edit**, then push it:
+Cloudflare API token with **Account -> Email Sending -> Edit** plus **Zone ->
+Zone -> Read** for the sending zones, then push it:
 
 ```sh
 pnpm --dir worker exec wrangler secret put CF_API_TOKEN

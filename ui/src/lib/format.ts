@@ -144,6 +144,9 @@ const errorMessages: Record<string, string> = {
   no_fields_to_update: "PATCH body had no recognised fields.",
   invalid_enabled: "`enabled` must be a JSON boolean (true or false), not a string.",
   invalid_status: "Status must be one of: pending, verified, sandbox, disabled.",
+  cloudflare_zone_not_found: "Cloudflare could not find a DNS zone for that domain.",
+  cloudflare_zone_lookup_failed: "Cloudflare zone lookup failed. Check the runtime token has Zone Read.",
+  cloudflare_email_sending_lookup_failed: "Cloudflare Email Sending lookup failed. Check the runtime token and Email Sending setup.",
   rate_limited: "Send quota exceeded for this scope.",
 
   // Bootstrap-specific

@@ -19,6 +19,7 @@ import {
   bumpPolicyVersionAction,
   deleteSender,
   flushKvCaches,
+  refreshDomainFromCloudflare,
   revokeApiKey,
   revokeSmtpCredential,
   rollApiKey,
@@ -434,6 +435,9 @@ app.patch("/admin/api/users/:id", async (c) =>
 );
 app.patch("/admin/api/domains/:id", async (c) =>
   adminJson(c, async () => updateDomain(c.env, c.req.param("id"), await readJsonObject(c.req.raw))),
+);
+app.post("/admin/api/domains/:id/refresh", async (c) =>
+  adminJson(c, async () => refreshDomainFromCloudflare(c.env, c.req.param("id"))),
 );
 app.patch("/admin/api/senders/:id", async (c) =>
   adminJson(c, async () => updateSender(c.env, c.req.param("id"), await readJsonObject(c.req.raw))),
@@ -957,7 +961,7 @@ function safeReturnPath(raw: string | undefined): string {
   if (raw === undefined || raw.length === 0) return "/";
   try {
     const decoded = decodeURIComponent(raw);
-    if (!decoded.startsWith("/") || decoded.startsWith("//")) return "/";
+    if (!decoded.startsWith("/") || decoded.startsWith("//") || decoded.includes("\\") || /[\r\n]/u.test(decoded)) return "/";
     return decoded;
   } catch {
     return "/";

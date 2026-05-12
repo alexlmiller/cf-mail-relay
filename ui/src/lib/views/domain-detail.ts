@@ -112,6 +112,23 @@ function summaryCard(domain: Domain, root: HTMLElement): HTMLElement {
           {
             type: "button",
             class: "btn ghost sm",
+            "on:click": async () => {
+              try {
+                await api.refreshDomain(domain.id);
+                toast("Domain refreshed from Cloudflare");
+                await renderDomainDetail(root, domain.id);
+              } catch (error) {
+                toast(describeError(error, "Could not refresh domain"), "err");
+              }
+            },
+          },
+          "Refresh",
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn ghost sm",
             "on:click": () => openEditDomain(domain, () => renderDomainDetail(root, domain.id)),
           },
           "Edit",
@@ -176,7 +193,7 @@ function openEditDomain(domain: Domain, onSaved: () => void): void {
         name: "cloudflare_zone_id",
         label: "Cloudflare Zone ID",
         value: domain.cloudflare_zone_id ?? "",
-        hint: "Optional — leave blank to clear.",
+        hint: "Normally populated by Refresh from Cloudflare; edit only for repair.",
       },
     ],
     async (raw) => {

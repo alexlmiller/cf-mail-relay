@@ -194,22 +194,10 @@ export async function runUserWizard(init: WizardInit) {
       try {
         const result = await api.createDomain({
           domain: data.domain,
-          cloudflare_zone_id: data.cloudflare_zone_id || undefined,
-          status: "pending",
         });
-        state.domain = {
-          id: result.id,
-          domain: data.domain,
-          cloudflare_zone_id: data.cloudflare_zone_id || null,
-          status: "pending",
-          dkim_status: null,
-          spf_status: null,
-          dmarc_status: null,
-          enabled: 1,
-          created_at: Date.now() / 1000,
-          updated_at: Date.now() / 1000,
-        };
-        domains.push(state.domain);
+        domains = await api.listDomains();
+        state.domain = domains.find((domain) => domain.id === result.id);
+        if (!state.domain) throw new Error("domain_not_found");
         toast(`Domain ${data.domain} added`);
         state.step = 2;
         repaint();
@@ -397,13 +385,7 @@ export async function runUserWizard(init: WizardInit) {
         { class: "field" },
         h("label", null, "Domain"),
         h("div", { class: "input" }, h("input", { type: "text", name: "domain", placeholder: "example.com", required: true })),
-      ),
-      h(
-        "div",
-        { class: "field" },
-        h("label", null, "Cloudflare Zone ID (optional)"),
-        h("div", { class: "input" }, h("input", { type: "text", name: "cloudflare_zone_id", placeholder: "—" })),
-        h("div", { class: "hint" }, "Email Sending must be verified for this domain in Cloudflare. You can paste the Zone ID later from the domain detail page."),
+        h("div", { class: "hint" }, "Email Sending must be enabled for this domain in Cloudflare. The relay looks up the zone and status automatically."),
       ),
     );
 

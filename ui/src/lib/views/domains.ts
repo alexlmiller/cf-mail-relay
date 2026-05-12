@@ -140,21 +140,7 @@ function paintError(root: HTMLElement, error: unknown) {
 export function openNewDomain(onCreated: (id: string) => void) {
   const { form, values, setError, setBanner, busy } = buildForm(
     [
-      { name: "domain", label: "Domain", placeholder: "example.com", required: true, hint: "The full apex you'll send mail from." },
-      { name: "cloudflare_zone_id", label: "Cloudflare Zone ID", placeholder: "(optional)", hint: "Available in Cloudflare → DNS for the zone." },
-      {
-        name: "status",
-        label: "Initial status",
-        kind: "select",
-        value: "pending",
-        options: [
-          { value: "pending", label: "pending" },
-          { value: "verified", label: "verified" },
-          { value: "sandbox", label: "sandbox" },
-          { value: "disabled", label: "disabled" },
-        ],
-        hint: "Cloudflare Email Sending decides the real status; pick what reflects the dashboard.",
-      },
+      { name: "domain", label: "Domain", placeholder: "example.com", required: true, hint: "The relay looks up the Cloudflare zone and Email Sending status automatically." },
     ],
     async (raw) => {
       setError("domain", null);
@@ -167,8 +153,6 @@ export function openNewDomain(onCreated: (id: string) => void) {
       try {
         const result = await api.createDomain({
           domain: raw.domain,
-          cloudflare_zone_id: raw.cloudflare_zone_id || undefined,
-          status: raw.status,
         });
         toast(`Domain ${raw.domain} added`);
         closeModal();

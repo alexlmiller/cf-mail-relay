@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   checkCloudflareApiHealth,
   createApiKey,
+  createDomain,
   createUser,
   dashboard,
   deleteSender,
+  refreshDomainFromCloudflare,
   revokeApiKey,
   updateApiKey,
   updateDomain,
@@ -149,6 +151,76 @@ describe("admin dashboard", () => {
 
   it("rejects missing user role instead of defaulting to admin", async () => {
     await expect(createUser(makeEnv(), { email: "next@example.net" })).rejects.toThrow("invalid_role");
+  });
+
+  it("creates domains by looking up the Cloudflare zone and Email Sending status", async () => {
+    const { db, capture } = makeRecordingD1();
+    const cfFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ authorization: "Bearer token", accept: "application/json" });
+      const url = new URL(String(input));
+      if (url.pathname === "/client/v4/zones" && url.searchParams.get("name") === "example.com") {
+        return new Response(JSON.stringify({ success: true, result: [{ id: "zone_123", name: "example.com" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.pathname === "/client/v4/zones/zone_123/email/sending/subdomains") {
+        return new Response(JSON.stringify({ success: true, result: [{ name: "example.com", enabled: true }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ success: false, result: [] }), { status: 404 });
+    });
+    vi.stubGlobal("fetch", cfFetch);
+
+    const created = await createDomain(envWith(db), { domain: "example.com" });
+
+    expect(created.id).toMatch(/^dom_/);
+    const insert = capture.inserts.find((item) => item.sql.includes("INSERT INTO domains"));
+    expect(insert?.params[1]).toBe("example.com");
+    expect(insert?.params[2]).toBe("zone_123");
+    expect(insert?.params[3]).toBe("verified");
+  });
+
+  it("refreshes an existing domain from Cloudflare", async () => {
+    const { db, capture } = makeRecordingD1();
+    const basePrepare = db.prepare.bind(db);
+    const domainDb = {
+      prepare(sql: string) {
+        if (sql.includes("SELECT domain FROM domains")) {
+          return {
+            bind: () => ({
+              first: async () => ({ domain: "mail.example.com" }),
+            }),
+          };
+        }
+        return basePrepare(sql);
+      },
+    } as unknown as D1Database;
+    const cfFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/client/v4/zones" && url.searchParams.get("name") === "mail.example.com") {
+        return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
+      }
+      if (url.pathname === "/client/v4/zones" && url.searchParams.get("name") === "example.com") {
+        return new Response(JSON.stringify({ success: true, result: [{ id: "zone_parent" }] }), { status: 200 });
+      }
+      if (url.pathname === "/client/v4/zones/zone_parent/email/sending/subdomains") {
+        return new Response(JSON.stringify({ success: true, result: [{ name: "mail.example.com", enabled: false }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ success: false, result: [] }), { status: 404 });
+    });
+    vi.stubGlobal("fetch", cfFetch);
+
+    await expect(refreshDomainFromCloudflare(envWith(domainDb), "dom_1")).resolves.toMatchObject({
+      id: "dom_1",
+      cloudflare_zone_id: "zone_parent",
+      status: "pending",
+    });
+    const update = capture.updates.find((item) => item.sql.includes("UPDATE domains SET cloudflare_zone_id"));
+    expect(update?.params[0]).toBe("zone_parent");
+    expect(update?.params[1]).toBe("pending");
   });
 });
 

@@ -357,8 +357,8 @@ export function renderRunbook(input) {
     ``,
     `The wizard's setup token has D1/KV/Access scopes — too broad for the`,
     `worker's runtime needs. Create a least-privilege Cloudflare API token`,
-    `with only **Account · Email Sending · Edit**, then push it as the`,
-    `worker secret:`,
+    `with **Account · Email Sending · Edit** plus **Zone · Zone · Read**`,
+    `for the sending zones, then push it as the worker secret:`,
     ``,
     `    pnpm --dir worker exec wrangler secret put CF_API_TOKEN`,
     ``,
@@ -710,7 +710,8 @@ Apply flags (--apply):
   --push-cf-api-token       Push your setup CLOUDFLARE_API_TOKEN as the worker's
                              runtime CF_API_TOKEN secret. NOT recommended — your
                              setup token has broad scopes; the runtime token
-                             should only have Email Sending Edit. Default off.
+                             should only have Email Sending Edit plus Zone Read.
+                             Default off.
   --force                   Overwrite existing worker/wrangler.toml.
   --skip-migrations         Skip 'wrangler d1 migrations apply'.
   --skip-build-deploy       Skip UI build + worker deploy.

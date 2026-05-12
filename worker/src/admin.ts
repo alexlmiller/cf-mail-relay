@@ -325,15 +325,31 @@ export async function listDomains(env: Env): Promise<unknown[]> {
 
 export async function createDomain(env: Env, body: Record<string, unknown>): Promise<{ id: string }> {
   const domain = requireDomain(body.domain);
+  const cloudflare = await lookupCloudflareSendingDomain(env, domain);
   const id = prefixedId("dom");
   const now = nowSeconds();
   await env.D1_MAIN.prepare(
     "INSERT INTO domains (id, domain, cloudflare_zone_id, status, dkim_status, spf_status, dmarc_status, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, NULL, 1, ?, ?)",
   )
-    .bind(id, domain, optionalString(body.cloudflare_zone_id), statusOrDefault(body.status), now, now)
+    .bind(id, domain, cloudflare.zoneId, cloudflare.status, now, now)
     .run();
   await bumpPolicyVersion(env);
   return { id };
+}
+
+export async function refreshDomainFromCloudflare(env: Env, id: string): Promise<{ id: string; cloudflare_zone_id: string; status: string }> {
+  const row = await env.D1_MAIN.prepare("SELECT domain FROM domains WHERE id = ?").bind(id).first<{ domain: string }>();
+  if (row === null) {
+    throw new Error("domain_not_found");
+  }
+  const cloudflare = await lookupCloudflareSendingDomain(env, row.domain);
+  await env.D1_MAIN.prepare(
+    "UPDATE domains SET cloudflare_zone_id = ?, status = ?, updated_at = ? WHERE id = ?",
+  )
+    .bind(cloudflare.zoneId, cloudflare.status, nowSeconds(), id)
+    .run();
+  await bumpPolicyVersion(env);
+  return { id, cloudflare_zone_id: cloudflare.zoneId, status: cloudflare.status };
 }
 
 export async function listSenders(env: Env): Promise<unknown[]> {
@@ -785,10 +801,6 @@ function requireDomain(value: unknown): string {
   return domain;
 }
 
-function statusOrDefault(value: unknown): string {
-  return value === "pending" || value === "verified" || value === "sandbox" || value === "disabled" ? value : "pending";
-}
-
 async function readCloudflareJson(response: Response): Promise<unknown> {
   try {
     return (await response.json()) as unknown;
@@ -818,6 +830,75 @@ function firstCloudflareErrorCode(value: unknown): string | null {
     return String(firstError.code);
   }
   return null;
+}
+
+interface CloudflareSendingDomain {
+  zoneId: string;
+  status: "pending" | "verified";
+}
+
+async function lookupCloudflareSendingDomain(env: Env, domain: string): Promise<CloudflareSendingDomain> {
+  const zoneId = await lookupCloudflareZoneId(env, domain);
+  const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/email/sending/subdomains`, {
+    method: "GET",
+    headers: {
+      authorization: `Bearer ${env.CF_API_TOKEN}`,
+      accept: "application/json",
+    },
+  });
+  const payload = await readCloudflareJson(response);
+  if (!response.ok || cloudflareSuccess(payload) !== true) {
+    throw new Error("cloudflare_email_sending_lookup_failed");
+  }
+  const result = typeof payload === "object" && payload !== null && !Array.isArray(payload)
+    ? (payload as { result?: unknown }).result
+    : undefined;
+  const subdomains = Array.isArray(result) ? result : [];
+  const match = subdomains.find((candidate) => {
+    if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return false;
+    const name = (candidate as { name?: unknown }).name;
+    return typeof name === "string" && normalizeDomain(name) === domain;
+  });
+  const enabled = typeof match === "object" && match !== null && !Array.isArray(match) && (match as { enabled?: unknown }).enabled === true;
+  return { zoneId, status: enabled ? "verified" : "pending" };
+}
+
+async function lookupCloudflareZoneId(env: Env, domain: string): Promise<string> {
+  for (const candidate of zoneCandidates(domain)) {
+    const response = await fetch(`https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(candidate)}&per_page=1`, {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${env.CF_API_TOKEN}`,
+        accept: "application/json",
+      },
+    });
+    const payload = await readCloudflareJson(response);
+    if (!response.ok || cloudflareSuccess(payload) !== true) {
+      throw new Error("cloudflare_zone_lookup_failed");
+    }
+    const result = typeof payload === "object" && payload !== null && !Array.isArray(payload)
+      ? (payload as { result?: unknown }).result
+      : undefined;
+    const zones = Array.isArray(result) ? result : [];
+    const first = zones.find((zone) => typeof zone === "object" && zone !== null && !Array.isArray(zone) && typeof (zone as { id?: unknown }).id === "string");
+    if (first !== undefined) {
+      return (first as { id: string }).id;
+    }
+  }
+  throw new Error("cloudflare_zone_not_found");
+}
+
+function zoneCandidates(domain: string): string[] {
+  const labels = domain.split(".");
+  const candidates: string[] = [];
+  for (let index = 0; index <= labels.length - 2; index += 1) {
+    candidates.push(labels.slice(index).join("."));
+  }
+  return candidates;
+}
+
+function normalizeDomain(raw: string): string {
+  return raw.trim().replace(/\.$/u, "").toLowerCase();
 }
 
 function randomSecret(): string {

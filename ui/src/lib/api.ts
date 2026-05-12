@@ -113,10 +113,12 @@ export const api = {
     request<{ id: string }>(`/admin/api/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
 
   listDomains: () => request<Domain[]>("/admin/api/domains"),
-  createDomain: (body: { domain: string; cloudflare_zone_id?: string; status?: string }) =>
+  createDomain: (body: { domain: string }) =>
     request<{ id: string }>("/admin/api/domains", { method: "POST", body: JSON.stringify(body) }),
   updateDomain: (id: string, body: { enabled?: boolean; status?: string; cloudflare_zone_id?: string | null }) =>
     request<{ id: string }>(`/admin/api/domains/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
+  refreshDomain: (id: string) =>
+    request<{ id: string; cloudflare_zone_id: string; status: string }>(`/admin/api/domains/${encodeURIComponent(id)}/refresh`, { method: "POST" }),
 
   listSenders: () => request<Sender[]>("/admin/api/senders"),
   createSender: (body: { domain_id: string; email: string; user_id?: string }) =>

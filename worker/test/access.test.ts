@@ -185,7 +185,12 @@ describe("Cloudflare Access JWT validation", () => {
     expect(response.headers.get("location")).toBe("/#/credentials");
   });
 
-  it("does not allow login bounce open redirects", async () => {
+  it.each([
+    "https%3A%2F%2Fevil.example",
+    "%2F%2Fevil.example",
+    "%2F%5Cevil.example",
+    "%2F%250d%250aSet-Cookie%3A%2520x%3Dy",
+  ])("does not allow login bounce open redirects for %s", async (returnTo) => {
     const fixture = await makeJwtFixture();
     const token = await fixture.sign({
       sub: "access-subject",
@@ -197,7 +202,7 @@ describe("Cloudflare Access JWT validation", () => {
     });
 
     const response = await app.request(
-      "/self/api/login?return_to=https%3A%2F%2Fevil.example",
+      `/self/api/login?return_to=${returnTo}`,
       { headers: { "cf-access-jwt-assertion": token }, redirect: "manual" },
       makeEnv(fixture.jwks),
     );
