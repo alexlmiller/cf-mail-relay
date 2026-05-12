@@ -31,7 +31,7 @@ function makeD1(): D1Database & { state: FakeD1State } {
     relayNonces: new Set(),
     settings: new Map([
       ["policy_version", "7"],
-      ["schema_version", "2"],
+      ["schema_version", "3"],
     ]),
     rates: new Map(),
     sendEvents: [],
@@ -285,22 +285,22 @@ describe("relay endpoints", () => {
   });
 
   it("reports D1 schema mismatch on /healthz", async () => {
-    const response = await app.request("/healthz", { method: "GET" }, makeEnv({ REQUIRED_D1_SCHEMA_VERSION: "3" }));
+    const response = await app.request("/healthz", { method: "GET" }, makeEnv({ REQUIRED_D1_SCHEMA_VERSION: "4" }));
 
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toMatchObject({
       ok: false,
       error: "schema_version_mismatch",
-      required_schema_version: "3",
-      actual_schema_version: "2",
+      required_schema_version: "4",
+      actual_schema_version: "3",
     });
   });
 
   it("reports healthy schema on /healthz", async () => {
-    const response = await app.request("/healthz", { method: "GET" }, makeEnv({ REQUIRED_D1_SCHEMA_VERSION: "2" }));
+    const response = await app.request("/healthz", { method: "GET" }, makeEnv({ REQUIRED_D1_SCHEMA_VERSION: "3" }));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ ok: true, version: "0.1.0-ms7", schema_version: "2" });
+    await expect(response.json()).resolves.toMatchObject({ ok: true, version: "0.1.0-ms7", schema_version: "3" });
   });
 
   it("authenticates SMTP credentials with HMAC-protected /relay/auth", async () => {

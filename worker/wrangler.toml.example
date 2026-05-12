@@ -11,7 +11,7 @@ compatibility_flags = ["nodejs_compat"]
 # Worker schema version that the code expects to find in D1's settings table.
 # Mismatch -> Worker boots with /healthz returning 500 + schema_version_mismatch.
 [vars]
-REQUIRED_D1_SCHEMA_VERSION = "2"
+REQUIRED_D1_SCHEMA_VERSION = "3"
 ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
 ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
 CF_ACCOUNT_ID = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
