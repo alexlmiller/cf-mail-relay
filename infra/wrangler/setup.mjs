@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
-import { pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const defaultApiBase = "https://api.cloudflare.com/client/v4";
 const requiredSecrets = [
@@ -22,8 +26,10 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
   }
 }
 
-export async function main(argv, env, fetchImpl = fetch) {
-  const options = parseArgs(argv);
+export async function main(argv, env, depsOrFetch = {}) {
+  // Backward compat: tests pass a bare fetchImpl as the third arg.
+  const deps = typeof depsOrFetch === "function" ? { fetchImpl: depsOrFetch } : (depsOrFetch ?? {});
+  const options = parseArgs(argv, env);
   if (options.help) {
     return { ok: true, usage: usage() };
   }
@@ -33,6 +39,12 @@ export async function main(argv, env, fetchImpl = fetch) {
   if (!options.accountId) {
     throw new Error(`--account-id or CLOUDFLARE_ACCOUNT_ID is required.\n\n${usage()}`);
   }
+  if (options.apply && !options.adminUrl) {
+    throw new Error(`--apply requires --admin-url (e.g. https://mail.example.com).\n\n${usage()}`);
+  }
+  if (options.apply && !options.allowEmails.length) {
+    throw new Error(`--apply requires at least one --allow-email so Access policies are created.`);
+  }
 
   const plan = buildPlan(options);
   if (options.dryRun) {
@@ -41,17 +53,38 @@ export async function main(argv, env, fetchImpl = fetch) {
 
   const token = env[options.tokenEnv];
   if (!token) {
-    throw new Error(`${options.tokenEnv} must contain a Cloudflare API token, or pass --dry-run for a command plan.`);
+    throw new Error(`${options.tokenEnv} must contain a Cloudflare API token, or pass --dry-run for a plan only.`);
   }
 
+  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+  const execImpl = deps.execImpl ?? runCommand;
+  const readFileImpl = deps.readFileImpl ?? ((path) => readFileSync(path, "utf8"));
+  const writeFileImpl = deps.writeFileImpl ?? ((path, body) => writeFileSync(path, body));
+  const existsImpl = deps.existsImpl ?? existsSync;
+  const accessAppImpl = deps.accessAppImpl ?? null;
   const client = new CloudflareApiClient(options.apiBase, token, fetchImpl);
+
+  if (options.apply) {
+    return runApply({
+      options,
+      env,
+      client,
+      execImpl,
+      readFileImpl,
+      writeFileImpl,
+      existsImpl,
+      accessAppImpl,
+      fetchImpl,
+    });
+  }
+
   const checks = [];
   checks.push(await checkToken(client));
   checks.push(await checkAccount(client, options.accountId));
   checks.push(await checkWorkersPaid(client, options.accountId));
   checks.push(await checkD1(client, options.accountId, options.d1DatabaseId, options.d1DatabaseName));
   checks.push(await checkKv(client, options.accountId, options.kvNamespaceId, options.kvNamespaceTitle));
-  checks.push(await checkAccess(client, options.accountId, options.accessAppName, options.pagesUrl, options.workerUrl));
+  checks.push(await checkAccess(client, options.accountId, options.accessAppName, options.adminUrl));
   checks.push(await checkWorkerSecrets(client, options.accountId, options.workerScriptName));
   for (const domain of options.domains) {
     checks.push(...await checkDomain(client, options.accountId, domain));
@@ -66,87 +99,295 @@ export async function main(argv, env, fetchImpl = fetch) {
   };
 }
 
+// ───────────────────────── Apply orchestrator ─────────────────────────
+
+export async function runApply(ctx) {
+  const { options, env, client, execImpl, readFileImpl, writeFileImpl, existsImpl, accessAppImpl, fetchImpl } = ctx;
+  const steps = [];
+
+  // 1. Resource creation (skip-if-exists). Honors --d1-id / --kv-id flags from caller.
+  const d1 = options.d1DatabaseId
+    ? { id: options.d1DatabaseId, name: options.d1DatabaseName, source: "provided" }
+    : await createOrFindD1(client, options.accountId, options.d1DatabaseName);
+  steps.push({ step: "d1", source: d1.source, id: d1.id, name: d1.name });
+
+  const kv = options.kvNamespaceId
+    ? { id: options.kvNamespaceId, title: options.kvNamespaceTitle, source: "provided" }
+    : await createOrFindKv(client, options.accountId, options.kvNamespaceTitle);
+  steps.push({ step: "kv", source: kv.source, id: kv.id, title: kv.title });
+
+  // 2. Access app via access-app.mjs (programmatic call, so the destinations
+  //    contract stays in one place).
+  const accessRun = accessAppImpl ?? (await import("./access-app.mjs")).run;
+  const accessArgs = [
+    "--account-id", options.accountId,
+    "--pages-url", options.adminUrl,
+    "--worker-url", options.adminUrl,
+    "--allow-platform-hostnames",
+    ...options.allowEmails.flatMap((email) => ["--allow-email", email]),
+  ];
+  const access = await accessRun(accessArgs, env, fetchImpl);
+  steps.push({ step: "access", app_id: access.app_id, audience: access.access_audience, team_domain: access.access_team_domain });
+
+  // 3. Generate secrets and (next step) write them to wrangler.toml + push via wrangler.
+  const secrets = options.regenerateSecrets || !existsImpl(options.wranglerPath)
+    ? generateSecrets()
+    : null;
+  if (secrets !== null) {
+    steps.push({ step: "secrets_generated", names: Object.keys(secrets) });
+  }
+
+  // 4. Write worker/wrangler.toml from the example template.
+  const wranglerToml = renderWranglerToml({
+    template: readFileImpl(options.wranglerExamplePath),
+    accountId: options.accountId,
+    d1Id: d1.id,
+    d1Name: d1.name,
+    kvId: kv.id,
+    accessTeamDomain: access.access_team_domain,
+    accessAudience: access.access_audience,
+    adminUrl: options.adminUrl,
+    relayKeyId: options.relayKeyId,
+  });
+  if (!existsImpl(options.wranglerPath) || options.force) {
+    writeFileImpl(options.wranglerPath, wranglerToml);
+    steps.push({ step: "wrangler_toml", path: options.wranglerPath, written: true });
+  } else {
+    steps.push({ step: "wrangler_toml", path: options.wranglerPath, written: false, reason: "exists; pass --force to overwrite" });
+  }
+
+  // 5. Apply D1 migrations.
+  if (!options.skipMigrations) {
+    await execImpl("wrangler", ["d1", "migrations", "apply", d1.name, "--remote"], { cwd: options.workerDir });
+    steps.push({ step: "migrations_applied" });
+  }
+
+  // 6. Push the generated secrets via wrangler. CF_API_TOKEN re-uses the
+  //    operator's CLOUDFLARE_API_TOKEN if not in the generated set.
+  if (secrets !== null) {
+    for (const [name, value] of Object.entries(secrets)) {
+      await execImpl("wrangler", ["secret", "put", name], { cwd: options.workerDir, stdin: value });
+    }
+    // CF_API_TOKEN is set separately from the operator's CLI token.
+    await execImpl("wrangler", ["secret", "put", "CF_API_TOKEN"], { cwd: options.workerDir, stdin: env[options.tokenEnv] ?? "" });
+    steps.push({ step: "secrets_pushed", count: Object.keys(secrets).length + 1 });
+  }
+
+  // 7. Build UI (outputs into worker/public/) and deploy worker.
+  if (!options.skipBuildDeploy) {
+    await execImpl("pnpm", ["--filter", "@cf-mail-relay/ui", "build"], { cwd: options.repoRoot });
+    await execImpl("wrangler", ["deploy"], { cwd: options.workerDir });
+    steps.push({ step: "deployed", admin_url: options.adminUrl });
+  }
+
+  // 8. Bootstrap the first admin and delete the bootstrap token.
+  if (secrets !== null && !options.skipBootstrap) {
+    const adminEmail = options.allowEmails[0];
+    const bootstrapResponse = await fetchImpl(`${options.adminUrl}/bootstrap/admin`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${secrets.BOOTSTRAP_SETUP_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ email: adminEmail }),
+    });
+    if (bootstrapResponse.ok) {
+      steps.push({ step: "bootstrap_admin", email: adminEmail });
+      await execImpl("wrangler", ["secret", "delete", "BOOTSTRAP_SETUP_TOKEN", "--force"], { cwd: options.workerDir });
+      steps.push({ step: "bootstrap_token_cleared" });
+    } else {
+      steps.push({ step: "bootstrap_admin", email: adminEmail, ok: false, status: bootstrapResponse.status });
+    }
+  }
+
+  // 9. Emit per-adopter RUNBOOK.md so the operator has a single source of
+  //    truth with every value (DNS records, relay env, admin URL, IDs).
+  const runbook = renderRunbook({
+    adminUrl: options.adminUrl,
+    accountId: options.accountId,
+    d1Id: d1.id,
+    kvId: kv.id,
+    domains: options.domains,
+    relayHmacSecret: secrets?.RELAY_HMAC_SECRET_CURRENT ?? "<existing>",
+    relayKeyId: options.relayKeyId,
+  });
+  writeFileImpl(options.runbookPath, runbook);
+  steps.push({ step: "runbook_written", path: options.runbookPath });
+
+  return {
+    ok: true,
+    apply: true,
+    admin_url: options.adminUrl,
+    steps,
+  };
+}
+
+// ───────────────────────── Resource helpers ─────────────────────────
+
+export async function createOrFindD1(client, accountId, name) {
+  const list = await client.get(`/accounts/${encodeURIComponent(accountId)}/d1/database`);
+  if (list.ok) {
+    const databases = Array.isArray(list.body?.result) ? list.body.result : [];
+    const existing = databases.find((db) => db.name === name);
+    if (existing !== undefined) {
+      return { id: existing.uuid ?? existing.id, name, source: "existing" };
+    }
+  }
+  const created = await client.post(`/accounts/${encodeURIComponent(accountId)}/d1/database`, { name });
+  if (!created.ok) throw new Error(`D1 create failed: HTTP ${created.status}`);
+  const id = created.body?.result?.uuid ?? created.body?.result?.id;
+  if (typeof id !== "string") throw new Error(`D1 create response missing id`);
+  return { id, name, source: "created" };
+}
+
+export async function createOrFindKv(client, accountId, title) {
+  const list = await client.get(`/accounts/${encodeURIComponent(accountId)}/storage/kv/namespaces?per_page=100`);
+  if (list.ok) {
+    const namespaces = Array.isArray(list.body?.result) ? list.body.result : [];
+    const existing = namespaces.find((ns) => ns.title === title);
+    if (existing !== undefined) {
+      return { id: existing.id, title, source: "existing" };
+    }
+  }
+  const created = await client.post(`/accounts/${encodeURIComponent(accountId)}/storage/kv/namespaces`, { title });
+  if (!created.ok) throw new Error(`KV create failed: HTTP ${created.status}`);
+  const id = created.body?.result?.id;
+  if (typeof id !== "string") throw new Error(`KV create response missing id`);
+  return { id, title, source: "created" };
+}
+
+export function generateSecrets() {
+  return {
+    CREDENTIAL_PEPPER: base64url(32),
+    METADATA_PEPPER: base64url(32),
+    RELAY_HMAC_SECRET_CURRENT: base64url(32),
+    BOOTSTRAP_SETUP_TOKEN: base64url(32),
+  };
+}
+
+export function renderWranglerToml(input) {
+  let body = input.template;
+  body = body.replaceAll("REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID", input.accountId);
+  body = body.replaceAll("REPLACE_WITH_D1_DATABASE_ID", input.d1Id);
+  body = body.replaceAll("REPLACE_WITH_KV_NAMESPACE_ID", input.kvId);
+  body = body.replaceAll("REPLACE_WITH_ACCESS_APPLICATION_AUD", input.accessAudience);
+  body = body.replaceAll("your-team.cloudflareaccess.com", input.accessTeamDomain);
+  body = body.replaceAll("rel_REPLACE_ME", input.relayKeyId);
+  body = body.replace(/pattern = "mail\.example\.com"/g, `pattern = "${withoutScheme(input.adminUrl)}"`);
+  return body;
+}
+
+export function renderRunbook(input) {
+  const lines = [
+    `# cf-mail-relay — adopter runbook`,
+    ``,
+    `Generated ${new Date().toISOString()} by \`pnpm setup --apply\`.`,
+    ``,
+    `## Live admin`,
+    ``,
+    `- Admin URL: ${input.adminUrl}`,
+    `- Cloudflare account: ${input.accountId}`,
+    `- D1 database id: ${input.d1Id}`,
+    `- KV namespace id: ${input.kvId}`,
+    `- Relay HMAC key id: ${input.relayKeyId}`,
+    ``,
+    `## Relay container env`,
+    ``,
+    `\`\`\`env`,
+    `RELAY_WORKER_URL=${input.adminUrl}`,
+    `RELAY_KEY_ID=${input.relayKeyId}`,
+    `RELAY_HMAC_SECRET=${input.relayHmacSecret}`,
+    `RELAY_DOMAIN=smtp.${input.domains[0]}`,
+    `RELAY_TLS_CERT_FILE=/tls/fullchain.pem`,
+    `RELAY_TLS_KEY_FILE=/tls/privkey.pem`,
+    `\`\`\``,
+    ``,
+    `## DNS records to publish per sending domain`,
+    ``,
+    ...input.domains.flatMap((domain) => [
+      `### ${domain}`,
+      ``,
+      ...dnsRecordPlan(domain).map((record) => `- \`${record.type}  ${record.name}\` — ${record.value}`),
+      ``,
+      `Plus a DNS-only A record for the relay: \`smtp.${input.domains[0]}\` -> your relay host IP.`,
+      ``,
+    ]),
+    `## Day-2`,
+    ``,
+    `See \`docs/operations.md\` for secret rotation, ops actions, and idempotency semantics.`,
+    ``,
+  ];
+  return lines.join("\n");
+}
+
+// ───────────────────────── CLI ─────────────────────────
+
 export function parseArgs(argv, env = process.env) {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const workerDir = join(repoRoot, "worker");
   const options = {
     accountId: env.CLOUDFLARE_ACCOUNT_ID ?? "",
     accessAppName: "cf-mail-relay-admin",
+    adminUrl: "",
     apiBase: defaultApiBase,
+    apply: false,
+    allowEmails: [],
     d1DatabaseId: "",
     d1DatabaseName: "cf-mail-relay",
     domains: [],
     dryRun: false,
+    force: false,
     help: false,
     kvNamespaceId: "",
     kvNamespaceTitle: "cf-mail-relay-hot",
-    pagesUrl: "https://cf-mail-relay-ui.pages.dev",
+    regenerateSecrets: false,
+    relayKeyId: "rel_01",
+    repoRoot,
+    runbookPath: join(repoRoot, "RUNBOOK.md"),
+    skipBuildDeploy: false,
+    skipBootstrap: false,
+    skipMigrations: false,
     tokenEnv: "CLOUDFLARE_API_TOKEN",
+    workerDir,
     workerScriptName: "cf-mail-relay-worker",
-    workerUrl: "https://cf-mail-relay-worker.milfred.workers.dev",
+    wranglerExamplePath: join(workerDir, "wrangler.toml.example"),
+    wranglerPath: join(workerDir, "wrangler.toml"),
   };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     switch (arg) {
-      case "--account-id":
-        options.accountId = readValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--access-app-name":
-        options.accessAppName = readValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--api-base":
-        options.apiBase = readValue(argv, index, arg);
-        index += 1;
-        break;
+      case "--account-id": options.accountId = readValue(argv, index, arg); index += 1; break;
+      case "--access-app-name": options.accessAppName = readValue(argv, index, arg); index += 1; break;
+      case "--admin-url": options.adminUrl = trimTrailingSlash(readValue(argv, index, arg)); index += 1; break;
+      case "--allow-email": options.allowEmails.push(readValue(argv, index, arg)); index += 1; break;
+      case "--api-base": options.apiBase = readValue(argv, index, arg); index += 1; break;
+      case "--apply": options.apply = true; break;
       case "--d1-database-id":
-        options.d1DatabaseId = readValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--d1-database-name":
-        options.d1DatabaseName = readValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--domain":
-        options.domains.push(normalizeDomain(readValue(argv, index, arg)));
-        index += 1;
-        break;
-      case "--dry-run":
-        options.dryRun = true;
-        break;
+      case "--d1-id":
+        options.d1DatabaseId = readValue(argv, index, arg); index += 1; break;
+      case "--d1-database-name": options.d1DatabaseName = readValue(argv, index, arg); index += 1; break;
+      case "--domain": options.domains.push(normalizeDomain(readValue(argv, index, arg))); index += 1; break;
+      case "--dry-run": options.dryRun = true; break;
+      case "--force": options.force = true; break;
       case "--kv-namespace-id":
-        options.kvNamespaceId = readValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--kv-namespace-title":
-        options.kvNamespaceTitle = readValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--pages-url":
-        options.pagesUrl = trimTrailingSlash(readValue(argv, index, arg));
-        index += 1;
-        break;
-      case "--token-env":
-        options.tokenEnv = readValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--worker-script-name":
-        options.workerScriptName = readValue(argv, index, arg);
-        index += 1;
-        break;
-      case "--worker-url":
-        options.workerUrl = trimTrailingSlash(readValue(argv, index, arg));
-        index += 1;
-        break;
+      case "--kv-id":
+        options.kvNamespaceId = readValue(argv, index, arg); index += 1; break;
+      case "--kv-namespace-title": options.kvNamespaceTitle = readValue(argv, index, arg); index += 1; break;
+      case "--regenerate-secrets": options.regenerateSecrets = true; break;
+      case "--relay-key-id": options.relayKeyId = readValue(argv, index, arg); index += 1; break;
+      case "--skip-bootstrap": options.skipBootstrap = true; break;
+      case "--skip-build-deploy": options.skipBuildDeploy = true; break;
+      case "--skip-migrations": options.skipMigrations = true; break;
+      case "--token-env": options.tokenEnv = readValue(argv, index, arg); index += 1; break;
+      case "--worker-script-name": options.workerScriptName = readValue(argv, index, arg); index += 1; break;
       case "--help":
       case "-h":
-        options.help = true;
-        break;
+        options.help = true; break;
       default:
         throw new Error(`Unknown option: ${arg}\n\n${usage()}`);
     }
   }
-
   options.domains = [...new Set(options.domains)];
   return options;
 }
@@ -157,7 +398,6 @@ export class CloudflareApiClient {
     this.token = token;
     this.fetchImpl = fetchImpl;
   }
-
   async get(path) {
     const response = await this.fetchImpl(`${this.apiBase}${path}`, {
       method: "GET",
@@ -166,26 +406,50 @@ export class CloudflareApiClient {
     const body = parseJsonOrText(await response.text());
     return { status: response.status, ok: response.ok, body };
   }
+  async post(path, payload) {
+    const response = await this.fetchImpl(`${this.apiBase}${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.token}`, accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = parseJsonOrText(await response.text());
+    return { status: response.status, ok: response.ok, body };
+  }
 }
 
 function buildPlan(options) {
   return {
+    admin_url: options.adminUrl,
     domains: options.domains.map((domain) => ({
       domain,
       relay_hostname: `smtp.${options.domains[0]}`,
       dns_records: dnsRecordPlan(domain),
       verification: `pnpm doctor:delivery -- --domain ${domain}`,
     })),
+    // High-level steps performed by --apply.
+    apply_steps: [
+      `Create or reuse D1 database (${options.d1DatabaseName})`,
+      `Create or reuse KV namespace (${options.kvNamespaceTitle})`,
+      `Create or reuse Cloudflare Access app on ${options.adminUrl}`,
+      `Generate 4 worker secrets`,
+      `Write worker/wrangler.toml`,
+      `Apply D1 migrations`,
+      `Push secrets via wrangler`,
+      `Build UI into worker/public/`,
+      `Deploy worker`,
+      `POST /bootstrap/admin and delete BOOTSTRAP_SETUP_TOKEN`,
+      `Write RUNBOOK.md`,
+    ],
+    // Verbatim commands an operator can run if they prefer the manual flow.
     commands: [
       `pnpm --dir worker exec wrangler d1 create ${options.d1DatabaseName}`,
       `pnpm --dir worker exec wrangler kv namespace create ${options.kvNamespaceTitle}`,
       "pnpm --dir worker exec wrangler d1 migrations apply <D1_DATABASE_NAME> --remote",
       ...requiredSecrets.map((secret) => `pnpm --dir worker exec wrangler secret put ${secret}`),
       "pnpm access:setup --allow-email <admin@example.com> --apply-config worker/wrangler.toml",
+      "pnpm --filter @cf-mail-relay/ui build",
       "pnpm --dir worker exec wrangler deploy",
-      "PUBLIC_CF_MAIL_RELAY_API_BASE=<worker-url> pnpm --filter @cf-mail-relay/ui build",
-      "pnpm --dir worker exec wrangler pages deploy ../ui/dist --project-name cf-mail-relay-ui --branch main",
-      "pnpm doctor:local -- --domain <domain> --worker-url <worker-url>",
+      "pnpm doctor:local -- --domain <domain>",
     ],
   };
 }
@@ -215,10 +479,10 @@ async function checkWorkersPaid(client, accountId) {
 
 async function checkD1(client, accountId, databaseId, databaseName) {
   if (!databaseId) {
-    return warnCheck("d1_database", "No --d1-database-id provided. Create D1 and apply migrations before deploy.", { database_name: databaseName });
+    return warnCheck("d1_database", "No --d1-id provided. `pnpm setup --apply` will create one.", { database_name: databaseName });
   }
   const response = await client.get(`/accounts/${encodeURIComponent(accountId)}/d1/database/${encodeURIComponent(databaseId)}`);
-  return response.ok ? passCheck("d1_database", "D1 database is accessible; production D1 includes Time Travel.", { name: response.body?.result?.name }) : failCheck("d1_database", `D1 lookup failed with HTTP ${response.status}.`, response.body);
+  return response.ok ? passCheck("d1_database", "D1 database is accessible.", { name: response.body?.result?.name }) : failCheck("d1_database", `D1 lookup failed with HTTP ${response.status}.`, response.body);
 }
 
 async function checkKv(client, accountId, namespaceId, namespaceTitle) {
@@ -228,10 +492,10 @@ async function checkKv(client, accountId, namespaceId, namespaceTitle) {
   }
   const namespaces = Array.isArray(response.body?.result) ? response.body.result : [];
   const match = namespaces.find((namespace) => namespace.id === namespaceId || namespace.title === namespaceTitle);
-  return match ? passCheck("kv_namespace", "KV namespace is accessible.", { id: match.id, title: match.title }) : warnCheck("kv_namespace", "KV namespace was not found; create it before deploy.", { expected_id: namespaceId || undefined, expected_title: namespaceTitle });
+  return match ? passCheck("kv_namespace", "KV namespace is accessible.", { id: match.id, title: match.title }) : warnCheck("kv_namespace", "KV namespace not found; `pnpm setup --apply` will create one.", { expected_title: namespaceTitle });
 }
 
-async function checkAccess(client, accountId, appName, pagesUrl, workerUrl) {
+async function checkAccess(client, accountId, appName, adminUrl) {
   const response = await client.get(`/accounts/${encodeURIComponent(accountId)}/access/apps?name=${encodeURIComponent(appName)}`);
   if (!response.ok) {
     return warnCheck("access_app", "Could not read Access apps; create or verify the Access app separately.", response.body);
@@ -239,10 +503,9 @@ async function checkAccess(client, accountId, appName, pagesUrl, workerUrl) {
   const apps = Array.isArray(response.body?.result) ? response.body.result : [];
   const app = apps.find((candidate) => candidate.name === appName);
   if (app === undefined) {
-    return warnCheck("access_app", "Access app was not found. Run pnpm access:setup before exposing the UI.", { app_name: appName });
+    return warnCheck("access_app", "Access app not found. `pnpm setup --apply` will create it.", { app_name: appName });
   }
-  const expected = [withoutScheme(pagesUrl), `${withoutScheme(workerUrl)}/admin/api/*`];
-  return passCheck("access_app", "Access app exists; verify destinations include Pages and Worker admin API.", { app_id: app.id, expected_destinations: expected });
+  return passCheck("access_app", "Access app exists.", { app_id: app.id, expected_destination: withoutScheme(adminUrl) });
 }
 
 async function checkWorkerSecrets(client, accountId, scriptName) {
@@ -266,7 +529,6 @@ async function checkDomain(client, accountId, domain) {
     checks.push(failCheck(`domain:${domain}:zone`, "Cloudflare zone was not found or is inaccessible.", zoneResponse.body));
     return checks;
   }
-
   const sendingResponse = await client.get(`/zones/${encodeURIComponent(zoneId)}/email/sending/subdomains`);
   if (!sendingResponse.ok) {
     checks.push(failCheck(`domain:${domain}:email_sending`, `Email Sending lookup failed with HTTP ${sendingResponse.status}.`, sendingResponse.body));
@@ -276,12 +538,9 @@ async function checkDomain(client, accountId, domain) {
   const match = subdomains.find((subdomain) => normalizeDomain(subdomain.name ?? "") === domain);
   if (match?.enabled === true) {
     checks.push(passCheck(`domain:${domain}:email_sending`, "Email Sending is enabled for this domain.", { tag: match.tag, return_path_domain: match.return_path_domain }));
-    const dnsResponse = await client.get(`/zones/${encodeURIComponent(zoneId)}/email/sending/subdomains/${encodeURIComponent(match.tag)}/dns`);
-    checks.push(dnsResponse.ok ? passCheck(`domain:${domain}:email_sending_dns`, "Cloudflare returned Email Sending DNS records.", { record_count: Array.isArray(dnsResponse.body?.result) ? dnsResponse.body.result.length : undefined }) : warnCheck(`domain:${domain}:email_sending_dns`, "Could not read Email Sending DNS records.", dnsResponse.body));
   } else {
     checks.push(failCheck(`domain:${domain}:email_sending`, "Email Sending is not enabled for this domain.", { available: subdomains.map((subdomain) => ({ name: subdomain.name, enabled: subdomain.enabled })) }));
   }
-  checks.push(warnCheck(`domain:${domain}:sandbox`, "Cloudflare's API may not expose sandbox state; verify live delivery before promising arbitrary recipients."));
   return checks;
 }
 
@@ -294,17 +553,13 @@ function dnsRecordPlan(domain) {
   ];
 }
 
-function passCheck(name, message, details = {}) {
-  return { name, status: "pass", message, details };
+function base64url(bytes) {
+  return randomBytes(bytes).toString("base64url");
 }
 
-function failCheck(name, message, details = {}) {
-  return { name, status: "fail", message, details };
-}
-
-function warnCheck(name, message, details = {}) {
-  return { name, status: "warn", message, details };
-}
+function passCheck(name, message, details = {}) { return { name, status: "pass", message, details }; }
+function failCheck(name, message, details = {}) { return { name, status: "fail", message, details }; }
+function warnCheck(name, message, details = {}) { return { name, status: "warn", message, details }; }
 
 function readValue(argv, index, optionName) {
   const value = argv[index + 1];
@@ -335,19 +590,48 @@ function withoutScheme(url) {
   return trimTrailingSlash(url).replace(/^https?:\/\//u, "");
 }
 
+function runCommand(command, args, options = {}) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? process.cwd(),
+      env: process.env,
+      stdio: options.stdin === undefined ? ["ignore", "inherit", "inherit"] : ["pipe", "inherit", "inherit"],
+    });
+    if (options.stdin !== undefined && child.stdin !== null) {
+      child.stdin.write(options.stdin);
+      child.stdin.end();
+    }
+    child.on("close", (code) => {
+      if (code === 0) resolvePromise();
+      else rejectPromise(new Error(`${command} ${args.join(" ")} exited with ${code}`));
+    });
+    child.on("error", rejectPromise);
+  });
+}
+
 function usage() {
   return `Usage:
-  pnpm run setup --account-id <account_id> --domain <domain> [--domain <other-domain>]
+  pnpm run setup --account-id <id> --domain <domain> --admin-url https://mail.example.com [--dry-run]
+  pnpm run setup --apply --admin-url https://mail.example.com --allow-email you@example.com --domain example.com
 
 Required:
   --account-id              Cloudflare account ID, or CLOUDFLARE_ACCOUNT_ID.
-  --domain                  Sending domain. Repeat for multiple domains.
+  --admin-url               URL where the admin UI + API will live (e.g. https://mail.example.com).
+  --domain                  Sending domain (repeat for multiple).
 
-Common options:
-  --d1-database-id <id>     Existing D1 database ID to verify.
-  --kv-namespace-id <id>    Existing KV namespace ID to verify.
-  --pages-url <url>         Pages admin UI URL.
-  --worker-url <url>        Worker URL.
-  --dry-run                 Print the setup plan without Cloudflare API calls.
+Apply flags (--apply):
+  --allow-email <email>     Required at least once for the Access policy.
+  --d1-id <id>              Use existing D1 instead of creating.
+  --kv-id <id>              Use existing KV namespace instead of creating.
+  --relay-key-id <id>       RELAY_HMAC_KEY_ID (default rel_01).
+  --regenerate-secrets      Force regenerate even if worker/wrangler.toml exists.
+  --force                   Overwrite existing worker/wrangler.toml.
+  --skip-migrations         Skip 'wrangler d1 migrations apply'.
+  --skip-build-deploy       Skip UI build + worker deploy.
+  --skip-bootstrap          Skip the /bootstrap/admin call.
+
+Common:
+  --token-env <name>        Env var holding the CF API token (default CLOUDFLARE_API_TOKEN).
+  --dry-run                 Print plan only; no API calls (no token required).
 `;
 }

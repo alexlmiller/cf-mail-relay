@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { main, parseArgs } from "./setup.mjs";
+import { CloudflareApiClient, createOrFindD1, createOrFindKv, generateSecrets, main, parseArgs, renderRunbook, renderWranglerToml, runApply } from "./setup.mjs";
 
 describe("setup parseArgs", () => {
   it("parses repeatable domains and core options", () => {
@@ -117,3 +117,196 @@ function json(body, status = 200) {
     headers: { "content-type": "application/json" },
   });
 }
+
+describe("setup apply helpers", () => {
+  it("createOrFindD1 reuses an existing database by name", async () => {
+    const fetchImpl = async (url) => {
+      const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/d1/database") {
+        return json({ success: true, result: [{ name: "cf-mail-relay", uuid: "d1_existing" }] });
+      }
+      return json({ success: false }, 404);
+    };
+    const client = new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl);
+    const result = await createOrFindD1(client, "acc", "cf-mail-relay");
+    assert.equal(result.id, "d1_existing");
+    assert.equal(result.source, "existing");
+  });
+
+  it("createOrFindD1 creates when missing", async () => {
+    let posted = false;
+    const fetchImpl = async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") {
+        return json({ success: true, result: [] });
+      }
+      if (path === "/client/v4/accounts/acc/d1/database" && init.method === "POST") {
+        posted = true;
+        return json({ success: true, result: { uuid: "d1_new" } });
+      }
+      return json({ success: false }, 404);
+    };
+    const client = new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl);
+    const result = await createOrFindD1(client, "acc", "cf-mail-relay");
+    assert.equal(result.id, "d1_new");
+    assert.equal(result.source, "created");
+    assert.equal(posted, true);
+  });
+
+  it("createOrFindKv reuses by title", async () => {
+    const fetchImpl = async (url) => {
+      const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces") {
+        return json({ success: true, result: [{ id: "kv_existing", title: "cf-mail-relay-hot" }] });
+      }
+      return json({ success: false }, 404);
+    };
+    const client = new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl);
+    const result = await createOrFindKv(client, "acc", "cf-mail-relay-hot");
+    assert.equal(result.id, "kv_existing");
+    assert.equal(result.source, "existing");
+  });
+
+  it("generateSecrets returns 4 distinct base64url 32-byte secrets", () => {
+    const secrets = generateSecrets();
+    const names = Object.keys(secrets);
+    assert.deepEqual(names.sort(), ["BOOTSTRAP_SETUP_TOKEN", "CREDENTIAL_PEPPER", "METADATA_PEPPER", "RELAY_HMAC_SECRET_CURRENT"]);
+    for (const name of names) {
+      assert.equal(secrets[name].length, 43);
+      assert.match(secrets[name], /^[A-Za-z0-9_-]+$/);
+    }
+    // No collisions.
+    assert.equal(new Set(Object.values(secrets)).size, 4);
+  });
+
+  it("renderWranglerToml substitutes placeholders + mail.example.com route", () => {
+    const template = `account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
+ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
+RELAY_HMAC_KEY_ID = "rel_REPLACE_ME"
+routes = [
+  { pattern = "mail.example.com", custom_domain = true },
+]`;
+    const rendered = renderWranglerToml({
+      template,
+      accountId: "acc_xyz",
+      d1Id: "d1_xyz",
+      d1Name: "cf-mail-relay",
+      kvId: "kv_xyz",
+      accessTeamDomain: "team.cloudflareaccess.com",
+      accessAudience: "aud_xyz",
+      adminUrl: "https://mail.milf.red",
+      relayKeyId: "rel_01",
+    });
+    assert.match(rendered, /account_id = "acc_xyz"/);
+    assert.match(rendered, /database_id = "d1_xyz"/);
+    assert.match(rendered, /id = "kv_xyz"/);
+    assert.match(rendered, /ACCESS_TEAM_DOMAIN = "team\.cloudflareaccess\.com"/);
+    assert.match(rendered, /ACCESS_AUDIENCE = "aud_xyz"/);
+    assert.match(rendered, /RELAY_HMAC_KEY_ID = "rel_01"/);
+    assert.match(rendered, /pattern = "mail\.milf\.red"/);
+  });
+
+  it("renderRunbook includes admin URL, IDs, and DNS records per domain", () => {
+    const runbook = renderRunbook({
+      adminUrl: "https://mail.milf.red",
+      accountId: "acc",
+      d1Id: "d1",
+      kvId: "kv",
+      domains: ["example.com", "other.example.com"],
+      relayHmacSecret: "S3CR3T",
+      relayKeyId: "rel_01",
+    });
+    assert.match(runbook, /https:\/\/mail\.milf\.red/);
+    assert.match(runbook, /Cloudflare account: acc/);
+    assert.match(runbook, /D1 database id: d1/);
+    assert.match(runbook, /KV namespace id: kv/);
+    assert.match(runbook, /example\.com/);
+    assert.match(runbook, /other\.example\.com/);
+    assert.match(runbook, /RELAY_HMAC_SECRET=S3CR3T/);
+    assert.match(runbook, /smtp\.example\.com/);
+  });
+
+  it("runApply orchestrates create-or-reuse, secret push, deploy, bootstrap", async () => {
+    const execCalls = [];
+    const writes = new Map();
+    const exists = new Set();
+    const fetchImpl = async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") {
+        return json({ success: true, result: [] });
+      }
+      if (path === "/client/v4/accounts/acc/d1/database" && init.method === "POST") {
+        return json({ success: true, result: { uuid: "d1_new" } });
+      }
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") {
+        return json({ success: true, result: [] });
+      }
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && init.method === "POST") {
+        return json({ success: true, result: { id: "kv_new" } });
+      }
+      if (path === "/bootstrap/admin") {
+        return json({ ok: true, user_id: "usr_admin" });
+      }
+      throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
+    };
+
+    const options = parseArgs([
+      "--account-id", "acc",
+      "--admin-url", "https://mail.milf.red",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+      "--apply",
+    ], {});
+    options.workerDir = "/repo/worker";
+    options.repoRoot = "/repo";
+    options.wranglerExamplePath = "/repo/worker/wrangler.toml.example";
+    options.wranglerPath = "/repo/worker/wrangler.toml";
+    options.runbookPath = "/repo/RUNBOOK.md";
+
+    const result = await runApply({
+      options,
+      env: { CLOUDFLARE_API_TOKEN: "token" },
+      client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
+      execImpl: async (command, args) => {
+        execCalls.push(`${command} ${args.join(" ")}`);
+      },
+      readFileImpl: () => `account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
+ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
+RELAY_HMAC_KEY_ID = "rel_REPLACE_ME"
+routes = [
+  { pattern = "mail.example.com", custom_domain = true },
+]`,
+      writeFileImpl: (path, body) => { writes.set(path, body); },
+      existsImpl: (path) => exists.has(path),
+      accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+      fetchImpl,
+    });
+
+    assert.equal(result.ok, true);
+    const stepNames = result.steps.map((step) => step.step);
+    assert.ok(stepNames.includes("d1"));
+    assert.ok(stepNames.includes("kv"));
+    assert.ok(stepNames.includes("access"));
+    assert.ok(stepNames.includes("secrets_pushed"));
+    assert.ok(stepNames.includes("deployed"));
+    assert.ok(stepNames.includes("bootstrap_admin"));
+    assert.ok(stepNames.includes("runbook_written"));
+
+    // Wrangler toml was written with substituted values.
+    const toml = writes.get("/repo/worker/wrangler.toml");
+    assert.match(toml, /pattern = "mail\.milf\.red"/);
+    // The RUNBOOK was written.
+    assert.ok(writes.has("/repo/RUNBOOK.md"));
+    // Wrangler was invoked for migrations + secrets + deploy.
+    assert.ok(execCalls.some((call) => call.includes("d1 migrations apply")));
+    assert.ok(execCalls.some((call) => call.includes("secret put RELAY_HMAC_SECRET_CURRENT")));
+    assert.ok(execCalls.some((call) => call.includes("wrangler deploy")));
+    assert.ok(execCalls.some((call) => call.includes("secret delete BOOTSTRAP_SETUP_TOKEN")));
+  });
+});
