@@ -192,6 +192,7 @@ function paint(root: HTMLElement, senders: Sender[], domains: Domain[], users: U
     searchPlaceholder: "Search by sender, domain, or user…",
     emptyTitle: "No allowed senders",
     emptyHint: "Grant a user permission to send as a specific address on one of your domains.",
+    cardMode: true,
     emptyAction: h(
       "button",
       {

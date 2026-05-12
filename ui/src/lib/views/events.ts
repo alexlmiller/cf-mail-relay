@@ -182,6 +182,7 @@ function sendEventTable(events: SendEvent[]): HTMLElement {
     onRowClick: (row) => navigate("/events", { mode: "sends", id: row.id }),
     emptyTitle: "No send events yet",
     emptyHint: "Once a message flows through the relay, it's recorded here. Try `pnpm doctor:delivery` once your relay is up.",
+    cardMode: true,
   });
   return built.root;
 }
@@ -232,6 +233,7 @@ function authFailureTable(rows: AuthFailure[]): HTMLElement {
     searchPlaceholder: "Search by username or reason…",
     emptyTitle: "No authentication failures",
     emptyHint: "If someone tries to AUTH with a bad username or password, it'll land here.",
+    cardMode: true,
   });
   return built.root;
 }

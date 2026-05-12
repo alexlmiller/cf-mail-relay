@@ -218,6 +218,7 @@ function paint(root: HTMLElement, keys: ApiKey[], users: User[], senders: Sender
     searchPlaceholder: "Search API keys…",
     emptyTitle: "No API keys",
     emptyHint: "Create a key to call the HTTP /send endpoint from your applications.",
+    cardMode: true,
     emptyAction: h(
       "button",
       {

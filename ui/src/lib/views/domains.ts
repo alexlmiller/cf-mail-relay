@@ -116,6 +116,7 @@ function paint(root: HTMLElement, domains: Domain[]) {
     onRowClick: (row) => navigate(`/domains/${row.id}`),
     emptyTitle: "No sending domains",
     emptyHint: "Add the first domain you've enabled in Cloudflare Email Sending — the relay refuses to send From an unknown domain.",
+    cardMode: true,
     emptyAction: h(
       "button",
       {

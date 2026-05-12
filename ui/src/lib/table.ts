@@ -40,6 +40,12 @@ export interface TableOptions<Row> {
   rowId?: (row: Row) => string;
   /** Suppress the toolbar when there are no rows and no chips configured. */
   hideToolsWhenEmpty?: boolean;
+  /**
+   * Below the 720px breakpoint, repaint each row as a card stack instead of
+   * forcing horizontal scroll. Cells use data-label attrs as their visual
+   * label in card mode. Use for read-heavy mobile flows (events, failures).
+   */
+  cardMode?: boolean;
 }
 
 interface State {
@@ -143,7 +149,9 @@ export function buildTable<Row>(options: TableOptions<Row>): { root: HTMLElement
   const empty = h("div", { class: "empty hidden" });
   const shell = h(
     "div",
-    { class: "table-shell" },
+    options.cardMode
+      ? { class: "table-shell", "data-cards": "1" }
+      : { class: "table-shell" },
     options.chips || !options.hideToolsWhenEmpty || options.rows.length > 0 ? toolbar : false,
     tableWrap,
     empty,
@@ -243,7 +251,7 @@ export function buildTable<Row>(options: TableOptions<Row>): { root: HTMLElement
         tr.tabIndex = 0;
       }
       for (const col of options.columns) {
-        const td = h("td", { class: col.cell ?? "" }, col.render(row));
+        const td = h("td", { class: col.cell ?? "", "data-label": col.label }, col.render(row));
         if (col.right) td.classList.add("right");
         tr.appendChild(td);
       }

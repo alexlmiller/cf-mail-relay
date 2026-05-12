@@ -202,6 +202,7 @@ function paint(root: HTMLElement, snapshot: Snapshot) {
     onRowClick: (row) => navigate(`/users/${row.id}`),
     emptyTitle: "No users yet",
     emptyHint: "Add the first user, then grant them senders and mint a credential. The Setup wizard walks you through it.",
+    cardMode: true,
     emptyAction: h(
       "button",
       {

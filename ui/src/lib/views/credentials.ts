@@ -211,6 +211,7 @@ function paint(root: HTMLElement, credentials: SmtpCredential[], users: User[], 
     searchPlaceholder: "Search credentials…",
     emptyTitle: "No SMTP credentials",
     emptyHint: "Create the first SMTP credential for a user or application.",
+    cardMode: true,
     emptyAction: h(
       "button",
       {
