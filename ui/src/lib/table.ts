@@ -29,6 +29,13 @@ export interface ColumnDef<Row> {
    * date). Has no effect on desktop.
    */
   hideOnCard?: boolean;
+  /**
+   * In cardMode, drop the auto-rendered label column ("STATE ·") in front of
+   * this cell's value. Use for self-explanatory pills (active/revoked,
+   * enabled/disabled) where the label adds noise. The value still occupies a
+   * full row, just without the leading label slot.
+   */
+  hideLabelOnCard?: boolean;
 }
 
 export interface TableOptions<Row> {
@@ -298,6 +305,7 @@ export function buildTable<Row>(options: TableOptions<Row>): { root: HTMLElement
             "data-label": col.label,
             "data-primary": col.primary ? "1" : undefined,
             "data-hide-card": col.hideOnCard ? "1" : undefined,
+            "data-hide-label-card": col.hideLabelOnCard ? "1" : undefined,
           },
           col.render(row),
         );

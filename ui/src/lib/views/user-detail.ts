@@ -6,9 +6,9 @@ import { formatAbsolute, formatRelative, initialsFor } from "../format";
 import { buildForm, closeModal, openModal } from "../modal";
 import { pill } from "../status";
 import { toast } from "../toast";
-import { openNewSender } from "./senders";
-import { openNewCredential, revealCredential } from "./credentials";
-import { openNewApiKey, revealApiKey } from "./api-keys";
+import { openNewSender, openSenderDrawer } from "./senders";
+import { openCredentialDrawer, openNewCredential } from "./credentials";
+import { openApiKeyDrawer, openNewApiKey } from "./api-keys";
 import type { ApiKey, Domain, Sender, SmtpCredential, User } from "../types";
 
 interface DetailData {
@@ -322,56 +322,29 @@ function sendersCard(data: DetailData, root: HTMLElement): HTMLElement {
 function senderRow(sender: Sender, userId: string, root: HTMLElement): HTMLElement {
   const enabled = sender.enabled === 1;
   return h(
-    "div",
-    { class: "row-between", style: "padding: 12px 16px; border-bottom: 1px solid var(--border); gap: 12px" },
+    "button",
+    {
+      type: "button",
+      class: "compact-row",
+      "on:click": () => openSenderDrawer(sender, () => renderUserDetail(root, userId)),
+    },
     h(
-      "div",
-      { class: "row", style: "gap: 10px; min-width: 0" },
-      icon("user", 13),
-      h("span", { class: "id", style: "color: var(--text); font-size: 13.5px" }, sender.email),
-      h("span", { class: "soft", style: "font-size: 12px" }, "·"),
-      h("a", { class: "soft", style: "font-size: 12px", href: `#/domains/${sender.domain_id}` }, sender.domain),
+      "span",
+      { class: "marker", style: "width: 14px; height: 14px; border-radius: 4px; display: grid; place-items: center; background: transparent; color: var(--text-mute)" },
+      icon("user", 12),
     ),
     h(
-      "div",
-      { class: "row", style: "gap: 8px" },
-      enabled ? pill("enabled", "ok") : pill("disabled", "muted"),
+      "span",
+      { class: "label" },
       h(
-        "button",
-        {
-          type: "button",
-          class: "btn ghost sm",
-          "on:click": async () => {
-            try {
-              await api.updateSender(sender.id, { enabled: !enabled });
-              toast(`${sender.email} ${enabled ? "disabled" : "enabled"}`);
-              await renderUserDetail(root, userId);
-            } catch (error) {
-              toast(describeError(error, "Could not update sender"), "err");
-            }
-          },
-        },
-        enabled ? "Disable" : "Enable",
+        "span",
+        { class: "primary" },
+        h("span", { class: "id", style: "color: var(--text)" }, sender.email),
+        enabled ? pill("enabled", "ok") : pill("disabled", "muted"),
       ),
-      h(
-        "button",
-        {
-          type: "button",
-          class: "btn ghost sm danger",
-          "on:click": async () => {
-            if (!confirm(`Remove ${sender.email} from ${sender.domain}? Any credential restricted to this sender will lose access.`)) return;
-            try {
-              await api.deleteSender(sender.id);
-              toast(`${sender.email} removed`);
-              await renderUserDetail(root, userId);
-            } catch (error) {
-              toast(describeError(error, "Could not delete sender"), "err");
-            }
-          },
-        },
-        "Remove",
-      ),
+      h("span", { class: "secondary" }, sender.domain),
     ),
+    h("span", { class: "go" }, icon("chevronRight", 12)) as Child,
   );
 }
 
@@ -434,69 +407,30 @@ function credentialsCard(data: DetailData, root: HTMLElement): HTMLElement {
 
 function credentialRow(credential: SmtpCredential, root: HTMLElement): HTMLElement {
   return h(
-    "div",
-    { class: "row-between", style: "padding: 12px 16px; border-bottom: 1px solid var(--border); gap: 12px" },
+    "button",
+    {
+      type: "button",
+      class: "compact-row",
+      "on:click": () => openCredentialDrawer(credential, () => renderUserDetail(root, credential.user_id)),
+    },
     h(
-      "div",
-      { class: "stack", style: "gap: 3px; min-width: 0" },
+      "span",
+      { class: "label" },
       h(
-        "div",
-        { class: "row", style: "gap: 10px; min-width: 0" },
+        "span",
+        { class: "primary" },
         h("span", { style: "font-weight: 500" }, credential.name),
         credential.revoked_at ? pill("revoked", "muted") : pill("active", "ok"),
       ),
       h(
-        "div",
-        { class: "row", style: "gap: 10px; font-size: 12px" },
-        h("span", { class: "soft" }, "Username:"),
-        copyable({ value: credential.username, display: credential.username }),
-        credential.last_used_at
-          ? h("span", { class: "soft" }, `· last used ${formatRelative(credential.last_used_at)}`)
-          : h("span", { class: "soft" }, "· never used"),
+        "span",
+        { class: "secondary" },
+        credential.username,
+        " · ",
+        credential.last_used_at ? `last used ${formatRelative(credential.last_used_at)}` : "never used",
       ),
-    ) as Child,
-    credential.revoked_at
-      ? h("span", { class: "soft", style: "font-size: 12px" }, formatAbsolute(credential.revoked_at))
-      : h(
-          "div",
-          { class: "row", style: "gap: 4px" },
-          h(
-            "button",
-            {
-              type: "button",
-              class: "btn ghost sm",
-              title: "Generate a new secret on this same credential",
-              "on:click": async () => {
-                if (!confirm(`Roll ${credential.username}? The old password will stop working immediately.`)) return;
-                try {
-                  const result = await api.rollSmtpCredential(credential.id);
-                  revealCredential(result, () => renderUserDetail(root, credential.user_id));
-                } catch (error) {
-                  toast(describeError(error, "Could not roll"), "err");
-                }
-              },
-            },
-            "Roll",
-          ),
-          h(
-            "button",
-            {
-              type: "button",
-              class: "btn ghost sm danger",
-              "on:click": async () => {
-                if (!confirm(`Revoke ${credential.username}?`)) return;
-                try {
-                  await api.revokeSmtpCredential(credential.id);
-                  toast(`${credential.username} revoked`);
-                  await renderUserDetail(root, credential.user_id);
-                } catch (error) {
-                  toast(describeError(error, "Could not revoke"), "err");
-                }
-              },
-            },
-            "Revoke",
-          ),
-        ),
+    ),
+    h("span", { class: "go" }, icon("chevronRight", 12)) as Child,
   );
 }
 
@@ -559,68 +493,29 @@ function apiKeysCard(data: DetailData, root: HTMLElement): HTMLElement {
 
 function apiKeyRow(key: ApiKey, root: HTMLElement): HTMLElement {
   return h(
-    "div",
-    { class: "row-between", style: "padding: 12px 16px; border-bottom: 1px solid var(--border); gap: 12px" },
+    "button",
+    {
+      type: "button",
+      class: "compact-row",
+      "on:click": () => openApiKeyDrawer(key, () => renderUserDetail(root, key.user_id)),
+    },
     h(
-      "div",
-      { class: "stack", style: "gap: 3px; min-width: 0" },
+      "span",
+      { class: "label" },
       h(
-        "div",
-        { class: "row", style: "gap: 10px; min-width: 0" },
+        "span",
+        { class: "primary" },
         h("span", { style: "font-weight: 500" }, key.name),
         key.revoked_at ? pill("revoked", "muted") : pill("active", "ok"),
       ),
       h(
-        "div",
-        { class: "row", style: "gap: 10px; font-size: 12px" },
-        h("span", { class: "soft" }, "Prefix:"),
-        copyable({ value: key.key_prefix, display: key.key_prefix }),
-        key.last_used_at
-          ? h("span", { class: "soft" }, `· last used ${formatRelative(key.last_used_at)}`)
-          : h("span", { class: "soft" }, "· never used"),
+        "span",
+        { class: "secondary" },
+        key.key_prefix,
+        " · ",
+        key.last_used_at ? `last used ${formatRelative(key.last_used_at)}` : "never used",
       ),
-    ) as Child,
-    key.revoked_at
-      ? h("span", { class: "soft", style: "font-size: 12px" }, formatAbsolute(key.revoked_at))
-      : h(
-          "div",
-          { class: "row", style: "gap: 4px" },
-          h(
-            "button",
-            {
-              type: "button",
-              class: "btn ghost sm",
-              title: "Generate a new bearer token on this same key",
-              "on:click": async () => {
-                if (!confirm(`Roll ${key.name}? The old token will stop working immediately.`)) return;
-                try {
-                  const result = await api.rollApiKey(key.id);
-                  revealApiKey(result, () => renderUserDetail(root, key.user_id));
-                } catch (error) {
-                  toast(describeError(error, "Could not roll"), "err");
-                }
-              },
-            },
-            "Roll",
-          ),
-          h(
-            "button",
-            {
-              type: "button",
-              class: "btn ghost sm danger",
-              "on:click": async () => {
-                if (!confirm(`Revoke ${key.name}?`)) return;
-                try {
-                  await api.revokeApiKey(key.id);
-                  toast(`${key.name} revoked`);
-                  await renderUserDetail(root, key.user_id);
-                } catch (error) {
-                  toast(describeError(error, "Could not revoke"), "err");
-                }
-              },
-            },
-            "Revoke",
-          ),
-        ),
+    ),
+    h("span", { class: "go" }, icon("chevronRight", 12)) as Child,
   );
 }

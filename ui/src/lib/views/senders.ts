@@ -2,7 +2,8 @@ import { api, describeError } from "../api";
 import type { Child } from "../dom";
 import { h, icon, setChildren } from "../dom";
 import { copyable } from "../clipboard";
-import { formatDayOnly } from "../format";
+import { close as closeDrawer, openDrawer } from "../drawer";
+import { formatAbsolute, formatDayOnly } from "../format";
 import { buildForm, closeModal, openModal } from "../modal";
 import { pill } from "../status";
 import { buildTable } from "../table";
@@ -95,13 +96,20 @@ function paint(root: HTMLElement, senders: Sender[], domains: Domain[], users: U
       {
         key: "email",
         label: "Sender",
-        render: (row) => h("span", { class: "id", style: "color: var(--text); font-size: 13px" }, row.email),
+        primary: true,
+        render: (row) => h(
+          "span",
+          { class: "row", style: "gap: 10px; flex-wrap: wrap; align-items: center" },
+          h("span", { class: "id", style: "color: var(--text); font-size: 13px" }, row.email),
+          row.enabled ? pill("enabled", "ok") : pill("disabled", "muted"),
+        ),
         sort: (row) => row.email,
       },
       {
         key: "domain",
         label: "Domain",
-        render: (row) => h("a", { class: "id", href: `#/domains/${row.domain_id}` }, row.domain),
+        hideOnCard: true,
+        render: (row) => h("a", { class: "id", href: `#/domains/${row.domain_id}`, "on:click": (event: Event) => event.stopPropagation() }, row.domain),
         sort: (row) => row.domain,
         width: 200,
       },
@@ -110,7 +118,7 @@ function paint(root: HTMLElement, senders: Sender[], domains: Domain[], users: U
         label: "User",
         render: (row) =>
           row.user_email
-            ? h("a", { class: "link", href: `#/users/${row.user_id ?? ""}` }, row.user_email)
+            ? h("a", { class: "link", href: `#/users/${row.user_id ?? ""}`, "on:click": (event: Event) => event.stopPropagation() }, row.user_email)
             : h("span", { class: "soft" }, "any user"),
         sort: (row) => row.user_email ?? "",
         width: 240,
@@ -118,6 +126,7 @@ function paint(root: HTMLElement, senders: Sender[], domains: Domain[], users: U
       {
         key: "enabled",
         label: "State",
+        hideOnCard: true,
         render: (row) => (row.enabled ? pill("enabled", "ok") : pill("disabled", "muted")),
         sort: (row) => (row.enabled ? 1 : 0),
         width: 110,
@@ -125,6 +134,7 @@ function paint(root: HTMLElement, senders: Sender[], domains: Domain[], users: U
       {
         key: "created",
         label: "Granted",
+        hideOnCard: true,
         render: (row) => h("span", { class: "mono num soft" }, formatDayOnly(row.created_at)),
         sort: (row) => row.created_at,
         width: 130,
@@ -133,12 +143,14 @@ function paint(root: HTMLElement, senders: Sender[], domains: Domain[], users: U
         key: "id",
         label: "ID",
         cell: "mono",
+        hideOnCard: true,
         render: (row) => copyable({ value: row.id, display: row.id.slice(0, 12), title: row.id }),
         width: 150,
       },
       {
         key: "actions",
         label: "",
+        hideOnCard: true,
         render: (row) => {
           const enabled = row.enabled === 1;
           return h(
@@ -193,6 +205,7 @@ function paint(root: HTMLElement, senders: Sender[], domains: Domain[], users: U
     emptyTitle: "No allowed senders",
     emptyHint: "Grant a user permission to send as a specific address on one of your domains.",
     cardMode: true,
+    onRowClick: (row) => openSenderDrawer(row, () => renderSenders(root)),
     emptyAction: h(
       "button",
       {
@@ -299,5 +312,104 @@ export function openNewSender(domains: Domain[], users: User[], onCreated: (id: 
     title: "Grant sender",
     body: form,
     footer: h("div", { class: "row-between flex-fill" }, cancel, submit),
+  });
+}
+
+// ───────────────────────── Detail drawer ─────────────────────────
+
+export function openSenderDrawer(
+  sender: Sender,
+  onChanged: () => Promise<void> | void,
+): void {
+  const enabled = sender.enabled === 1;
+  const body = h(
+    "div",
+    { class: "stack", style: "gap: 18px" },
+    h(
+      "dl",
+      { class: "dl" },
+      h("dt", null, "Sender"), h("dd", null, h("span", { class: "id", style: "color: var(--text)" }, sender.email)),
+      h("dt", null, "Domain"),
+      h(
+        "dd",
+        null,
+        h(
+          "a",
+          { class: "id", href: `#/domains/${sender.domain_id}`, "on:click": () => closeDrawer() },
+          sender.domain,
+        ),
+      ),
+      h("dt", null, "Owner"),
+      h(
+        "dd",
+        null,
+        sender.user_email
+          ? h(
+              "a",
+              { class: "link", href: `#/users/${sender.user_id ?? ""}`, "on:click": () => closeDrawer() },
+              sender.user_email,
+            )
+          : h("span", { class: "soft" }, "any user"),
+      ),
+      h("dt", null, "State"),
+      h("dd", null, enabled ? pill("enabled", "ok") : pill("disabled", "muted")),
+      h("dt", null, "Granted"), h("dd", { class: "soft" }, formatAbsolute(sender.created_at)),
+      h("dt", null, "Updated"), h("dd", { class: "soft" }, formatAbsolute(sender.updated_at)),
+      h("dt", null, "ID"), h("dd", null, copyable({ value: sender.id, display: sender.id })),
+    ),
+  );
+
+  const footer = h(
+    "div",
+    { class: "row", style: "gap: 8px; flex-wrap: wrap; width: 100%" },
+    h(
+      "button",
+      {
+        type: "button",
+        class: "btn ghost",
+        "on:click": async () => {
+          try {
+            await api.updateSender(sender.id, { enabled: !enabled });
+            toast(`${sender.email} ${enabled ? "disabled" : "enabled"}`);
+            closeDrawer();
+            await onChanged();
+          } catch (error) {
+            toast(describeError(error, "Could not update sender"), "err");
+          }
+        },
+      },
+      enabled ? "Disable" : "Enable",
+    ),
+    h("span", { class: "flex-fill" }),
+    h(
+      "button",
+      {
+        type: "button",
+        class: "btn danger",
+        "on:click": async () => {
+          if (!confirm(`Remove ${sender.email} from ${sender.domain}? This is immediate and cannot be undone.`)) return;
+          try {
+            await api.deleteSender(sender.id);
+            toast(`${sender.email} removed`);
+            closeDrawer();
+            await onChanged();
+          } catch (error) {
+            toast(describeError(error, "Could not delete sender"), "err");
+          }
+        },
+      },
+      "Remove",
+    ),
+  );
+
+  openDrawer({
+    title: sender.email,
+    crumbs: [
+      h("a", { href: "#/senders", "on:click": () => closeDrawer() }, "senders"),
+      h("span", { class: "sep" }, "/"),
+      h("span", null, sender.domain),
+    ],
+    body,
+    footer,
   });
 }

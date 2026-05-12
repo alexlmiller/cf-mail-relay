@@ -185,6 +185,40 @@ export function shots(): Shot[] {
       waitFor: ".section",
     },
 
+    // 23 — Mobile users (reduced card)
+    {
+      name: "23-mobile-users",
+      fixtures: adminFixtures(),
+      route: "/users",
+      viewport: { width: 390, height: 844 },
+      waitFor: "tbody tr",
+    },
+
+    // 25 — Mobile user detail (compact credentials/keys/senders rows)
+    {
+      name: "25-mobile-user-detail",
+      fixtures: adminFixtures(),
+      route: "/users/usr_01HQA8KQ2J7Z4F1E6XBVT0NPRD",
+      viewport: { width: 390, height: 844 },
+      waitFor: ".compact-row",
+    },
+
+    // 24 — Mobile credential drawer open
+    {
+      name: "24-mobile-credential-drawer",
+      fixtures: adminFixtures(),
+      route: "/credentials",
+      viewport: { width: 390, height: 844 },
+      setup: async (page) => {
+        await page.waitForSelector("tbody tr");
+        // Click the primary cell (name + state pill) — clicking the Owner
+        // cell would activate its inner <a> and navigate to /users/...
+        await page.locator("tbody tr td[data-primary]").first().click();
+        await page.waitForSelector(".drawer.open", { timeout: 3000 }).catch(() => {});
+        await page.waitForTimeout(250);
+      },
+    },
+
     // ──────────── Mobile variants (iPhone 14/15) ────────────
     // Same fixtures + routes as 01/04/07/09 at iPhone viewport so we can spot
     // responsive regressions. Not promoted to docs/images/ — staging only.

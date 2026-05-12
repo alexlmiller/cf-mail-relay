@@ -121,10 +121,11 @@ function paint(root: HTMLElement, snapshot: Snapshot) {
       {
         key: "email",
         label: "User",
+        primary: true,
         render: (row) =>
           h(
             "div",
-            { class: "row", style: "gap: 10px" },
+            { class: "row", style: "gap: 10px; align-items: center; flex-wrap: wrap" },
             h(
               "span",
               { class: "avatar", style: "width: 28px; height: 28px; border-radius: 99px; background: var(--accent-soft-strong); color: var(--accent-ink-on-soft); display: grid; place-items: center; font-size: 11.5px; font-weight: 600;" },
@@ -136,12 +137,15 @@ function paint(root: HTMLElement, snapshot: Snapshot) {
               h("span", { style: "font-weight: 500" }, row.email),
               row.display_name ? h("span", { class: "soft", style: "font-size: 12px" }, row.display_name) : false,
             ) as Child,
+            pill(row.role, row.role === "admin" ? "info" : "muted"),
+            row.disabled_at ? pill("disabled", "muted") : false,
           ),
         sort: (row) => row.email,
       },
       {
         key: "role",
         label: "Role",
+        hideOnCard: true,
         render: (row) => pill(row.role, row.role === "admin" ? "info" : "muted"),
         sort: (row) => row.role,
         width: 100,
@@ -174,6 +178,7 @@ function paint(root: HTMLElement, snapshot: Snapshot) {
         key: "access",
         label: "Access sub",
         cell: "mono",
+        hideOnCard: true,
         render: (row) =>
           row.access_subject
             ? copyable({ value: row.access_subject, display: row.access_subject.slice(0, 12), title: row.access_subject })
@@ -183,6 +188,7 @@ function paint(root: HTMLElement, snapshot: Snapshot) {
       {
         key: "state",
         label: "State",
+        hideOnCard: true,
         render: (row) => (row.disabled_at ? pill("disabled", "muted") : pill("active", "ok")),
         sort: (row) => (row.disabled_at ? 1 : 0),
         width: 100,
@@ -190,6 +196,7 @@ function paint(root: HTMLElement, snapshot: Snapshot) {
       {
         key: "created",
         label: "Joined",
+        hideOnCard: true,
         render: (row) => h("span", { class: "soft" }, formatRelative(row.created_at)),
         sort: (row) => row.created_at,
         width: 130,

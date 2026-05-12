@@ -501,7 +501,7 @@ select.input { appearance: none; padding-right: 24px; background-image: linear-g
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
   flex-wrap: wrap;
 }
 .section-head h2 {
@@ -525,9 +525,11 @@ select.input { appearance: none; padding-right: 24px; background-image: linear-g
   background: transparent;
   cursor: pointer;
   transition: background .1s;
+  -webkit-tap-highlight-color: transparent;
 }
 .compact-row:last-child { border-bottom: 0; }
 .compact-row:hover { background: var(--surface-hov); }
+.compact-row:active { background: var(--surface-3); }
 .compact-row[disabled] { cursor: default; }
 .compact-row > .marker {
   width: 10px;
@@ -546,7 +548,7 @@ select.input { appearance: none; padding-right: 24px; background-image: linear-g
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: 14px;
 }
 .compact-row > .label > .secondary {
   color: var(--text-mute);
@@ -930,6 +932,9 @@ table.list tbody td.right { text-align: right; }
   grid-template-columns: 120px minmax(0, 1fr);
   gap: 6px 16px;
   font-size: 13px;
+  /* Don't let auto-rows stretch when the dl sits inside a flex/grid
+     container with leftover vertical space (e.g. a drawer body). */
+  align-content: start;
 }
 .dl dt {
   color: var(--text-mute);
@@ -1575,6 +1580,12 @@ table.list tbody td.right { text-align: right; }
      detail (Zone ID, Created date) that's also visible on the row's detail
      page. Has no effect outside card mode. */
   .table-shell[data-cards="1"] tbody td[data-hide-card] { display: none; }
+  /* Cells flagged hide-label-on-card render their value full-width without
+     the auto-generated label. Use for self-explanatory pills. */
+  .table-shell[data-cards="1"] tbody td[data-hide-label-card] {
+    grid-template-columns: 1fr;
+  }
+  .table-shell[data-cards="1"] tbody td[data-hide-label-card]::before { content: none; }
 }
 
 /* Reduced motion */

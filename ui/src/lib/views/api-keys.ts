@@ -2,7 +2,8 @@ import { api, describeError } from "../api";
 import type { Child } from "../dom";
 import { h, icon, setChildren } from "../dom";
 import { copyable } from "../clipboard";
-import { formatRelative, initialsFor } from "../format";
+import { close as closeDrawer, openDrawer } from "../drawer";
+import { formatAbsolute, formatRelative, initialsFor } from "../format";
 import { buildForm, closeModal, openModal, secretRevealBody } from "../modal";
 import { pill } from "../status";
 import { buildTable } from "../table";
@@ -28,7 +29,13 @@ export function buildApiKeysCard(data: ApiKeysCardData, onReload: () => Promise<
       {
         key: "name",
         label: "Name",
-        render: (row) => h("span", { style: "font-weight: 500" }, row.name),
+        primary: true,
+        render: (row) => h(
+          "span",
+          { class: "row", style: "gap: 10px; flex-wrap: wrap; align-items: center" },
+          h("span", { style: "font-weight: 500" }, row.name),
+          row.revoked_at ? pill("revoked", "muted") : pill("active", "ok"),
+        ),
         sort: (row) => row.name,
       },
       {
@@ -45,7 +52,7 @@ export function buildApiKeysCard(data: ApiKeysCardData, onReload: () => Promise<
         render: (row) =>
           h(
             "a",
-            { href: `#/users/${row.user_id}`, class: "row", style: "gap: 8px" },
+            { href: `#/users/${row.user_id}`, class: "row", style: "gap: 8px", "on:click": (event: Event) => event.stopPropagation() },
             h(
               "span",
               { class: "avatar", style: "width: 22px; height: 22px; border-radius: 99px; background: var(--accent-soft-strong); color: var(--accent-ink-on-soft); display: grid; place-items: center; font-size: 10.5px; font-weight: 600;" },
@@ -59,6 +66,7 @@ export function buildApiKeysCard(data: ApiKeysCardData, onReload: () => Promise<
       {
         key: "scope",
         label: "Scope",
+        hideOnCard: true,
         render: (row) =>
           row.allowed_sender_ids_json
             ? pill("restricted", "warn", "Key restricted to a subset of the user's senders")
@@ -78,6 +86,7 @@ export function buildApiKeysCard(data: ApiKeysCardData, onReload: () => Promise<
       {
         key: "state",
         label: "State",
+        hideOnCard: true,
         render: (row) => (row.revoked_at ? pill("revoked", "muted") : pill("active", "ok")),
         sort: (row) => (row.revoked_at ? 1 : 0),
         width: 100,
@@ -85,6 +94,7 @@ export function buildApiKeysCard(data: ApiKeysCardData, onReload: () => Promise<
       {
         key: "actions",
         label: "",
+        hideOnCard: true,
         render: (row) =>
           row.revoked_at
             ? h("span", { class: "soft" }, "—")
@@ -153,6 +163,7 @@ export function buildApiKeysCard(data: ApiKeysCardData, onReload: () => Promise<
     emptyTitle: "No API keys",
     emptyHint: "Create a key to call the HTTP /send endpoint from your applications.",
     cardMode: true,
+    onRowClick: (row) => openApiKeyDrawer(row, () => onReload()),
     emptyAction: h(
       "button",
       {
@@ -363,5 +374,133 @@ export function revealApiKey(result: CreateSecretResult, onDone: () => void) {
         "I've saved it",
       ),
     ),
+  });
+}
+
+// ───────────────────────── Detail drawer ─────────────────────────
+
+export function openApiKeyDrawer(
+  key: ApiKey,
+  onChanged: () => Promise<void> | void,
+): void {
+  const revoked = key.revoked_at !== null;
+  const allowed = key.allowed_sender_ids_json
+    ? (JSON.parse(key.allowed_sender_ids_json) as string[])
+    : null;
+  const avatar = h(
+    "span",
+    { class: "avatar", style: "width: 22px; height: 22px; border-radius: 99px; background: var(--accent-soft-strong); color: var(--accent-ink-on-soft); display: grid; place-items: center; font-size: 10.5px; font-weight: 600;" },
+    initialsFor(key.user_email),
+  );
+
+  const body = h(
+    "div",
+    { class: "stack", style: "gap: 18px" },
+    h(
+      "dl",
+      { class: "dl" },
+      h("dt", null, "Name"), h("dd", null, h("span", { style: "font-weight: 500" }, key.name)),
+      h("dt", null, "Prefix"), h("dd", null, copyable({ value: key.key_prefix, display: key.key_prefix })),
+      h("dt", null, "Owner"),
+      h(
+        "dd",
+        null,
+        h(
+          "a",
+          { class: "row", style: "gap: 8px", href: `#/users/${key.user_id}`, "on:click": () => closeDrawer() },
+          avatar,
+          h("span", null, key.user_email),
+        ),
+      ),
+      h("dt", null, "Scope"),
+      h(
+        "dd",
+        null,
+        allowed === null
+          ? pill("inherits user", "muted")
+          : pill(`restricted · ${allowed.length}`, "warn", "Key restricted to a subset of the user's senders"),
+      ),
+      h("dt", null, "Last used"), h("dd", { class: "soft" }, key.last_used_at ? formatAbsolute(key.last_used_at) : "never"),
+      h("dt", null, "Created"), h("dd", { class: "soft" }, formatAbsolute(key.created_at)),
+      revoked ? h("dt", null, "Revoked") : false,
+      revoked ? h("dd", { class: "soft" }, formatAbsolute(key.revoked_at as number)) : false,
+      h("dt", null, "State"),
+      h("dd", null, revoked ? pill("revoked", "muted") : pill("active", "ok")),
+      h("dt", null, "ID"), h("dd", null, copyable({ value: key.id, display: key.id })),
+    ),
+  );
+
+  const footer = revoked
+    ? h(
+        "div",
+        { class: "soft", style: "font-size: 13px" },
+        "This API key is revoked and cannot be used.",
+      )
+    : h(
+        "div",
+        { class: "row", style: "gap: 8px; flex-wrap: wrap; width: 100%" },
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn ghost",
+            title: "Rename this API key",
+            "on:click": () => openRenameApiKey(key, async () => {
+              closeDrawer();
+              await onChanged();
+            }),
+          },
+          "Edit",
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn ghost",
+            title: "Generate a new bearer token on this same key",
+            "on:click": async () => {
+              if (!confirm(`Roll ${key.name}? The old token will stop working immediately; replace it in any application that uses it.`)) return;
+              try {
+                const result = await api.rollApiKey(key.id);
+                closeDrawer();
+                revealApiKey(result, () => onChanged());
+              } catch (error) {
+                toast(describeError(error, "Could not roll"), "err");
+              }
+            },
+          },
+          "Roll token",
+        ),
+        h("span", { class: "flex-fill" }),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn danger",
+            "on:click": async () => {
+              if (!confirm(`Revoke ${key.name}? This is immediate and cannot be undone.`)) return;
+              try {
+                await api.revokeApiKey(key.id);
+                toast(`${key.name} revoked`);
+                closeDrawer();
+                await onChanged();
+              } catch (error) {
+                toast(describeError(error, "Could not revoke"), "err");
+              }
+            },
+          },
+          "Revoke",
+        ),
+      );
+
+  openDrawer({
+    title: key.name,
+    crumbs: [
+      h("a", { href: "#/credentials", "on:click": () => closeDrawer() }, "credentials"),
+      h("span", { class: "sep" }, "/"),
+      h("span", null, "api"),
+    ],
+    body,
+    footer,
   });
 }

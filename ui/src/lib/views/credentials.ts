@@ -2,7 +2,8 @@ import { api, describeError } from "../api";
 import type { Child } from "../dom";
 import { h, icon, setChildren } from "../dom";
 import { copyable } from "../clipboard";
-import { formatRelative, initialsFor } from "../format";
+import { close as closeDrawer, openDrawer } from "../drawer";
+import { formatAbsolute, formatRelative, initialsFor } from "../format";
 import { buildForm, closeModal, openModal, secretRevealBody } from "../modal";
 import { pill } from "../status";
 import { buildTable } from "../table";
@@ -120,12 +121,19 @@ export function buildSmtpCredentialsCard(
       {
         key: "name",
         label: "Name",
-        render: (row) => h("span", { style: "font-weight: 500" }, row.name),
+        primary: true,
+        render: (row) => h(
+          "span",
+          { class: "row", style: "gap: 10px; flex-wrap: wrap; align-items: center" },
+          h("span", { style: "font-weight: 500" }, row.name),
+          row.revoked_at ? pill("revoked", "muted") : pill("active", "ok"),
+        ),
         sort: (row) => row.name,
       },
       {
         key: "username",
         label: "Username",
+        hideOnCard: true,
         render: (row) => copyable({ value: row.username, display: row.username, withIcon: true }),
         sort: (row) => row.username,
         width: 200,
@@ -136,7 +144,7 @@ export function buildSmtpCredentialsCard(
         render: (row) =>
           h(
             "a",
-            { href: `#/users/${row.user_id}`, class: "row", style: "gap: 8px" },
+            { href: `#/users/${row.user_id}`, class: "row", style: "gap: 8px", "on:click": (event: Event) => event.stopPropagation() },
             avatar(row.user_email),
             h("span", { class: "soft" }, row.user_email),
           ),
@@ -146,6 +154,7 @@ export function buildSmtpCredentialsCard(
       {
         key: "scope",
         label: "Scope",
+        hideOnCard: true,
         render: (row) =>
           row.allowed_sender_ids_json
             ? pill("restricted", "warn", "Credential restricted to a subset of the user's senders")
@@ -165,6 +174,7 @@ export function buildSmtpCredentialsCard(
       {
         key: "state",
         label: "State",
+        hideOnCard: true,
         render: (row) => (row.revoked_at ? pill("revoked", "muted") : pill("active", "ok")),
         sort: (row) => (row.revoked_at ? 1 : 0),
         width: 100,
@@ -172,6 +182,7 @@ export function buildSmtpCredentialsCard(
       {
         key: "actions",
         label: "",
+        hideOnCard: true,
         render: (row) =>
           row.revoked_at
             ? h("span", { class: "soft" }, "—")
@@ -240,6 +251,7 @@ export function buildSmtpCredentialsCard(
     emptyTitle: "No SMTP credentials",
     emptyHint: "Create the first SMTP credential for a user or application.",
     cardMode: true,
+    onRowClick: (row) => openCredentialDrawer(row, () => onReload()),
     emptyAction: h(
       "button",
       {
@@ -481,5 +493,128 @@ export function revealCredential(result: CreateSecretResult, onDone: () => void)
         "I've saved it",
       ),
     ),
+  });
+}
+
+// ───────────────────────── Detail drawer ─────────────────────────
+
+export function openCredentialDrawer(
+  credential: SmtpCredential,
+  onChanged: () => Promise<void> | void,
+): void {
+  const revoked = credential.revoked_at !== null;
+  const allowed = credential.allowed_sender_ids_json
+    ? (JSON.parse(credential.allowed_sender_ids_json) as string[])
+    : null;
+
+  const body = h(
+    "div",
+    { class: "stack", style: "gap: 18px" },
+    h(
+      "dl",
+      { class: "dl" },
+      h("dt", null, "Name"), h("dd", null, h("span", { style: "font-weight: 500" }, credential.name)),
+      h("dt", null, "Username"), h("dd", null, copyable({ value: credential.username, display: credential.username, withIcon: true })),
+      h("dt", null, "Owner"),
+      h(
+        "dd",
+        null,
+        h(
+          "a",
+          { class: "row", style: "gap: 8px", href: `#/users/${credential.user_id}`, "on:click": () => closeDrawer() },
+          avatar(credential.user_email),
+          h("span", null, credential.user_email),
+        ),
+      ),
+      h("dt", null, "Scope"),
+      h(
+        "dd",
+        null,
+        allowed === null
+          ? pill("inherits user", "muted")
+          : pill(`restricted · ${allowed.length}`, "warn", "Credential restricted to a subset of the user's senders"),
+      ),
+      h("dt", null, "Last used"), h("dd", { class: "soft" }, credential.last_used_at ? formatAbsolute(credential.last_used_at) : "never"),
+      h("dt", null, "Created"), h("dd", { class: "soft" }, formatAbsolute(credential.created_at)),
+      revoked ? h("dt", null, "Revoked") : false,
+      revoked ? h("dd", { class: "soft" }, formatAbsolute(credential.revoked_at as number)) : false,
+      h("dt", null, "State"),
+      h("dd", null, revoked ? pill("revoked", "muted") : pill("active", "ok")),
+      h("dt", null, "ID"), h("dd", null, copyable({ value: credential.id, display: credential.id })),
+    ),
+  );
+
+  const footer = revoked
+    ? h(
+        "div",
+        { class: "soft", style: "font-size: 13px" },
+        "This credential is revoked and cannot be used.",
+      )
+    : h(
+        "div",
+        { class: "row", style: "gap: 8px; flex-wrap: wrap; width: 100%" },
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn ghost",
+            title: "Rename this credential",
+            "on:click": () => openRenameCredential(credential, async () => {
+              closeDrawer();
+              await onChanged();
+            }),
+          },
+          "Edit",
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn ghost",
+            title: "Generate a new secret on this same credential",
+            "on:click": async () => {
+              if (!confirm(`Roll ${credential.username}? The old password will stop working immediately; the new one needs to be pasted into Gmail.`)) return;
+              try {
+                const result = await api.rollSmtpCredential(credential.id);
+                closeDrawer();
+                revealCredential(result, () => onChanged());
+              } catch (error) {
+                toast(describeError(error, "Could not roll"), "err");
+              }
+            },
+          },
+          "Roll secret",
+        ),
+        h("span", { class: "flex-fill" }),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn danger",
+            "on:click": async () => {
+              if (!confirm(`Revoke ${credential.username}? This is immediate and cannot be undone.`)) return;
+              try {
+                await api.revokeSmtpCredential(credential.id);
+                toast(`${credential.username} revoked`);
+                closeDrawer();
+                await onChanged();
+              } catch (error) {
+                toast(describeError(error, "Could not revoke"), "err");
+              }
+            },
+          },
+          "Revoke",
+        ),
+      );
+
+  openDrawer({
+    title: credential.name,
+    crumbs: [
+      h("a", { href: "#/credentials", "on:click": () => closeDrawer() }, "credentials"),
+      h("span", { class: "sep" }, "/"),
+      h("span", null, "smtp"),
+    ],
+    body,
+    footer,
   });
 }
