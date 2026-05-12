@@ -226,6 +226,15 @@ export function shots(): Shot[] {
       waitFor: "tbody tr",
     },
 
+    // 20 — Mobile domain detail (senders prominent, DNS collapsed)
+    {
+      name: "20-mobile-domain-detail",
+      fixtures: adminFixtures(),
+      route: "/domains/dom_01HQA6V3JZP5NXKR7T4MWQDB28",
+      viewport: { width: 390, height: 844 },
+      waitFor: ".page-head h1",
+    },
+
     // 19 — Mobile SMTP credentials (stacked actions + card layout)
     {
       name: "19-mobile-credentials",

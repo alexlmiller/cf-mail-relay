@@ -89,8 +89,10 @@ function paint(root: HTMLElement, domain: Domain, senders: Sender[]) {
       "div",
       { class: "spread" },
       summaryCard(domain, root),
-      dnsCard(domain),
+      // Senders before DNS — allowed senders is what operators check most;
+      // DNS records are a reference you scan once and forget.
       sendersCard(domain, senders),
+      dnsCard(domain),
     ),
   );
 }
@@ -224,10 +226,18 @@ function openEditDomain(domain: Domain, onSaved: () => void): void {
 }
 
 function dnsCard(domain: Domain): HTMLElement {
+  // <details> collapses by default. Operators rarely need to revisit DNS
+  // records after the initial setup, and on mobile this section is the
+  // bulkiest scroll.
   return h(
-    "div",
+    "details",
     { class: "card" },
-    h("div", { class: "card-head" }, h("h2", null, "DNS records")),
+    h(
+      "summary",
+      null,
+      h("h2", null, "DNS records"),
+      h("span", { class: "card-chevron" }, icon("chevronDown", 14)),
+    ),
     h(
       "div",
       { class: "card-body" },

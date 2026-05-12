@@ -484,6 +484,29 @@ select.input { appearance: none; padding-right: 24px; background-image: linear-g
 .card-body { padding: 16px; }
 .card.pad-0 .card-body { padding: 0; }
 
+/* Native <details> collapsible card. No JS, native a11y. */
+details.card { padding: 0; }
+details.card > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px;
+  border-bottom: 1px solid transparent;
+  user-select: none;
+}
+details.card > summary::-webkit-details-marker { display: none; }
+details.card[open] > summary { border-bottom-color: var(--border); }
+details.card > summary h2 { font-size: 13.5px; font-weight: 600; }
+details.card .card-chevron {
+  color: var(--text-mute);
+  transition: transform .15s ease;
+}
+details.card[open] > summary .card-chevron { transform: rotate(180deg); }
+details.card > summary:hover { background: var(--surface-hov); }
+
 /* Stat tiles */
 .stats {
   display: grid;
