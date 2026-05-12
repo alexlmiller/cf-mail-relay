@@ -50,7 +50,10 @@ flowchart LR
 
 ## Requirements
 
-- Cloudflare account with Workers Paid.
+- Cloudflare account with Workers Paid. This is currently $5/month and is a
+  good fit for this project: it unlocks the Worker capabilities needed for
+  Email Sending while keeping the rest of the stack on Cloudflare's managed
+  infrastructure.
 - A Cloudflare-managed zone for the admin host (e.g. `mail.example.com` on a
   zone you own). Does not have to be the same as your sending domain — many
   adopters use a dedicated zone like `mail.<their-domain>` purely for the
