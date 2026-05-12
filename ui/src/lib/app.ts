@@ -112,11 +112,27 @@ function buildAdminShell() {
 
   const navEl = h("nav", { class: "nav", "aria-label": "Primary" });
   for (const item of ADMIN_NAV) {
-    navEl.appendChild(h("a", { href: `#${item.route}`, "data-route": item.route }, item.label));
+    const link = h("a", { href: `#${item.route}`, "data-route": item.route }, item.label);
+    on(link, "click", () => closeNav());
+    navEl.appendChild(link);
   }
 
+  const navToggle = h(
+    "button",
+    {
+      type: "button",
+      class: "nav-toggle",
+      "aria-label": "Toggle navigation",
+      "aria-expanded": "false",
+      "aria-controls": "primary-nav",
+      "on:click": () => toggleNav(),
+    },
+    h("span", { class: "bars" }),
+  );
+  navEl.id = "primary-nav";
+
   const right = buildTopbarRight();
-  const topbarInner = h("div", { class: "topbar-inner" }, brand, navEl, right);
+  const topbarInner = h("div", { class: "topbar-inner" }, brand, navEl, navToggle, right);
   const topbar = h("header", { class: "topbar", role: "banner" }, topbarInner);
 
   const main = h("main", { class: "main", id: "main", role: "main" });
@@ -223,6 +239,10 @@ function getThemeIcon(): "sun" | "moon" {
 function registerKeyboardShortcuts() {
   on(window, "keydown", (event) => {
     const meta = event.metaKey || event.ctrlKey;
+    if (event.key === "Escape" && appRoot?.querySelector<HTMLElement>(".topbar")?.dataset.navOpen === "1") {
+      closeNav();
+      return;
+    }
     if (meta && event.key.toLowerCase() === "k") {
       event.preventDefault();
       openPalette();
@@ -379,6 +399,7 @@ function handleRouteChange(route: ReturnType<typeof parse>) {
   if (!routeRoot || !session) return;
   closeDrawer();
   closeModal();
+  closeNav();
 
   if (session.user.role !== "admin") {
     // Senders: every route collapses to /me. Don't leave broken state on a
@@ -448,6 +469,30 @@ function paintNotFound() {
       ),
     ),
   );
+}
+
+function toggleNav() {
+  const topbar = appRoot?.querySelector<HTMLElement>(".topbar");
+  if (!topbar) return;
+  const open = topbar.dataset.navOpen === "1";
+  if (open) closeNav();
+  else openNav();
+}
+
+function openNav() {
+  const topbar = appRoot?.querySelector<HTMLElement>(".topbar");
+  const toggle = topbar?.querySelector<HTMLButtonElement>(".nav-toggle");
+  if (!topbar) return;
+  topbar.dataset.navOpen = "1";
+  if (toggle) toggle.setAttribute("aria-expanded", "true");
+}
+
+function closeNav() {
+  const topbar = appRoot?.querySelector<HTMLElement>(".topbar");
+  const toggle = topbar?.querySelector<HTMLButtonElement>(".nav-toggle");
+  if (!topbar) return;
+  delete topbar.dataset.navOpen;
+  if (toggle) toggle.setAttribute("aria-expanded", "false");
 }
 
 function syncNavActive(name: string) {

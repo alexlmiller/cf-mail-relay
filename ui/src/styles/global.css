@@ -1228,7 +1228,54 @@ table.list tbody td.right { text-align: right; }
 .flex-fill { flex: 1 1 0; min-width: 0; }
 .hidden { display: none !important; }
 
-/* Responsive */
+/* Hamburger toggle. Hidden on desktop; revealed by the ≤720px media query. */
+.nav-toggle {
+  display: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-1);
+  align-items: center;
+  justify-content: center;
+  color: var(--text-soft);
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: transparent;
+  margin-left: auto;
+}
+.nav-toggle:hover { background: var(--surface-hov); color: var(--text); }
+.nav-toggle .bars,
+.nav-toggle .bars::before,
+.nav-toggle .bars::after {
+  display: block;
+  width: 16px;
+  height: 1.5px;
+  background: currentColor;
+  border-radius: 1px;
+  position: relative;
+}
+.nav-toggle .bars::before,
+.nav-toggle .bars::after {
+  content: "";
+  position: absolute;
+  left: 0;
+}
+.nav-toggle .bars::before { top: -5px; }
+.nav-toggle .bars::after { top: 5px; }
+
+/* Defeat iOS Safari's automatic zoom-on-focus for inputs <16px. */
+@media (max-width: 720px) {
+  input, select, textarea { font-size: 16px; }
+  .input input, .input select { font-size: 16px; }
+  .palette-search input { font-size: 16px; }
+}
+
+/* Pointer-coarse: bump small buttons to a comfortable tap size. */
+@media (pointer: coarse) {
+  .btn.sm { min-height: 36px; padding: 0 12px; }
+  .iconbtn { width: 36px; height: 36px; }
+}
+
+/* ─── Tablet portrait + small laptop (≤880px) ─── */
 @media (max-width: 880px) {
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1242,10 +1289,124 @@ table.list tbody td.right { text-align: right; }
   .dl { grid-template-columns: 100px minmax(0,1fr); }
   .dns-record { grid-template-columns: 1fr; }
 }
+
+/* ─── Phones + tablet portrait (≤720px): hamburger nav ─── */
+@media (max-width: 720px) {
+  .nav-toggle { display: inline-grid; }
+  .topbar .nav {
+    display: none;
+    position: absolute;
+    top: 52px;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: 6px 8px 10px;
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow-2);
+    overflow-x: visible;
+  }
+  .topbar[data-nav-open="1"] .nav { display: flex; }
+  .topbar .nav a {
+    height: 40px;
+    padding: 0 12px;
+    font-size: 14.5px;
+    border-radius: var(--radius-1);
+  }
+}
+
+/* ─── Phones (≤540px): single-col, full-screen overlays ─── */
 @media (max-width: 540px) {
   .stats { grid-template-columns: 1fr; }
   .health-grid { grid-template-columns: 1fr; }
   .page-head h1 { font-size: 19px; }
+  .page-head { gap: 8px; }
+  .page-head .actions { padding-top: 0; }
+
+  /* Drawer covers viewport on phones. */
+  .drawer {
+    width: 100vw;
+    border-left: 0;
+  }
+
+  /* Modal as a full-screen sheet on phones. */
+  .modal-backdrop { padding-top: 0; place-items: stretch; }
+  .modal {
+    width: 100vw;
+    min-height: 100vh;
+    border-radius: 0;
+    border: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .modal-body { flex: 1; overflow-y: auto; }
+  .modal-foot { position: sticky; bottom: 0; }
+
+  /* Palette as a top-anchored sheet on phones. */
+  .modal-backdrop:has(.palette) { padding-top: 0; }
+  .palette {
+    width: 100vw;
+    min-height: 100vh;
+    border-radius: 0;
+    border: 0;
+  }
+  .palette-list { max-height: none; flex: 1; }
+
+  /* Drawer dl: stack labels above values. */
+  .drawer-body .dl { grid-template-columns: 1fr; gap: 2px 0; }
+  .drawer-body .dl dt { padding-top: 8px; }
+
+  /* Cards: tighter padding. */
+  .card-head, .card-body { padding-inline: 14px; }
+}
+
+@media (max-width: 720px) {
+  /* When the nav is open, push the right cluster behind the panel. */
+  .topbar[data-nav-open="1"] .topbar-right { pointer-events: none; opacity: 0.5; }
+}
+
+/* Card-list mode: tables transform to a stack of cards on small screens.
+   Opt-in via [data-cards="1"] on the .table-shell; cells need data-label
+   (set automatically by buildTable). */
+@media (max-width: 720px) {
+  .table-shell[data-cards="1"] .table-wrap { overflow-x: hidden; }
+  .table-shell[data-cards="1"] table.list { min-width: 0; }
+  .table-shell[data-cards="1"] thead { display: none; }
+  .table-shell[data-cards="1"] tbody, .table-shell[data-cards="1"] tr,
+  .table-shell[data-cards="1"] td { display: block; max-width: none; white-space: normal; }
+  .table-shell[data-cards="1"] tbody tr {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .table-shell[data-cards="1"] tbody tr:last-child { border-bottom: 0; }
+  .table-shell[data-cards="1"] tbody td {
+    padding: 4px 0;
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .table-shell[data-cards="1"] tbody td.right { text-align: left; }
+  .table-shell[data-cards="1"] tbody td::before {
+    content: attr(data-label);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.075em;
+    color: var(--text-mute);
+    font-weight: 500;
+  }
+  /* Cells flagged primary span the full row and lose the label slot. */
+  .table-shell[data-cards="1"] tbody td[data-primary] {
+    grid-template-columns: 1fr;
+    margin-bottom: 4px;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed var(--border);
+  }
+  .table-shell[data-cards="1"] tbody td[data-primary]::before { content: none; }
 }
 
 /* Reduced motion */

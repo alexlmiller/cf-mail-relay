@@ -160,5 +160,67 @@ export function shots(): Shot[] {
       route: "/domains",
       waitFor: "table tbody tr, .table tbody tr",
     },
+
+    // ──────────── Mobile variants (iPhone 14/15) ────────────
+    // Same fixtures + routes as 01/04/07/09 at iPhone viewport so we can spot
+    // responsive regressions. Not promoted to docs/images/ — staging only.
+
+    // 13 — Mobile dashboard
+    {
+      name: "13-mobile-dashboard",
+      fixtures: adminFixtures(),
+      route: "/",
+      viewport: { width: 390, height: 844 },
+      waitFor: ".health-grid .health-item",
+    },
+
+    // 14 — Mobile events: card-layout list + drawer
+    {
+      name: "14-mobile-events",
+      fixtures: adminFixtures(),
+      route: "/events",
+      viewport: { width: 390, height: 844 },
+      waitFor: "tbody tr",
+    },
+
+    // 15 — Mobile credential reveal: full-screen modal
+    {
+      name: "15-mobile-credential-reveal",
+      fixtures: adminFixtures(),
+      route: "/credentials?new=1",
+      viewport: { width: 390, height: 844 },
+      setup: async (page) => {
+        await page.waitForSelector("input[name='name']", { timeout: 5000 });
+        await page.fill("input[name='name']", "Production Rails app");
+        await page.fill("input[name='username']", "smtp-prod-app");
+        await page.locator("button.btn.primary", { hasText: /create credential/i }).first().click();
+        await page.waitForSelector("text=/will not be shown again|reveal|copy/i", { timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(200);
+      },
+    },
+
+    // 16 — Mobile /me self-service
+    {
+      name: "16-mobile-self-me",
+      fixtures: senderFixtures(),
+      route: "/me",
+      viewport: { width: 390, height: 844 },
+      waitFor: ".card",
+    },
+
+    // 17 — Mobile nav open (hamburger expanded)
+    {
+      name: "17-mobile-nav-open",
+      fixtures: adminFixtures(),
+      route: "/",
+      viewport: { width: 390, height: 844 },
+      waitFor: ".health-grid .health-item",
+      setup: async (page) => {
+        const toggle = page.locator(".nav-toggle").first();
+        await toggle.waitFor({ state: "visible", timeout: 3000 });
+        await toggle.click();
+        await page.waitForTimeout(150);
+      },
+    },
   ];
 }
