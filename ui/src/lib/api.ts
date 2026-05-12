@@ -51,12 +51,7 @@ export function setApiBase(base: string) {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers ?? {});
   if (init.body !== undefined && !headers.has("content-type")) {
-    // text/plain keeps the request CORS-"simple", so the browser doesn't issue
-    // an OPTIONS preflight that Cloudflare Access would challenge with a 403.
-    // The Worker's c.req.json() parses any text body, so the content-type
-    // doesn't matter to the server. The Worker still enforces Origin on
-    // state-changing admin/self requests.
-    headers.set("content-type", "text/plain;charset=UTF-8");
+    headers.set("content-type", "application/json");
   }
   const response = await fetch(`${apiBase}${path}`, {
     ...init,

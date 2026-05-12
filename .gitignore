@@ -22,6 +22,9 @@ build/
 # Astro
 .astro/
 ui/dist/
+# Same-origin admin UI builds into worker/public/. The source-controlled
+# _headers file lives in ui/public/ and is copied during build.
+worker/public/
 
 # Wrangler / Cloudflare
 .wrangler/

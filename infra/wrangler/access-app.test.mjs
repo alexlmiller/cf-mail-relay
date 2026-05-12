@@ -29,8 +29,6 @@ describe("access-app helper", () => {
 
     assert.deepEqual(bodies.app.destinations, [
       { type: "public", uri: "admin.example.com" },
-      { type: "public", uri: "worker.example.com/admin/api/*" },
-      { type: "public", uri: "worker.example.com/self/api/*" },
     ]);
     assert.equal(bodies.app.domain, "admin.example.com");
     assert.deepEqual(bodies.app.cors_headers.allowed_origins, ["https://admin.example.com/"]);
@@ -86,7 +84,6 @@ describe("access-app helper", () => {
       `[vars]
 ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
 ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
-ADMIN_CORS_ORIGIN = "https://old.example.com"
 `,
     );
 
@@ -96,7 +93,8 @@ ADMIN_CORS_ORIGIN = "https://old.example.com"
     assert.equal(result.applied_config.changed, true);
     assert.match(written, /ACCESS_TEAM_DOMAIN = "team\.cloudflareaccess\.com"/);
     assert.match(written, /ACCESS_AUDIENCE = "aud_123"/);
-    assert.match(written, /ADMIN_CORS_ORIGIN = "https:\/\/cf-mail-relay-ui\.pages\.dev"/);
+    // Same-origin mode does not set ADMIN_CORS_ORIGIN — the Worker defaults to its own URL.
+    assert.doesNotMatch(written, /ADMIN_CORS_ORIGIN/);
   });
 
   it("uses an explicit team domain without reading the Access organization", async () => {

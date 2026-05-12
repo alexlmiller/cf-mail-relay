@@ -67,6 +67,7 @@ import {
 export interface Env {
   D1_MAIN: D1Database;
   KV_HOT: KVNamespace;
+  ASSETS: Fetcher;
   CF_API_TOKEN: string;
   CF_ACCOUNT_ID: string;
   CREDENTIAL_PEPPER: string;
@@ -1027,6 +1028,14 @@ export async function scheduled(_controller: unknown, env: Env): Promise<void> {
 function normalizeEmail(value: string): string {
   return value.trim().toLowerCase().replace(/^<|>$/g, "").trim();
 }
+
+// Catch-all: anything the API routes above didn't match (asset paths, SPA
+// deep links, `/` itself) goes to the Workers Static Assets binding which
+// serves the matched file or falls back to /index.html per the
+// `not_found_handling = "single-page-application"` setting in wrangler.toml.
+app.all("*", async (c) => {
+  return c.env.ASSETS.fetch(c.req.raw);
+});
 
 (app as typeof app & { scheduled: typeof scheduled }).scheduled = scheduled;
 

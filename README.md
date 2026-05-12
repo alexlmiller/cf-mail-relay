@@ -4,15 +4,16 @@ SMTP submission relay for custom-domain sending through Cloudflare Email
 Sending. Use it with Gmail's **Send mail as**, internal applications, scripts,
 or any SMTP-capable client that needs authenticated outbound mail.
 
-The project has three pieces:
+The project has two deployable pieces:
 
+- A Cloudflare Worker that enforces policy, calls Email Sending `send_raw`, and
+  serves the admin UI bundle at the same hostname (Workers Static Assets).
+  Protected by Cloudflare Access.
 - A Go SMTP relay you run on a public Docker host.
-- A Cloudflare Worker that enforces policy and calls Email Sending `send_raw`.
-- A Cloudflare Pages admin UI protected by Cloudflare Access.
 
 Most of the stack runs on Cloudflare. The SMTP relay is the exception: SMTP
 clients need a public raw TCP listener on port `587`, which Cloudflare
-Workers/Pages/Containers do not currently provide. Run the relay anywhere you
+Workers/Containers do not currently provide. Run the relay anywhere you
 already operate Docker, or on a small public VM such as a GCP free-tier
 eligible `e2-micro` instance in one of Google's supported free-tier regions.
 
@@ -21,8 +22,8 @@ flowchart LR
   SMTP[SMTP clients] -->|SMTP 587 STARTTLS| Relay[Go SMTP relay]
   Apps[HTTP clients] -->|POST /send raw MIME| Worker[Cloudflare Worker]
   Relay -->|HMAC-signed /relay/send| Worker
-  Admin[Admin browser] -->|Cloudflare Access| Pages[Pages admin UI]
-  Pages -->|/admin/api/*| Worker
+  Admin[Admin browser] -->|Cloudflare Access| Worker
+  Worker -->|admin UI bundle| Admin
   Worker --> D1[(D1 source of truth)]
   Worker --> KV[(KV cache)]
   Worker --> Email[Cloudflare Email Sending]
@@ -47,6 +48,10 @@ flowchart LR
 ## Requirements
 
 - Cloudflare account with Workers Paid.
+- A Cloudflare-managed zone for the admin host (e.g. `mail.example.com` on a
+  zone you own). Does not have to be the same as your sending domain — many
+  adopters use a dedicated zone like `mail.<their-domain>` purely for the
+  relay's control plane.
 - Each sending domain must use Cloudflare DNS and have Cloudflare Email Sending
   enabled and verified.
 - A Docker host reachable on TCP `587` for the SMTP relay. This can be existing
@@ -97,25 +102,27 @@ a newer Worker. `/healthz` checks the schema version and returns
 `schema_version_mismatch` until the database is at the version expected by the
 code.
 
-Create the Cloudflare Access app for the admin UI:
+Edit `worker/wrangler.toml` so the `routes` block points at your admin
+hostname (e.g. `mail.example.com` on a Cloudflare-managed zone), then create
+the Cloudflare Access app for that hostname:
 
 ```sh
 pnpm access:setup \
   --account-id <cloudflare-account-id> \
   --allow-email <admin@example.com> \
-  --pages-url https://cf-mail-relay-ui.pages.dev \
-  --worker-url https://cf-mail-relay-worker.<subdomain>.workers.dev \
-  --allow-platform-hostnames \
+  --pages-url https://mail.example.com \
   --apply-config worker/wrangler.toml
 ```
 
-Deploy Worker and Pages:
+Build the UI into the Worker's asset directory, then deploy the Worker:
 
 ```sh
+pnpm --filter @cf-mail-relay/ui build      # outputs to worker/public/
 pnpm --dir worker exec wrangler deploy
-PUBLIC_CF_MAIL_RELAY_API_BASE=https://cf-mail-relay-worker.<subdomain>.workers.dev pnpm --filter @cf-mail-relay/ui build
-pnpm --dir worker exec wrangler pages deploy ../ui/dist --project-name cf-mail-relay-ui --branch main
 ```
+
+The Worker serves the admin UI from the same hostname as the API; no
+separate Pages project is involved.
 
 Bootstrap the first admin user with `POST /bootstrap/admin`, then rotate or
 remove `BOOTSTRAP_SETUP_TOKEN`.

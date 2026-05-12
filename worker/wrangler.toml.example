@@ -16,11 +16,26 @@ ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
 ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
 CF_ACCOUNT_ID = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
 RELAY_HMAC_KEY_ID = "rel_REPLACE_ME"
-# Set when the admin UI is served from a different hostname than the Worker API.
-# ADMIN_CORS_ORIGIN = "https://cf-mail-relay-ui.pages.dev"
+# Optional: only set when the admin UI is served from a different origin than
+# the Worker (the default single-origin setup leaves this unset; the Worker
+# defaults the trusted Origin to its own URL).
+# ADMIN_CORS_ORIGIN = "https://admin.example.com"
 
 [triggers]
 crons = ["17 3 * * *"]
+
+# Admin UI is served same-origin via Workers Static Assets. `pnpm --filter ui
+# build` writes the bundle into ./public/ which is uploaded with the Worker.
+# Workers Static Assets handles GET/HEAD for matched files; the Worker's
+# fetch handler runs first (run_worker_first) so /admin/api/*, /self/api/*,
+# /relay/*, /send, /healthz, /bootstrap/admin are exclusively the Worker's,
+# and unknown GETs fall through to /index.html via single-page-application
+# routing for hash-route deep links.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
 
 [[d1_databases]]
 binding = "D1_MAIN"
@@ -32,10 +47,11 @@ migrations_dir = "migrations"
 binding = "KV_HOT"
 id = "REPLACE_WITH_KV_NAMESPACE_ID"
 
-# Optional: custom domain for the Worker. The UI calls this hostname.
-# routes = [
-#   { pattern = "mail-api.example.com", custom_domain = true },
-# ]
+# Bind the Worker to a custom hostname on a Cloudflare-managed zone.
+# `pnpm setup` fills this in; for manual setups, change pattern to your zone.
+routes = [
+  { pattern = "mail.example.com", custom_domain = true },
+]
 
 # Secrets are set via `wrangler secret put <NAME>`, not in this file:
 #   CF_API_TOKEN

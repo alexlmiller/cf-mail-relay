@@ -35,8 +35,7 @@ export function setSelfApiBase(value: string) {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers ?? {});
   if (init.body !== undefined && !headers.has("content-type")) {
-    // See api.ts — text/plain avoids the Access-blocked CORS preflight.
-    headers.set("content-type", "text/plain;charset=UTF-8");
+    headers.set("content-type", "application/json");
   }
 
   const response = await fetch(`${base}${path}`, { ...init, headers, credentials: "include" });

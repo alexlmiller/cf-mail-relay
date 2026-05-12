@@ -9,28 +9,59 @@ The README is the user-facing setup guide.
 SMTP client or application
   -> Go relay on TCP 587
   -> HMAC-signed HTTPS request
-  -> Cloudflare Worker
+  -> Cloudflare Worker at mail.<zone>/relay/send
   -> Cloudflare Email Sending send_raw
   -> recipient MX
 
 Browser
-  -> Cloudflare Access
-  -> Pages admin UI
-  -> Worker /admin/api/*
+  -> Cloudflare Access (mail.<zone>/*)
+  -> Worker serves /index.html via Workers Static Assets
+  -> Worker /admin/api/* and /self/api/*  (same origin)
   -> D1/KV
 
 HTTP client
-  -> Worker /send
+  -> Worker /send (mail.<zone>/send)
   -> Cloudflare Email Sending send_raw
 ```
 
 | Component | Runtime | Responsibility |
 |---|---|---|
 | `relay/` | Go, Docker | SMTP STARTTLS/AUTH, size and recipient caps, HMAC relay calls |
-| `worker/` | TypeScript, Hono, Cloudflare Workers | Policy, auth, idempotency, quotas, audit metadata, Email Sending API calls |
-| `ui/` | Astro, Cloudflare Pages | Static admin UI protected by Cloudflare Access |
+| `worker/` | TypeScript, Hono, Cloudflare Workers | Policy, auth, idempotency, quotas, audit metadata, Email Sending API calls, **serves the admin UI bundle via Workers Static Assets** |
+| `ui/` | Astro, static bundle | Admin UI source; builds into `worker/public/` and is shipped with the Worker |
 | `shared/` | TypeScript | Shared schemas and delivery status mapping |
 | `infra/` | Shell/Node/Docker examples | Setup, Access helper, doctors, relay deployment examples |
+
+### Single-Origin Admin
+
+The admin UI is served by the Worker (Workers Static Assets), not from a
+separate Cloudflare Pages project. Everything an adopter exposes lives at one
+hostname — `mail.<zone>` by default — so:
+
+- One Cloudflare Access app with one destination (`mail.<zone>/*`).
+- No cross-origin requests from the UI to the API; the browser never issues a
+  CORS preflight and Access never gates an `OPTIONS` request.
+- No `PUBLIC_CF_MAIL_RELAY_API_BASE` to bake into the UI build; admin/self API
+  calls go to relative URLs.
+- No `ADMIN_CORS_ORIGIN` to configure in the common path; the Worker defaults
+  its trusted Origin to its own URL. The env var only needs to be set if an
+  operator chooses to serve the UI on a different origin.
+
+Workers Static Assets is configured in `worker/wrangler.toml`:
+
+```toml
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+```
+
+`run_worker_first = true` lets the Worker handle its own routes (API,
+`/healthz`, `/relay/*`, `/send`) before assets are checked. Unknown routes
+fall through to the catch-all in `worker/src/index.ts` which delegates to
+`env.ASSETS.fetch(req)` — Workers Static Assets serves the matched file or
+the SPA shell (`/index.html`) per the `single-page-application` fallback.
 
 ## Cloudflare Boundary
 

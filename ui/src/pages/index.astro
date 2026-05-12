@@ -1,7 +1,5 @@
 ---
 import "../styles/global.css";
-
-const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
 ---
 <!doctype html>
 <html lang="en" data-theme="light">
@@ -34,7 +32,7 @@ const apiBase = import.meta.env.PUBLIC_CF_MAIL_RELAY_API_BASE ?? "";
     </script>
   </head>
   <body>
-    <div id="app" data-api-base={apiBase}>
+    <div id="app">
       <noscript>
         <div style="padding:40px;font-family:system-ui;text-align:center">
           <p><strong>CF Mail Relay</strong> requires JavaScript to render the admin UI.</p>

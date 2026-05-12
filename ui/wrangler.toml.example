@@ -1,9 +1,0 @@
-# Cloudflare Pages project config.
-# Copy to wrangler.toml and fill in.
-
-name = "cf-mail-relay-ui"
-compatibility_date = "2026-05-01"
-pages_build_output_dir = "dist"
-
-[vars]
-PUBLIC_CF_MAIL_RELAY_API_BASE = "https://mail-api.example.com"

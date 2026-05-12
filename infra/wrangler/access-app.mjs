@@ -21,15 +21,16 @@ export const defaults = {
 const platformHostnameSuffixes = [".pages.dev", ".workers.dev"];
 
 export function buildBodies(config) {
+  // Same-origin model: the Worker serves both the UI and the API at one
+  // hostname, so the Access app gates a single destination — the admin host.
+  const adminHost = withoutScheme(config.pagesUrl);
   return {
     app: {
       name: config.name,
       type: "self_hosted",
-      domain: withoutScheme(config.pagesUrl),
+      domain: adminHost,
       destinations: [
-        { type: "public", uri: withoutScheme(config.pagesUrl) },
-        { type: "public", uri: `${withoutScheme(config.workerUrl)}/admin/api/*` },
-        { type: "public", uri: `${withoutScheme(config.workerUrl)}/self/api/*` },
+        { type: "public", uri: adminHost },
       ],
       session_duration: config.sessionDuration,
       app_launcher_visible: true,
@@ -112,7 +113,13 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   if (config.email.length === 0) {
     failImpl("at least one --allow-email is required");
   }
-  const platformHostnames = findPlatformHostnames([config.pagesUrl, config.workerUrl]);
+  // Same-origin model: workerUrl defaults to the admin host. Warn if the
+  // caller passed --worker-url with a different value (legacy two-origin
+  // setup — supported by setting ADMIN_CORS_ORIGIN, but not the default).
+  if (config.workerUrl && config.workerUrl !== config.pagesUrl) {
+    process.stderr.write(`warning: --worker-url differs from --pages-url; same-origin Access app uses --pages-url only.\n`);
+  }
+  const platformHostnames = findPlatformHostnames([config.pagesUrl]);
   if (platformHostnames.length > 0 && !config.allowPlatformHostnames) {
     failImpl(`Platform hostnames require Workers & Pages Access controls, or pass --allow-platform-hostnames after confirming this account accepts them in a self-hosted Access app: ${platformHostnames.join(", ")}`);
   }
@@ -157,15 +164,15 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
     app_name: config.name,
     access_team_domain: authDomain,
     access_audience: aud,
-    pages_url: config.pagesUrl,
-    worker_admin_api: `${config.workerUrl}/admin/api/*`,
-    worker_self_api: `${config.workerUrl}/self/api/*`,
+    admin_url: config.pagesUrl,
   };
   if (config.applyConfig.length > 0) {
+    // Same-origin: the Worker defaults its trusted Origin to its own URL, so
+    // ADMIN_CORS_ORIGIN is left unset. Only set if the operator has opted into
+    // a two-origin (legacy Pages) setup, which they'd do manually.
     result.applied_config = await applyAccessConfig(config.applyConfig, {
       ACCESS_TEAM_DOMAIN: authDomain,
       ACCESS_AUDIENCE: aud,
-      ADMIN_CORS_ORIGIN: config.pagesUrl,
     });
   }
   return result;
