@@ -433,6 +433,40 @@ describe("relay endpoints", () => {
     await expect(response.json()).resolves.toMatchObject({ ok: false, error: "duplicate_from_header" });
   });
 
+  it("rejects oversized relay requests before reading the body", async () => {
+    const response = await app.request(
+      "/relay/send",
+      {
+        method: "POST",
+        headers: {
+          "content-length": String(6 * 1024 * 1024 + 1),
+        },
+        body: "x",
+      },
+      makeEnv(),
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "message_too_large" });
+  });
+
+  it("rejects oversized relay auth requests before HMAC verification", async () => {
+    const response = await app.request(
+      "/relay/auth",
+      {
+        method: "POST",
+        headers: {
+          "content-length": String(16 * 1024 + 1),
+        },
+        body: "x",
+      },
+      makeEnv(),
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "message_too_large" });
+  });
+
   it("replays completed idempotency responses from D1", async () => {
     const env = makeEnv();
     const cfFetch = vi.fn(async () => {
@@ -477,6 +511,57 @@ describe("relay endpoints", () => {
     expect(second.headers.get("x-relay-idempotency-replay")).toBe("1");
     await expect(second.json()).resolves.toMatchObject(firstJson as Record<string, unknown>);
     expect(cfFetch).toHaveBeenCalledOnce();
+  });
+
+  it("sanitizes Cloudflare response data before replay storage on SMTP sends", async () => {
+    const env = makeEnv();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            errors: [],
+            messages: [],
+            result: {
+              delivered: [{ email: "alex@example.net", status: "delivered" }],
+              queued: ["queue@example.net"],
+              permanent_bounces: [],
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }),
+    );
+
+    const body = new TextEncoder().encode("From: Alex <gmail@alexmiller.net>\r\nMessage-ID: <smtp-safe@example.net>\r\n\r\nBody\r\n");
+    const response = await app.request(
+      "/relay/send",
+      {
+        method: "POST",
+        headers: await signedSendHeaders(body, "smtp-safe-nonce", {
+          "x-relay-envelope-from": "gmail@alexmiller.net",
+          "x-relay-recipients": "alex@example.net",
+          "x-relay-credential-id": "cred_1",
+        }),
+        body,
+      },
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    const responseJson = await response.json();
+    expect(responseJson).toMatchObject({
+      cf_response: {
+        result: {
+          delivered: { count: 1, categories: ["delivered"] },
+          queued: { count: 1 },
+          permanent_bounces: { count: 0 },
+        },
+      },
+    });
+    expect(JSON.stringify((env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency)).not.toContain("alex@example.net");
+    expect(JSON.stringify((env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency)).not.toContain("queue@example.net");
   });
 
   it("sends raw base64 MIME through the HTTP /send API", async () => {
@@ -531,15 +616,72 @@ describe("relay endpoints", () => {
       count: 1,
       categories: ["delivered"],
     });
-    await expect(response.json()).resolves.toMatchObject({
+    const responseJson = await response.json();
+    expect(responseJson).toMatchObject({
       ok: true,
       from: "gmail@alexmiller.net",
-      recipients: ["alex@example.net", "copy@example.net", "hidden@example.net"],
+      recipient_count: 3,
       idempotency_key: "http:key_1:http-idem-1",
       cf_status: 200,
       cf_ray_id: "ray-1",
       cf_request_id: "req-1",
     });
+    expect(responseJson).toMatchObject({
+      cf_response: {
+        success: true,
+        result: {
+          delivered: { count: 1, categories: ["delivered"] },
+          queued: { count: 0 },
+          permanent_bounces: { count: 0 },
+        },
+      },
+    });
+    expect(JSON.stringify(responseJson.cf_response)).not.toContain("alex@example.net");
+    const idempotencyRows = [...(env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency.values()];
+    expect(JSON.stringify(idempotencyRows)).not.toContain("alex@example.net");
+  });
+
+  it("marks permanent Cloudflare API failures as non-retryable without leaking provider text", async () => {
+    const env = makeEnv();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            errors: [{ code: 10000, message: "bad recipient alex@example.net" }],
+            messages: [],
+          }),
+          { status: 403, headers: { "content-type": "application/json", "cf-ray": "ray-perm" } },
+        );
+      }),
+    );
+
+    const mime = "From: gmail@alexmiller.net\r\nTo: alex@example.net\r\nSubject: API\r\n\r\nBody\r\n";
+    const response = await app.request(
+      "/send",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiSecret}`,
+          "content-type": "application/json",
+          "idempotency-key": "http-permanent-cf",
+        },
+        body: JSON.stringify({ from: "gmail@alexmiller.net", recipients: ["alex@example.net"], raw: Buffer.from(mime, "utf8").toString("base64") }),
+      },
+      env,
+    );
+
+    expect(response.status).toBe(422);
+    const responseJson = await response.json();
+    expect(responseJson).toMatchObject({
+      ok: false,
+      error_code: "cloudflare_send_raw_permanent_failure",
+      cf_error_code: "10000",
+      cf_response: { success: false, errors: [{ code: 10000 }], messages: [] },
+    });
+    expect(JSON.stringify(responseJson.cf_response)).not.toContain("alex@example.net");
+    expect(JSON.stringify([...(env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency.values()])).not.toContain("alex@example.net");
   });
 
   it("rejects malformed HTTP envelope recipients", async () => {
@@ -696,5 +838,18 @@ describe("stripCaptureHopHeaders", () => {
     expect(stripCaptureHopHeaders("Received: x\r\nFrom: a@example.com\r\nBcc: hidden@example.net\r\nSubject: Test\r\n\r\nHello\r\n")).toBe(
       "From: a@example.com\r\nSubject: Test\r\n\r\nHello\r\n",
     );
+  });
+
+  it("removes folded and mixed-case authentication trace headers", () => {
+    expect(
+      stripCaptureHopHeaders(
+        "Authentication-Results: mx.example; pass\r\n" +
+          "DKIM-Signature: v=1;\r\n\tb=abc\r\n" +
+          "aRc-Seal: i=1\r\n" +
+          "Received-SPF: pass\r\n" +
+          "X-Originating-IP: [192.0.2.10]\r\n" +
+          "From: a@example.com\r\n\r\nHello\r\n",
+      ),
+    ).toBe("From: a@example.com\r\n\r\nHello\r\n");
   });
 });

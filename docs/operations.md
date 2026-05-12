@@ -111,10 +111,10 @@ pnpm exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN
 ## Cron handler
 
 The Worker has a scheduled handler (`crons = ["17 3 * * *"]` in
-`wrangler.toml`) that runs at 03:17 UTC and prunes expired
-`relay_nonces` and `idempotency_keys` rows. The cadence is intentionally
-off-cycle to avoid the top of every hour. Bump the schedule if you operate at
-scale and start seeing table growth between runs.
+`wrangler.toml`) that runs at 03:17 UTC and prunes expired `relay_nonces`,
+`idempotency_keys`, old `auth_failures`, and old `rate_reservations` rows. The
+cadence is intentionally off-cycle to avoid the top of every hour. Bump the
+schedule if you operate at scale and start seeing table growth between runs.
 
 ## Schema migrations
 
@@ -128,8 +128,14 @@ pnpm --dir worker exec wrangler d1 migrations apply cf-mail-relay --remote
 `REQUIRED_D1_SCHEMA_VERSION` matches `settings.schema_version`. Always migrate
 before deploying a newer worker.
 
+`0005_privacy_retention_hardening.sql` deletes existing `idempotency_keys` rows
+to remove any cached provider responses that predate response sanitization.
+Apply it during a low-traffic window: retries of messages accepted before the
+migration will not have their previous idempotency rows available.
+
 Current schema baseline: `worker/migrations/0001_init.sql` + `0002_security_hardening.sql`
-+ `0003_drop_retention.sql` + `0004_smtp_host_setting.sql` (current version: 4).
++ `0003_drop_retention.sql` + `0004_smtp_host_setting.sql` +
+`0005_privacy_retention_hardening.sql` (current version: 5).
 
 ## Managing infra with OpenTofu (optional)
 

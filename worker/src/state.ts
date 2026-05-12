@@ -1,5 +1,6 @@
 import { hmacSha256Hex, sha256Hex, timingSafeEqualString } from "./hmac";
 import type { Env } from "./index";
+import { safeCloudflareArraySummary } from "./cf-response";
 
 export interface AuthDecision {
   ok: true;
@@ -439,6 +440,9 @@ export function extractHeaders(mimeMessage: string, headerName: string): string[
 }
 
 export async function credentialHash(env: Env, password: string): Promise<string> {
+  // Fast keyed hashing is appropriate only because credentials/API keys are
+  // generated as high-entropy random secrets. Do not reuse this for user-chosen
+  // passwords.
   return hmacSha256Hex(env.CREDENTIAL_PEPPER, password);
 }
 
@@ -678,36 +682,6 @@ function normalizeAddress(value: string): string {
 function parseReplayResponse(raw: string): ReplayResponse {
   const parsed = JSON.parse(raw) as ReplayResponse;
   return { ...parsed, status: parsed.status ?? (parsed.ok ? 200 : 502) };
-}
-
-function safeCloudflareArraySummary(raw: string): string {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (Array.isArray(parsed)) {
-      const categories = cloudflareResponseCategories(parsed);
-      return JSON.stringify(categories.length > 0 ? { count: parsed.length, categories } : { count: parsed.length });
-    }
-  } catch {}
-  return JSON.stringify({ count: null });
-}
-
-function cloudflareResponseCategories(items: unknown[]): string[] {
-  const categories = new Set<string>();
-  for (const item of items) {
-    if (typeof item !== "object" || item === null || Array.isArray(item)) {
-      continue;
-    }
-    for (const key of ["category", "reason", "status", "code", "error_code", "errorCode", "type"]) {
-      const value = (item as Record<string, unknown>)[key];
-      if (typeof value === "string" || typeof value === "number") {
-        const category = String(value).trim().toLowerCase();
-        if (/^[a-z0-9_.:-]{1,64}$/.test(category) && !category.includes("@")) {
-          categories.add(category);
-        }
-      }
-    }
-  }
-  return [...categories].sort();
 }
 
 function prefixedId(prefix: string): string {

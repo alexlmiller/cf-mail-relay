@@ -2,6 +2,7 @@
 
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { sanitizeCloudflareResponse } from "./cf-response";
 import {
   createApiKey,
   createDomain,
@@ -98,8 +99,9 @@ export interface Env {
 const app = new Hono<{ Bindings: Env }>();
 const workerVersion = "0.1.0-ms7";
 const gitSha = "ms7";
-const requiredSchemaVersionDefault = "4";
+const requiredSchemaVersionDefault = "5";
 const maxRelayBodyBytes = 6 * 1024 * 1024;
+const maxRelayAuthBodyBytes = 16 * 1024;
 
 app.get("/healthz", async (c) => {
   const requiredSchemaVersion = c.env.REQUIRED_D1_SCHEMA_VERSION || requiredSchemaVersionDefault;
@@ -145,7 +147,12 @@ app.post("/bootstrap/admin", async (c) => {
 });
 
 app.post("/relay/auth", async (c) => {
+  const earlySize = rejectOversizedContentLength(c, maxRelayAuthBodyBytes);
+  if (earlySize !== null) return earlySize;
   const bodyBytes = new Uint8Array(await c.req.arrayBuffer());
+  if (bodyBytes.byteLength > maxRelayAuthBodyBytes) {
+    return c.json({ ok: false, error: "auth_body_too_large" }, 413);
+  }
   const verification = await verifyRelayHmac(c.req.raw, c.env, bodyBytes);
   if (!verification.ok) {
     return c.json({ ok: false, error: verification.error }, verification.status);
@@ -172,6 +179,8 @@ app.post("/relay/auth", async (c) => {
 });
 
 app.post("/relay/send", async (c) => {
+  const earlySize = rejectOversizedContentLength(c, maxRelayBodyBytes);
+  if (earlySize !== null) return earlySize;
   const rawMimeBytes = new Uint8Array(await c.req.arrayBuffer());
   const verification = await verifyRelayHmac(c.req.raw, c.env, rawMimeBytes);
   if (!verification.ok) {
@@ -311,20 +320,29 @@ app.post("/relay/send", async (c) => {
   const cfResponseText = await cfResponse.text();
   const cfResponseParsed = parseJsonOrText(cfResponseText);
   const cfResult = parseCloudflareResult(cfResponseParsed);
+  const cfResponseSafe = sanitizeCloudflareResponse(cfResponseParsed);
   const allBounced =
     cfResponse.ok &&
     arrayLength(cfResult.bounced) > 0 &&
     arrayLength(cfResult.delivered) === 0 &&
     arrayLength(cfResult.queued) === 0;
   const deliveryOk = cfResponse.ok && !allBounced;
-  const responseStatus = deliveryOk ? 200 : 502;
+  const cfPermanentFailure = !deliveryOk && !allBounced && isPermanentCloudflareFailure(cfResponse.status, cfResult.errorCode);
+  const responseStatus = deliveryOk ? 200 : allBounced || cfPermanentFailure ? 422 : 502;
+  const responseErrorCode = deliveryOk
+    ? null
+    : allBounced
+      ? "all_recipients_bounced"
+      : cfPermanentFailure
+        ? "cloudflare_send_raw_permanent_failure"
+        : "cloudflare_send_raw_rejected";
   const rawMimeSha256 = await sha256Hex(rawMimeBytes);
   const cfRequestId = cfResponse.headers.get("cf-request-id");
   const cfRayId = cfResponse.headers.get("cf-ray");
   const responseBody = {
     ok: deliveryOk,
     from,
-    recipients,
+    recipient_count: recipients.length,
     raw_mime_size_bytes: rawMimeBytes.byteLength,
     stripped_mime_size_bytes: mimeMessageBytes.byteLength,
     raw_mime_sha256: rawMimeSha256,
@@ -333,7 +351,9 @@ app.post("/relay/send", async (c) => {
     cf_status: cfResponse.status,
     cf_ray_id: cfRayId,
     cf_request_id: cfRequestId,
-    cf_response: cfResponseParsed,
+    cf_response: cfResponseSafe,
+    error_code: responseErrorCode,
+    cf_error_code: cfResult.errorCode,
   };
   console.log(
     JSON.stringify({
@@ -363,7 +383,7 @@ app.post("/relay/send", async (c) => {
       cfBouncedJson: cfResult.bounced === null ? null : JSON.stringify(cfResult.bounced),
       status: deliveryOk ? "accepted" : allBounced ? "all_bounced" : "cf_error",
       smtpCode: deliveryOk ? "250" : allBounced ? "550" : "451",
-      errorCode: deliveryOk ? undefined : allBounced ? "all_recipients_bounced" : "cloudflare_send_raw_rejected",
+      errorCode: responseErrorCode ?? undefined,
       cfErrorCode: cfResult.errorCode,
     }),
     completeIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp", deliveryOk, {
@@ -669,19 +689,28 @@ app.post("/send", async (c) => {
   const cfResponseText = await cfResponse.text();
   const cfResponseParsed = parseJsonOrText(cfResponseText);
   const cfResult = parseCloudflareResult(cfResponseParsed);
+  const cfResponseSafe = sanitizeCloudflareResponse(cfResponseParsed);
   const allBounced =
     cfResponse.ok &&
     arrayLength(cfResult.bounced) > 0 &&
     arrayLength(cfResult.delivered) === 0 &&
     arrayLength(cfResult.queued) === 0;
   const deliveryOk = cfResponse.ok && !allBounced;
-  const responseStatus = deliveryOk ? 200 : 502;
+  const cfPermanentFailure = !deliveryOk && !allBounced && isPermanentCloudflareFailure(cfResponse.status, cfResult.errorCode);
+  const responseStatus = deliveryOk ? 200 : allBounced || cfPermanentFailure ? 422 : 502;
+  const responseErrorCode = deliveryOk
+    ? null
+    : allBounced
+      ? "all_recipients_bounced"
+      : cfPermanentFailure
+        ? "cloudflare_send_raw_permanent_failure"
+        : "cloudflare_send_raw_rejected";
   const cfRequestId = cfResponse.headers.get("cf-request-id");
   const cfRayId = cfResponse.headers.get("cf-ray");
   const responseBody = {
     ok: deliveryOk,
     from,
-    recipients,
+    recipient_count: recipients.length,
     raw_mime_size_bytes: rawMimeBytes.byteLength,
     stripped_mime_size_bytes: mimeMessageBytes.byteLength,
     raw_mime_sha256: rawMimeSha256,
@@ -690,7 +719,9 @@ app.post("/send", async (c) => {
     cf_status: cfResponse.status,
     cf_ray_id: cfRayId,
     cf_request_id: cfRequestId,
-    cf_response: cfResponseParsed,
+    cf_response: cfResponseSafe,
+    error_code: responseErrorCode,
+    cf_error_code: cfResult.errorCode,
   };
 
   await Promise.all([
@@ -709,7 +740,7 @@ app.post("/send", async (c) => {
       cfQueuedJson: cfResult.queued === null ? null : JSON.stringify(cfResult.queued),
       cfBouncedJson: cfResult.bounced === null ? null : JSON.stringify(cfResult.bounced),
       status: deliveryOk ? "accepted" : allBounced ? "all_bounced" : "cf_error",
-      errorCode: deliveryOk ? undefined : allBounced ? "all_recipients_bounced" : "cloudflare_send_raw_rejected",
+      errorCode: responseErrorCode ?? undefined,
       cfErrorCode: cfResult.errorCode,
     }),
     completeIdempotentRequest(c.env, idempotencyKey, requestHash, "http", deliveryOk, {
@@ -733,7 +764,19 @@ export function parseRecipients(raw: string | undefined): string[] {
 }
 
 export function stripCaptureHopHeaders(mimeMessage: string): string {
-  return stripMimeHeaders(mimeMessage, ["received", "x-received", "x-gm-message-state", "bcc"]);
+  return stripMimeHeaders(mimeMessage, [
+    "authentication-results",
+    "arc-authentication-results",
+    "arc-message-signature",
+    "arc-seal",
+    "bcc",
+    "dkim-signature",
+    "received",
+    "received-spf",
+    "x-gm-message-state",
+    "x-originating-ip",
+    "x-received",
+  ]);
 }
 
 function stripMimeHeaders(mimeMessage: string, names: string[]): string {
@@ -838,10 +881,27 @@ async function reserveRelayNonce(env: Env, keyId: string, nonce: string): Promis
 
 async function cleanupExpiredRows(env: Env): Promise<void> {
   const now = Math.floor(Date.now() / 1000);
+  const authFailureRetentionSeconds = 30 * 24 * 60 * 60;
+  const rateRetentionSeconds = 8 * 24 * 60 * 60;
   await env.D1_MAIN.batch([
     env.D1_MAIN.prepare("DELETE FROM relay_nonces WHERE expires_at < ?").bind(now),
     env.D1_MAIN.prepare("DELETE FROM idempotency_keys WHERE expires_at < ?").bind(now),
+    env.D1_MAIN.prepare("DELETE FROM auth_failures WHERE ts < ?").bind(now - authFailureRetentionSeconds),
+    env.D1_MAIN.prepare("DELETE FROM rate_reservations WHERE updated_at < ?").bind(now - rateRetentionSeconds),
   ]);
+}
+
+function rejectOversizedContentLength(c: Context<{ Bindings: Env }>, limit: number): Response | null {
+  const raw = c.req.header("content-length");
+  if (raw === undefined) return null;
+  const contentLength = Number.parseInt(raw, 10);
+  if (!/^(0|[1-9][0-9]*)$/.test(raw) || !Number.isFinite(contentLength) || contentLength < 0) {
+    return c.json({ ok: false, error: "invalid_content_length" }, 400);
+  }
+  if (contentLength > limit) {
+    return c.json({ ok: false, error: "message_too_large" }, 413);
+  }
+  return null;
 }
 
 function requiredRelaySignedHeaders(path: string): string[] {
@@ -1001,6 +1061,16 @@ function parseCloudflareResult(value: unknown): {
     bounced: Array.isArray(result.permanent_bounces) ? result.permanent_bounces : null,
     errorCode: typeof firstError?.code === "string" || typeof firstError?.code === "number" ? String(firstError.code) : null,
   };
+}
+
+function isPermanentCloudflareFailure(status: number, errorCode: string | null): boolean {
+  if ([400, 401, 403, 404, 422].includes(status)) {
+    return true;
+  }
+  // Known Cloudflare API validation/auth classes should not be retried by SMTP
+  // clients. Unknown provider errors remain transient unless HTTP status says
+  // otherwise.
+  return errorCode !== null && /^10\d{3}$/.test(errorCode);
 }
 
 function arrayLength(value: unknown[] | null): number {

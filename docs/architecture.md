@@ -161,7 +161,7 @@ Canonical string:
 
 ```text
 <METHOD>\n
-<PATH_WITH_QUERY>\n
+<PATH>\n
 <TIMESTAMP>\n
 <NONCE>\n
 <BODY_SHA256_HEX>\n
@@ -171,7 +171,9 @@ Canonical string:
 ```
 
 Signature is HMAC-SHA256 over the canonical string using the relay shared
-secret. Worker accepts current and previous secrets for rotation. Replay
+secret. `<PATH>` is the URL pathname only; relay endpoints do not use query
+strings, avoiding ambiguous query canonicalization rules. Worker accepts
+current and previous secrets for rotation. Replay
 protection uses timestamp skew plus D1-backed nonce reservations, with
 idempotency as the authoritative duplicate-send defense.
 

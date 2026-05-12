@@ -297,8 +297,10 @@ Operational notes:
 - Rotate leaked SMTP credentials or API keys from the admin UI.
 - D1 is the source of truth. KV is cache only.
 - D1 Time Travel can restore production databases, but restore is destructive.
-- The Worker includes a daily Cron cleanup for expired replay and idempotency
-  rows. Keep the `[triggers]` section from `worker/wrangler.toml.example`.
+- After first bootstrap, delete `BOOTSTRAP_SETUP_TOKEN` from Worker secrets.
+- The Worker includes a daily Cron cleanup for expired replay, idempotency,
+  auth-failure, and quota rows. Keep the `[triggers]` section from
+  `worker/wrangler.toml.example`.
 - Provider delivery arrays in `send_events` are stored as privacy-preserving
   summaries with counts and categorical reason/status codes only.
 - Keep attachments under about 3.25 MiB before encoding; MIME/base64 overhead can

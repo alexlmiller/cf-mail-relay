@@ -42,9 +42,29 @@ type AuthResponse struct {
 }
 
 type SendResponse struct {
-	OK       bool   `json:"ok"`
-	Error    string `json:"error,omitempty"`
-	CFStatus int    `json:"cf_status,omitempty"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+	// ErrorCode is the stable categorical value the SMTP layer should prefer
+	// when deciding whether a failure is permanent or transient.
+	ErrorCode   string `json:"error_code,omitempty"`
+	CFStatus    int    `json:"cf_status,omitempty"`
+	CFErrorCode string `json:"cf_error_code,omitempty"`
+}
+
+type SendError struct {
+	StatusCode int
+	Response   SendResponse
+}
+
+func (e *SendError) Error() string {
+	reason := e.Response.Error
+	if reason == "" {
+		reason = e.Response.ErrorCode
+	}
+	if reason == "" {
+		reason = http.StatusText(e.StatusCode)
+	}
+	return fmt.Sprintf("relay send rejected: %s", reason)
 }
 
 type authCacheEntry struct {
@@ -103,7 +123,7 @@ func (c *Client) Send(ctx context.Context, auth *AuthResponse, envelopeFrom stri
 		if response.Error == "" {
 			response.Error = http.StatusText(status)
 		}
-		return &response, fmt.Errorf("relay send rejected: %s", response.Error)
+		return &response, &SendError{StatusCode: status, Response: response}
 	}
 	return &response, nil
 }

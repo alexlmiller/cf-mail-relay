@@ -119,15 +119,15 @@ func (s *session) AuthMechanisms() []string {
 
 func (s *session) Auth(mech string) (sasl.Server, error) {
 	authenticate := func(username, password string) error {
-		if !s.backend.throttle.allowAuth(username) {
+		if !s.backend.throttle.allowAuth(username, s.remoteIP) {
 			return smtp.ErrAuthFailed
 		}
 		response, err := s.backend.client.Auth(context.Background(), username, password)
 		if err != nil {
-			s.backend.throttle.recordAuthFailure(username)
+			s.backend.throttle.recordAuthFailure(username, s.remoteIP)
 			return smtp.ErrAuthFailed
 		}
-		s.backend.throttle.recordAuthSuccess(username)
+		s.backend.throttle.recordAuthSuccess(username, s.remoteIP)
 		s.authed = true
 		s.authDecision = response
 		return nil
@@ -203,7 +203,7 @@ func (s *session) Data(r io.Reader) error {
 
 	traceID := newTraceID()
 	if _, err := s.backend.client.Send(context.Background(), s.authDecision, s.mailFrom, s.recipients, mime, traceID); err != nil {
-		return smtpError(451, smtp.EnhancedCode{4, 7, 1}, "upstream send failed; try again later")
+		return smtpErrorForSendError(err)
 	}
 	log.Printf("accepted message trace_id=%s from=%s recipients=%d bytes=%d", traceID, s.mailFrom, len(s.recipients), len(mime))
 	s.Reset()
@@ -300,11 +300,11 @@ func loadConfig() (config, error) {
 		return config{}, err
 	}
 	for name, value := range map[string]string{
-		"RELAY_TLS_CERT_FILE":   cfg.CertFile,
-		"RELAY_TLS_KEY_FILE":    cfg.KeyFile,
-		"RELAY_WORKER_URL":      cfg.WorkerURL,
-		"RELAY_KEY_ID":          cfg.HMACKeyID,
-		"RELAY_HMAC_SECRET":     cfg.HMACSecret,
+		"RELAY_TLS_CERT_FILE": cfg.CertFile,
+		"RELAY_TLS_KEY_FILE":  cfg.KeyFile,
+		"RELAY_WORKER_URL":    cfg.WorkerURL,
+		"RELAY_KEY_ID":        cfg.HMACKeyID,
+		"RELAY_HMAC_SECRET":   cfg.HMACSecret,
 	} {
 		if value == "" {
 			return config{}, fmt.Errorf("%s is required", name)
@@ -354,6 +354,55 @@ func smtpError(code int, enhanced smtp.EnhancedCode, message string) error {
 	return &smtp.SMTPError{Code: code, EnhancedCode: enhanced, Message: message}
 }
 
+func smtpErrorForSendError(err error) error {
+	var sendErr *workerclient.SendError
+	if !errors.As(err, &sendErr) {
+		return smtpError(451, smtp.EnhancedCode{4, 7, 1}, "upstream send failed; try again later")
+	}
+
+	if isRelayOperatorError(sendErr) {
+		log.Printf("relay_misconfigured status=%d error=%q error_code=%q", sendErr.StatusCode, sendErr.Response.Error, sendErr.Response.ErrorCode)
+	}
+
+	switch sendErr.Response.ErrorCode {
+	case "all_recipients_bounced":
+		return smtpError(550, smtp.EnhancedCode{5, 1, 1}, "all recipients bounced")
+	case "cloudflare_send_raw_permanent_failure":
+		return smtpError(550, smtp.EnhancedCode{5, 7, 1}, "provider rejected message permanently")
+	case "sender_not_allowed", "from_header_mismatch", "sender_header_not_allowed":
+		return smtpError(550, smtp.EnhancedCode{5, 7, 1}, sendErr.Response.ErrorCode)
+	}
+
+	switch sendErr.Response.Error {
+	case "mime_not_utf8_json_safe", "duplicate_from_header", "duplicate_sender_header", "duplicate_message_id_header", "missing_from_header", "multiple_from_addresses":
+		return smtpError(554, smtp.EnhancedCode{5, 6, 0}, sendErr.Response.Error)
+	case "invalid_envelope_from", "invalid_recipients", "missing_recipients", "too_many_recipients":
+		return smtpError(550, smtp.EnhancedCode{5, 5, 2}, sendErr.Response.Error)
+	case "sender_not_allowed", "from_header_mismatch", "sender_header_not_allowed":
+		return smtpError(550, smtp.EnhancedCode{5, 7, 1}, sendErr.Response.Error)
+	case "message_too_large":
+		return smtpError(552, smtp.EnhancedCode{5, 3, 4}, sendErr.Response.Error)
+	case "rate_limited", "idempotency_pending":
+		return smtpError(451, smtp.EnhancedCode{4, 7, 1}, sendErr.Response.Error)
+	}
+
+	if sendErr.StatusCode == http.StatusTooManyRequests || sendErr.StatusCode >= 500 {
+		return smtpError(451, smtp.EnhancedCode{4, 7, 1}, "upstream send failed; try again later")
+	}
+	if sendErr.StatusCode >= 400 && sendErr.StatusCode < 500 {
+		return smtpError(550, smtp.EnhancedCode{5, 7, 1}, sendErr.Response.Error)
+	}
+	return smtpError(451, smtp.EnhancedCode{4, 7, 1}, "upstream send failed; try again later")
+}
+
+func isRelayOperatorError(err *workerclient.SendError) bool {
+	switch err.Response.Error {
+	case "replay_nonce", "unsupported_relay_version", "invalid_body_hash", "invalid_signature", "unknown_key_id", "missing_required_signed_header":
+		return true
+	}
+	return err.Response.ErrorCode == "cloudflare_send_raw_permanent_failure"
+}
+
 func envOrDefault(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value
@@ -369,6 +418,7 @@ type throttle struct {
 	connCounts      map[string]int
 	authCounts      map[string]int
 	authFailures    map[string]authFailure
+	lastPrune       time.Time
 }
 
 type authFailure struct {
@@ -395,39 +445,47 @@ func (t *throttle) allowConn(remoteIP string) bool {
 	key := fmt.Sprintf("%s:%s", minuteBucket(), remoteIP)
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.pruneLockedIfDue(time.Now())
 	t.connCounts[key]++
 	return t.connCounts[key] <= t.connPerMinute
 }
 
-func (t *throttle) allowAuth(username string) bool {
+func (t *throttle) allowAuth(username, remoteIP string) bool {
 	if t == nil {
 		return true
 	}
-	key := strings.ToLower(strings.TrimSpace(username))
+	userKey := throttleUsername(username)
+	remoteKey := throttleRemote(remoteIP)
+	lockoutKey := userKey + "|" + remoteKey
 	now := time.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if failure, ok := t.authFailures[key]; ok && now.Before(failure.blockUntil) {
+	t.pruneLockedIfDue(now)
+	if failure, ok := t.authFailures[lockoutKey]; ok && now.Before(failure.blockUntil) {
 		return false
 	}
 	if t.authPerMinute <= 0 {
 		return true
 	}
-	countKey := fmt.Sprintf("%s:%s", minuteBucket(), key)
-	t.authCounts[countKey]++
-	return t.authCounts[countKey] <= t.authPerMinute
+	bucket := minuteBucket()
+	userCountKey := fmt.Sprintf("%s:user:%s", bucket, userKey)
+	remoteCountKey := fmt.Sprintf("%s:remote:%s", bucket, remoteKey)
+	t.authCounts[userCountKey]++
+	t.authCounts[remoteCountKey]++
+	return t.authCounts[userCountKey] <= t.authPerMinute && t.authCounts[remoteCountKey] <= t.authPerMinute*5
 }
 
-func (t *throttle) recordAuthFailure(username string) {
+func (t *throttle) recordAuthFailure(username, remoteIP string) {
 	if t == nil || t.authLockoutBase <= 0 {
 		return
 	}
-	key := strings.ToLower(strings.TrimSpace(username))
+	key := throttleUsername(username) + "|" + throttleRemote(remoteIP)
+	now := time.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	failure := t.authFailures[key]
 	failure.count++
-	failure.lastFailure = time.Now()
+	failure.lastFailure = now
 	lockout := t.authLockoutBase * time.Duration(1<<(min(failure.count, 6)-1))
 	if lockout > 15*time.Minute {
 		lockout = 15 * time.Minute
@@ -436,14 +494,57 @@ func (t *throttle) recordAuthFailure(username string) {
 	t.authFailures[key] = failure
 }
 
-func (t *throttle) recordAuthSuccess(username string) {
+func (t *throttle) recordAuthSuccess(username, remoteIP string) {
 	if t == nil {
 		return
 	}
-	key := strings.ToLower(strings.TrimSpace(username))
+	key := throttleUsername(username) + "|" + throttleRemote(remoteIP)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.authFailures, key)
+}
+
+func (t *throttle) pruneLocked(now time.Time) {
+	cutoffBucket := now.Add(-2 * time.Minute).UTC().Format("200601021504")
+	for key := range t.connCounts {
+		if strings.SplitN(key, ":", 2)[0] < cutoffBucket {
+			delete(t.connCounts, key)
+		}
+	}
+	for key := range t.authCounts {
+		if strings.SplitN(key, ":", 2)[0] < cutoffBucket {
+			delete(t.authCounts, key)
+		}
+	}
+	for key, failure := range t.authFailures {
+		if now.After(failure.blockUntil) && now.Sub(failure.lastFailure) > 30*time.Minute {
+			delete(t.authFailures, key)
+		}
+	}
+}
+
+func (t *throttle) pruneLockedIfDue(now time.Time) {
+	if !t.lastPrune.IsZero() && now.Sub(t.lastPrune) < 30*time.Second {
+		return
+	}
+	t.lastPrune = now
+	t.pruneLocked(now)
+}
+
+func throttleUsername(username string) string {
+	normalized := strings.ToLower(strings.TrimSpace(username))
+	if normalized == "" {
+		return "unknown"
+	}
+	return normalized
+}
+
+func throttleRemote(remoteIP string) string {
+	normalized := strings.TrimSpace(remoteIP)
+	if normalized == "" {
+		return "unknown"
+	}
+	return normalized
 }
 
 func remoteIP(conn *smtp.Conn) string {
