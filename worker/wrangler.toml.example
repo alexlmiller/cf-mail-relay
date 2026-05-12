@@ -31,6 +31,10 @@ RELAY_HMAC_KEY_ID = "rel_REPLACE_ME"
 [triggers]
 crons = ["17 3 * * *"]
 
+[observability.logs]
+enabled = true
+invocation_logs = true
+
 # Admin UI is served same-origin via Workers Static Assets. `pnpm --filter ui
 # build` writes the bundle into ./public/ which is uploaded with the Worker.
 # Workers Static Assets handles GET/HEAD for matched files; the Worker's
