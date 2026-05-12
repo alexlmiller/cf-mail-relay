@@ -141,9 +141,14 @@ ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
 
   it("rejects platform hostnames unless explicitly allowed", async () => {
     await assert.rejects(
-      () => run(["--account-id", "acc", "--allow-email", "admin@example.com", "--dry-run"], {}, async () => {
-        throw new Error("fetch should not be called");
-      }, throwingFail),
+      () => run(
+        ["--account-id", "acc", "--allow-email", "admin@example.com", "--pages-url", "https://example.pages.dev", "--dry-run"],
+        {},
+        async () => {
+          throw new Error("fetch should not be called");
+        },
+        throwingFail,
+      ),
       /Platform hostnames require Workers & Pages Access controls/,
     );
   });

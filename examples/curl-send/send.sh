@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-worker_url="${CF_MAIL_RELAY_WORKER_URL:?set CF_MAIL_RELAY_WORKER_URL, for example https://cf-mail-relay-worker.example.workers.dev}"
+worker_url="${CF_MAIL_RELAY_WORKER_URL:?set CF_MAIL_RELAY_WORKER_URL to your relay admin host, for example https://mail.example.com}"
 api_key="${CF_MAIL_RELAY_API_KEY:?set CF_MAIL_RELAY_API_KEY}"
 from="${CF_MAIL_RELAY_FROM:?set CF_MAIL_RELAY_FROM}"
 to="${CF_MAIL_RELAY_TO:?set CF_MAIL_RELAY_TO}"

@@ -8,8 +8,8 @@ export const defaults = {
   name: "cf-mail-relay-admin",
   accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
   tokenEnv: "CLOUDFLARE_API_TOKEN",
-  pagesUrl: "https://cf-mail-relay-ui.pages.dev",
-  workerUrl: "https://cf-mail-relay-worker.milfred.workers.dev",
+  pagesUrl: "",
+  workerUrl: "",
   sessionDuration: "24h",
   email: [],
   dryRun: false,
@@ -254,8 +254,8 @@ Creates or updates the Cloudflare Access app for the admin UI.
 Options:
   --token-env <name>          Environment variable containing an Access-capable Cloudflare API token
   --name <name>               Access app name (default: cf-mail-relay-admin)
-  --pages-url <url>           Pages UI URL (default: https://cf-mail-relay-ui.pages.dev)
-  --worker-url <url>          Worker API URL (default: https://cf-mail-relay-worker.milfred.workers.dev)
+  --pages-url <url>           Admin UI URL (default: empty; pass your admin host, e.g. https://mail.example.com)
+  --worker-url <url>          Legacy alias; same-origin setups should just pass --pages-url
   --session-duration <value>  Access session duration (default: 24h)
   --allow-email <email,csv>   Email address allowed by the app policy; repeatable
   --apply-config <path>       Apply returned Access values to a Worker wrangler.toml

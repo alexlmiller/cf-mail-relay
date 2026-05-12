@@ -14,7 +14,7 @@ describe("access-apply helper", () => {
       dryRun: true,
       help: false,
       json: "",
-      pagesUrl: "https://cf-mail-relay-ui.pages.dev",
+      pagesUrl: "",
       teamDomain: "team.cloudflareaccess.com",
     });
   });

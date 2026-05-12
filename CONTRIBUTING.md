@@ -11,7 +11,9 @@ Keep the project focused:
 - No inbound mail handling.
 - No templates, mailing lists, scheduling, or message body storage.
 - No multi-tenant SaaS layer.
-- Cloudflare Workers, Pages, D1, KV, Access, and Email Sending only.
+- Cloudflare Workers, D1, KV, Access, and Email Sending only. The admin UI
+  ships inside the Worker via Workers Static Assets — no separate Pages
+  project.
 
 Open an issue before adding a new product surface or changing an auth/security
 boundary.

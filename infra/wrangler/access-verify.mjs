@@ -6,6 +6,9 @@ import { pathToFileURL } from "node:url";
 
 export const defaults = {
   config: "worker/wrangler.toml",
+  // Same-origin setups should pass --pages-url and --worker-url pointing at
+  // the admin host (e.g. https://mail.example.com). The legacy defaults below
+  // remain as a starting point for the existing test fixtures.
   pagesUrl: "https://cf-mail-relay-ui.pages.dev",
   workerUrl: "https://cf-mail-relay-worker.milfred.workers.dev",
 };

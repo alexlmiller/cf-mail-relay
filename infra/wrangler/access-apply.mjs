@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 export const defaults = {
   config: "worker/wrangler.toml",
   json: "",
-  pagesUrl: "https://cf-mail-relay-ui.pages.dev",
+  pagesUrl: "",
 };
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -201,7 +201,10 @@ Options:
   --json <path>               JSON output file from pnpm access:setup
   --team-domain <domain>      Access team domain, overrides --json
   --audience <aud>            Access application audience, overrides --json
-  --pages-url <url>           Pages UI URL used as ADMIN_CORS_ORIGIN
+  --pages-url <url>           Admin UI URL used as ADMIN_CORS_ORIGIN. Same-origin
+                               setups can leave this empty — the Worker defaults to
+                               its own URL. Only set when the UI is on a different
+                               origin than the API.
   --admin-cors-origin <url>   Explicit ADMIN_CORS_ORIGIN, overrides --pages-url
   --dry-run                   Report intended values without writing
 `;

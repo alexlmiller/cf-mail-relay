@@ -7,11 +7,14 @@ Read this first, then read [docs/architecture.md](./docs/architecture.md).
 This is a release-ready SMTP-to-Cloudflare-Email-Sending bridge:
 
 - `relay/`: Go SMTP relay in Docker.
-- `worker/`: Cloudflare Worker policy and delivery API.
-- `ui/`: Astro admin UI on Cloudflare Pages.
+- `worker/`: Cloudflare Worker that enforces policy, calls Email Sending
+  `send_raw`, AND serves the admin UI bundle (Workers Static Assets at
+  `worker/public/`). Same-origin admin — no separate Pages project.
+- `ui/`: Astro source for the admin UI. Builds into `worker/public/`.
 - `shared/`: shared TypeScript contracts.
-- `infra/`: setup, Cloudflare Access helpers, doctor scripts, and deployment
-  examples.
+- `infra/`: setup wizard (`pnpm setup --apply`), OpenTofu reference module,
+  Cloudflare Access helpers, HMAC rotation, doctor scripts, and Docker
+  relay deployment templates.
 
 ## Design Constraints
 
@@ -20,10 +23,20 @@ This is a release-ready SMTP-to-Cloudflare-Email-Sending bridge:
   roadmap decision.
 - No message body storage.
 - One deployment serves one Cloudflare account, with many sending domains.
+- Single-origin admin: the Worker serves the UI + admin/self API on one
+  host (default `mail.<adopter-zone>`). Cloudflare Access is path-scoped
+  to `/`, `/_astro/*`, `/admin/api/*`, `/self/api/*` so `/relay/*`,
+  `/send`, `/bootstrap/admin`, and `/healthz` reach the Worker without
+  an Access cookie (they have their own HMAC / bearer / token auth).
 - D1 is source of truth. KV is cache only.
-- Relay-to-Worker auth is HMAC.
-- Admin auth is Cloudflare Access.
+- Relay-to-Worker auth is HMAC. The canonical string commits both the
+  body hash and a sorted `signedHeaders` block.
+- Admin auth is Cloudflare Access. Worker validates JWT (issuer + aud +
+  `type === "app"`) and the Origin on browser POSTs.
 - Credential/API-key hashes use HMAC-SHA256 keyed with a secret pepper.
+- The worker runtime needs a least-privilege `CF_API_TOKEN` (Email Sending
+  Edit only). The setup wizard does NOT auto-push the operator's broader
+  setup token; the runbook covers the manual step.
 
 ## Working Rules
 

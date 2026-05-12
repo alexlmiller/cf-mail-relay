@@ -1,6 +1,9 @@
 # worker/
 
-Cloudflare Worker. TypeScript, Hono, D1, KV.
+Cloudflare Worker. TypeScript, Hono, D1, KV. **Also serves the admin UI**
+at the same hostname via Workers Static Assets — the `[assets]` block in
+`wrangler.toml` points at `./public/`, which `pnpm --filter ui build`
+writes into.
 
 The Worker is the policy and delivery authority. It validates credentials,
 sender permissions, quotas, idempotency, and Cloudflare Access admin JWTs before
@@ -9,7 +12,8 @@ calling Cloudflare Email Sending `send_raw`.
 The Worker also enforces MIME/envelope alignment: SMTP and HTTP sends must have
 a MIME `From:` matching the authorized sender, and `Bcc:` is stripped before
 calling Cloudflare. Duplicate singleton identity headers (`From:`, `Sender:`,
-and `Message-ID:`) are rejected before delivery.
+and `Message-ID:`) are rejected before delivery with `duplicate_from_header` /
+`duplicate_sender_header` / `duplicate_message_id_header`.
 
 ## Routes
 
@@ -22,6 +26,8 @@ and `Message-ID:`) are rejected before delivery.
 | `POST /send` | Send raw MIME from an app/client | API key |
 | `/admin/api/*` | Admin UI API | Cloudflare Access JWT + Origin on unsafe browser methods |
 | `/self/api/*` | Sender self-service API | Cloudflare Access JWT + Origin on unsafe browser methods |
+| `GET /` and `/_astro/*` | Admin UI bundle (Workers Static Assets) | Cloudflare Access JWT |
+| `GET /<other>` | SPA fallback → serves `/index.html` | none at the edge (the SPA's JS triggers Access on its own API calls) |
 
 Unsafe admin/self requests from browsers must include the configured trusted
 `Origin`. Non-browser scripts without `Origin` and without Fetch Metadata
