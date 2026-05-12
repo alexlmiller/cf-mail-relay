@@ -16,6 +16,7 @@
     "access:setup": "node infra/wrangler/access-app.mjs",
     "access:apply": "node infra/wrangler/access-apply.mjs",
     "access:verify": "node infra/wrangler/access-verify.mjs",
+    "rotate:hmac": "node infra/wrangler/rotate-hmac.mjs",
     "doctor:local": "bash infra/setup/doctor-local.sh",
     "doctor:delivery": "bash infra/setup/doctor-delivery.sh"
   },
