@@ -217,6 +217,24 @@ export function shots(): Shot[] {
       waitFor: "tbody tr",
     },
 
+    // 19 — Mobile SMTP credentials (stacked actions + card layout)
+    {
+      name: "19-mobile-credentials",
+      fixtures: adminFixtures(),
+      route: "/credentials",
+      viewport: { width: 390, height: 844 },
+      waitFor: "tbody tr",
+    },
+
+    // 20 — Mobile API keys (same header/action rhythm as credentials)
+    {
+      name: "20-mobile-api-keys",
+      fixtures: adminFixtures(),
+      route: "/api-keys",
+      viewport: { width: 390, height: 844 },
+      waitFor: "tbody tr",
+    },
+
     // 17 — Mobile nav open (hamburger expanded)
     {
       name: "17-mobile-nav-open",

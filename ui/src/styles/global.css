@@ -338,25 +338,45 @@ html[data-theme="dark"] {
   max-width: 1320px;
   margin: 0 auto;
   padding: 22px 22px 80px;
+  min-width: 0;
+}
+
+#route {
   display: grid;
   gap: 22px;
   min-width: 0;
 }
 
+/* Page head — Linear/Vercel pattern: breadcrumb on top, then title row with
+   primary actions on the right, then full-width description below.
+   The existing markup uses a wrapping <div> around crumbs+h1+description.
+   display: contents lifts those into the parent grid so we can place the
+   action button on the same row as the h1 without touching every view. */
 .page-head {
-  display: flex;
-  /* Top-align so the actions sit next to the title row, not pushed down to the
-     bottom of a multi-line description. */
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 16px;
+  row-gap: 4px;
 }
-.page-head > div:first-child { min-width: 0; flex: 1 1 320px; }
-/* Drop the actions row past the breadcrumb (font-size 12 × line-height 1.5 = 18px,
- * plus the 6px crumbs margin-bottom = 24px) so the action button top-aligns
- * with the h1 instead of sitting next to a multi-line description. */
-.page-head .actions { flex-shrink: 0; padding-top: 24px; }
+.page-head > div:first-child { display: contents; }
+.page-head > div:first-child > .crumbs { grid-column: 1; grid-row: 1; }
+.page-head > div:first-child > h1 { grid-column: 1; grid-row: 2; }
+/* Anything after the h1 inside the title block (description, sub-heading)
+   gets pushed under the title row and spans the full width. */
+.page-head > div:first-child > :not(.crumbs):not(h1) {
+  grid-column: 1 / -1;
+  grid-row: 3;
+}
+.page-head > .actions {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
 .page-head .crumbs {
   display: flex;
   align-items: center;
@@ -364,12 +384,11 @@ html[data-theme="dark"] {
   font-family: "JetBrains Mono", monospace;
   font-size: 12px;
   color: var(--text-mute);
-  margin-bottom: 6px;
+  margin-bottom: 2px;
 }
 .page-head .crumbs a:hover { color: var(--text-soft); }
 .page-head .crumbs .sep { color: var(--text-faint); }
 .page-head h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.018em; }
-.page-head .actions { display: flex; gap: 8px; align-items: center; }
 
 /* ───────────────────────── Buttons & inputs ───────────────────────── */
 
@@ -1293,6 +1312,27 @@ table.list tbody td.right { text-align: right; }
 
 /* ─── Phones + tablet portrait (≤720px): hamburger nav ─── */
 @media (max-width: 720px) {
+  .main {
+    padding: 18px 18px 64px;
+  }
+  #route {
+    gap: 18px;
+  }
+  /* Collapse the page-head grid to a single column on narrow viewports so the
+     action button sits on its own row beneath the title rather than squeezing
+     beside it. */
+  .page-head {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 10px;
+  }
+  .page-head > div:first-child > .crumbs { grid-column: 1; grid-row: 1; }
+  .page-head > div:first-child > h1 { grid-column: 1; grid-row: 2; }
+  .page-head > div:first-child > :not(.crumbs):not(h1) { grid-column: 1; grid-row: 3; }
+  .page-head > .actions {
+    grid-column: 1;
+    grid-row: 4;
+    justify-content: flex-end;
+  }
   .nav-toggle { display: inline-grid; }
   .topbar .nav {
     display: none;
@@ -1323,8 +1363,6 @@ table.list tbody td.right { text-align: right; }
   .stats { grid-template-columns: 1fr; }
   .health-grid { grid-template-columns: 1fr; }
   .page-head h1 { font-size: 19px; }
-  .page-head { gap: 8px; }
-  .page-head .actions { padding-top: 0; }
 
   /* Drawer covers viewport on phones. */
   .drawer {

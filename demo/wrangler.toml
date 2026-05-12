@@ -6,6 +6,10 @@ routes = [
   { pattern = "relay-demo.alexmiller.net", custom_domain = true },
 ]
 
+[observability.logs]
+enabled = true
+invocation_logs = true
+
 [assets]
 directory = "./dist"
 binding = "ASSETS"
