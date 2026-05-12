@@ -65,10 +65,10 @@ the SPA shell (`/index.html`) per the `single-page-application` fallback.
 
 ## Cloudflare Boundary
 
-Worker, D1, KV, Pages, Access, and Email Sending run on Cloudflare. The SMTP
-relay does not, because SMTP submission requires a public raw TCP listener on
-port `587`; Cloudflare Workers and Containers currently expose HTTP/WebSocket
-request handling rather than arbitrary inbound TCP services.
+Worker (UI + API), D1, KV, Access, and Email Sending run on Cloudflare. The
+SMTP relay does not, because SMTP submission requires a public raw TCP
+listener on port `587`; Cloudflare Workers and Containers currently expose
+HTTP/WebSocket request handling rather than arbitrary inbound TCP services.
 
 The relay is intentionally a thin edge adapter. It can run on existing
 infrastructure or a small public VM, including a GCP free-tier eligible
