@@ -180,7 +180,8 @@ describe("setup apply helpers", () => {
   });
 
   it("renderWranglerToml substitutes placeholders + mail.example.com route", () => {
-    const template = `account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
+    const template = `name = "cf-mail-relay-worker"
+account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
 id = "REPLACE_WITH_KV_NAMESPACE_ID"
 ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
@@ -199,7 +200,9 @@ routes = [
       accessAudience: "aud_xyz",
       adminUrl: "https://mail.milf.red",
       relayKeyId: "rel_01",
+      workerScriptName: "cf-mail-relay-v1-test",
     });
+    assert.match(rendered, /name = "cf-mail-relay-v1-test"/);
     assert.match(rendered, /account_id = "acc_xyz"/);
     assert.match(rendered, /database_id = "d1_xyz"/);
     assert.match(rendered, /id = "kv_xyz"/);

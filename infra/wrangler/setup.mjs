@@ -15,17 +15,6 @@ const requiredSecrets = [
   "BOOTSTRAP_SETUP_TOKEN",
 ];
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  try {
-    const result = await main(process.argv.slice(2), process.env);
-    console.log(JSON.stringify(result, null, 2));
-    process.exit(result.ok ? 0 : 1);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  }
-}
-
 export async function main(argv, env, depsOrFetch = {}) {
   // Backward compat: tests pass a bare fetchImpl as the third arg.
   const deps = typeof depsOrFetch === "function" ? { fetchImpl: depsOrFetch } : (depsOrFetch ?? {});
@@ -152,6 +141,7 @@ export async function runApply(ctx) {
     accessAudience: access.access_audience,
     adminUrl: options.adminUrl,
     relayKeyId: options.relayKeyId,
+    workerScriptName: options.workerScriptName,
   });
   if (!existsImpl(options.wranglerPath) || options.force) {
     writeFileImpl(options.wranglerPath, wranglerToml);
@@ -289,6 +279,7 @@ export function generateSecrets() {
 
 export function renderWranglerToml(input) {
   let body = input.template;
+  body = body.replace(/name = "cf-mail-relay-worker"/u, `name = "${input.workerScriptName ?? "cf-mail-relay-worker"}"`);
   body = body.replaceAll("REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID", input.accountId);
   body = body.replaceAll("REPLACE_WITH_D1_DATABASE_ID", input.d1Id);
   body = body.replaceAll("REPLACE_WITH_KV_NAMESPACE_ID", input.kvId);
@@ -454,6 +445,17 @@ export class CloudflareApiClient {
     });
     const body = parseJsonOrText(await response.text());
     return { status: response.status, ok: response.ok, body };
+  }
+}
+
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    const result = await main(process.argv.slice(2), process.env);
+    console.log(JSON.stringify(result, null, 2));
+    process.exit(result.ok ? 0 : 1);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
   }
 }
 
