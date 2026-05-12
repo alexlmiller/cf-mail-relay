@@ -18,7 +18,7 @@ describe("access-app helper", () => {
     );
   });
 
-  it("builds a self-hosted Access app for Pages and Worker admin API", () => {
+  it("builds a self-hosted Access app for the same-origin UI and admin API", () => {
     const bodies = buildBodies({
       ...defaults,
       name: "relay-admin",
@@ -42,7 +42,7 @@ describe("access-app helper", () => {
   });
 
   it("returns dry-run payload without requiring a token", async () => {
-    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--dry-run", "--allow-platform-hostnames"], {}, async () => {
+    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--pages-url", "https://admin.example.com", "--dry-run", "--allow-platform-hostnames"], {}, async () => {
       throw new Error("fetch should not be called");
     });
 
@@ -75,7 +75,7 @@ describe("access-app helper", () => {
       throw new Error(`unexpected request ${init.method} ${url}`);
     };
 
-    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--allow-platform-hostnames"], { CLOUDFLARE_API_TOKEN: "token" }, fetchImpl);
+    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--pages-url", "https://admin.example.com", "--allow-platform-hostnames"], { CLOUDFLARE_API_TOKEN: "token" }, fetchImpl);
 
     assert.equal(result.access_team_domain, "team.cloudflareaccess.com");
     assert.equal(result.access_audience, "aud_123");
@@ -93,7 +93,7 @@ ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
 `,
     );
 
-    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--apply-config", config, "--allow-platform-hostnames"], { CLOUDFLARE_API_TOKEN: "token" }, accessFetch);
+    const result = await run(["--account-id", "acc", "--allow-email", "admin@example.com", "--pages-url", "https://admin.example.com", "--apply-config", config, "--allow-platform-hostnames"], { CLOUDFLARE_API_TOKEN: "token" }, accessFetch);
     const written = await readFile(config, "utf8");
 
     assert.equal(result.applied_config.changed, true);
@@ -129,7 +129,7 @@ ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
     };
 
     const result = await run(
-      ["--account-id", "acc", "--allow-email", "admin@example.com", "--team-domain", "https://team.cloudflareaccess.com/", "--allow-platform-hostnames"],
+      ["--account-id", "acc", "--allow-email", "admin@example.com", "--pages-url", "https://admin.example.com", "--team-domain", "https://team.cloudflareaccess.com/", "--allow-platform-hostnames"],
       { CLOUDFLARE_API_TOKEN: "token" },
       fetchImpl,
     );
@@ -150,6 +150,20 @@ ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
         throwingFail,
       ),
       /Platform hostnames require Workers & Pages Access controls/,
+    );
+  });
+
+  it("requires an HTTPS admin origin", async () => {
+    await assert.rejects(
+      () => run(
+        ["--account-id", "acc", "--allow-email", "admin@example.com", "--dry-run"],
+        {},
+        async () => {
+          throw new Error("fetch should not be called");
+        },
+        throwingFail,
+      ),
+      /--pages-url is required/,
     );
   });
 

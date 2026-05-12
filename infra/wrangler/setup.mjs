@@ -121,11 +121,15 @@ export async function runApply(ctx) {
   const accessRun = accessAppImpl ?? (await import("./access-app.mjs")).run;
   const accessArgs = [
     "--account-id", options.accountId,
+    "--token-env", options.tokenEnv,
+    "--name", options.accessAppName,
     "--pages-url", options.adminUrl,
     "--worker-url", options.adminUrl,
-    "--allow-platform-hostnames",
     ...options.allowEmails.flatMap((email) => ["--allow-email", email]),
   ];
+  if (options.allowPlatformHostnames) {
+    accessArgs.push("--allow-platform-hostnames");
+  }
   const access = await accessRun(accessArgs, env, fetchImpl);
   steps.push({ step: "access", app_id: access.app_id, audience: access.access_audience, team_domain: access.access_team_domain });
 
@@ -299,7 +303,7 @@ export function renderRunbook(input) {
   const lines = [
     `# cf-mail-relay — adopter runbook`,
     ``,
-    `Generated ${new Date().toISOString()} by \`pnpm setup --apply\`.`,
+    `Generated ${new Date().toISOString()} by \`pnpm run setup --apply\`.`,
     ``,
     `## Live admin`,
     ``,
@@ -360,6 +364,7 @@ export function parseArgs(argv, env = process.env) {
   const options = {
     accountId: env.CLOUDFLARE_ACCOUNT_ID ?? "",
     accessAppName: "cf-mail-relay-admin",
+    allowPlatformHostnames: false,
     adminUrl: "",
     apiBase: defaultApiBase,
     apply: false,
@@ -394,6 +399,7 @@ export function parseArgs(argv, env = process.env) {
       case "--access-app-name": options.accessAppName = readValue(argv, index, arg); index += 1; break;
       case "--admin-url": options.adminUrl = trimTrailingSlash(readValue(argv, index, arg)); index += 1; break;
       case "--allow-email": options.allowEmails.push(readValue(argv, index, arg)); index += 1; break;
+      case "--allow-platform-hostnames": options.allowPlatformHostnames = true; break;
       case "--api-base": options.apiBase = readValue(argv, index, arg); index += 1; break;
       case "--apply": options.apply = true; break;
       case "--d1-database-id":
@@ -513,7 +519,7 @@ async function checkWorkersPaid(client, accountId) {
 
 async function checkD1(client, accountId, databaseId, databaseName) {
   if (!databaseId) {
-    return warnCheck("d1_database", "No --d1-id provided. `pnpm setup --apply` will create one.", { database_name: databaseName });
+    return warnCheck("d1_database", "No --d1-id provided. `pnpm run setup --apply` will create one.", { database_name: databaseName });
   }
   const response = await client.get(`/accounts/${encodeURIComponent(accountId)}/d1/database/${encodeURIComponent(databaseId)}`);
   return response.ok ? passCheck("d1_database", "D1 database is accessible.", { name: response.body?.result?.name }) : failCheck("d1_database", `D1 lookup failed with HTTP ${response.status}.`, response.body);
@@ -526,7 +532,7 @@ async function checkKv(client, accountId, namespaceId, namespaceTitle) {
   }
   const namespaces = Array.isArray(response.body?.result) ? response.body.result : [];
   const match = namespaces.find((namespace) => namespace.id === namespaceId || namespace.title === namespaceTitle);
-  return match ? passCheck("kv_namespace", "KV namespace is accessible.", { id: match.id, title: match.title }) : warnCheck("kv_namespace", "KV namespace not found; `pnpm setup --apply` will create one.", { expected_title: namespaceTitle });
+  return match ? passCheck("kv_namespace", "KV namespace is accessible.", { id: match.id, title: match.title }) : warnCheck("kv_namespace", "KV namespace not found; `pnpm run setup --apply` will create one.", { expected_title: namespaceTitle });
 }
 
 async function checkAccess(client, accountId, appName, adminUrl) {
@@ -537,7 +543,7 @@ async function checkAccess(client, accountId, appName, adminUrl) {
   const apps = Array.isArray(response.body?.result) ? response.body.result : [];
   const app = apps.find((candidate) => candidate.name === appName);
   if (app === undefined) {
-    return warnCheck("access_app", "Access app not found. `pnpm setup --apply` will create it.", { app_name: appName });
+    return warnCheck("access_app", "Access app not found. `pnpm run setup --apply` will create it.", { app_name: appName });
   }
   return passCheck("access_app", "Access app exists.", { app_id: app.id, expected_destination: withoutScheme(adminUrl) });
 }
@@ -655,6 +661,9 @@ Required:
 
 Apply flags (--apply):
   --allow-email <email>     Required at least once for the Access policy.
+  --allow-platform-hostnames
+                             Allow pages.dev/workers.dev admin URLs. Custom
+                             domains are strongly preferred.
   --d1-id <id>              Use existing D1 instead of creating.
   --kv-id <id>              Use existing KV namespace instead of creating.
   --relay-key-id <id>       RELAY_HMAC_KEY_ID (default rel_01).

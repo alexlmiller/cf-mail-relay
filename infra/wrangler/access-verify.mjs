@@ -5,12 +5,8 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 export const defaults = {
+  adminUrl: "",
   config: "worker/wrangler.toml",
-  // Same-origin setups should pass --pages-url and --worker-url pointing at
-  // the admin host (e.g. https://mail.example.com). The legacy defaults below
-  // remain as a starting point for the existing test fixtures.
-  pagesUrl: "https://cf-mail-relay-ui.pages.dev",
-  workerUrl: "https://cf-mail-relay-worker.milfred.workers.dev",
 };
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -29,6 +25,9 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   if (options.help) {
     return { ok: true, usage: usage() };
   }
+  if (options.adminUrl.length === 0) {
+    throw new Error("--admin-url is required, for example https://mail.example.com");
+  }
 
   const configText = await readFile(options.config, "utf8");
   const vars = parseWranglerVars(configText);
@@ -39,8 +38,8 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   const checks = [];
 
   checks.push(checkConfiguredValue("access_team_domain", teamDomain, ["your-team.cloudflareaccess.com", "REPLACE_WITH_ACCESS_TEAM_DOMAIN"]));
-  checks.push(checkConfiguredValue("access_audience", audience, ["REPLACE_WITH_ACCESS_APPLICATION_AUD", "REPLACE_WITH_ACCESS_APPLICATION_AUD"]));
-  checks.push(checkCorsOrigin(corsOrigin, options.pagesUrl));
+  checks.push(checkConfiguredValue("access_audience", audience, ["REPLACE_WITH_ACCESS_APPLICATION_AUD"]));
+  checks.push(checkAdminCorsOrigin(corsOrigin, options.adminUrl));
 
   if (checks.every((check) => check.status !== "fail")) {
     checks.push(await checkJwks(fetchImpl, teamDomain));
@@ -48,23 +47,27 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
     checks.push(skipCheck("access_jwks", "Access team domain or audience is not configured."));
   }
 
-  checks.push(await checkWorkerHealth(fetchImpl, options.workerUrl));
-  checks.push(await checkPagesArtifact(fetchImpl, options.pagesUrl, options.workerUrl, accessJwt));
-  checks.push(await checkUnauthenticatedAdminGate(fetchImpl, options.workerUrl, options.pagesUrl));
+  checks.push(await checkWorkerHealth(fetchImpl, options.adminUrl));
+  checks.push(await checkUnauthenticatedAccessGate(fetchImpl, options.adminUrl, "/", "ui_gate"));
+  checks.push(await checkUnauthenticatedAccessGate(fetchImpl, options.adminUrl, "/admin/api/session", "admin_api_gate"));
+  checks.push(await checkUnauthenticatedAccessGate(fetchImpl, options.adminUrl, "/self/api/session", "self_api_gate"));
+  checks.push(await checkUnauthenticatedWorkerRoute(fetchImpl, options.adminUrl, "/send", "send_public_path", { method: "POST", expectedError: "missing_api_key" }));
+  checks.push(await checkUnauthenticatedWorkerRoute(fetchImpl, options.adminUrl, "/relay/auth", "relay_auth_public_path", { method: "POST" }));
+  checks.push(await checkUnauthenticatedWorkerRoute(fetchImpl, options.adminUrl, "/bootstrap/admin", "bootstrap_public_path", { method: "POST", expectedError: "invalid_json" }));
 
   if (accessJwt !== undefined) {
-    checks.push(await checkAuthenticatedSession(fetchImpl, options.workerUrl, options.pagesUrl, accessJwt));
+    checks.push(await checkAuthenticatedUi(fetchImpl, options.adminUrl, accessJwt));
+    checks.push(await checkAuthenticatedSession(fetchImpl, options.adminUrl, accessJwt));
   } else if (options.requireAuthenticatedSession) {
-    checks.push(failCheck("authenticated_session", `Set --access-jwt-env to an environment variable containing a live Access JWT.`));
+    checks.push(failCheck("authenticated_session", "Set --access-jwt-env to an environment variable containing a live Access JWT."));
   } else {
-    checks.push(warnCheck("authenticated_session", `Set --access-jwt-env to verify a live Access-authenticated /admin/api/session response.`));
+    checks.push(warnCheck("authenticated_session", "Set --access-jwt-env to verify the protected UI and /admin/api/session."));
   }
 
   return {
     ok: checks.every((check) => check.status !== "fail"),
     checked_at: new Date().toISOString(),
-    worker_url: options.workerUrl,
-    pages_url: options.pagesUrl,
+    admin_url: options.adminUrl,
     config: options.config,
     checks,
   };
@@ -89,20 +92,19 @@ export function parseArgs(args, fail = throwUsageError) {
       case "--require-authenticated-session":
         parsed.requireAuthenticatedSession = true;
         break;
+      case "--admin-url":
+      case "--pages-url":
+      case "--worker-url":
+        parsed.adminUrl = trimTrailingSlash(takeValue(args, ++index, arg, fail));
+        break;
       case "--audience":
         parsed.audience = takeValue(args, ++index, arg, fail);
         break;
       case "--config":
         parsed.config = takeValue(args, ++index, arg, fail);
         break;
-      case "--pages-url":
-        parsed.pagesUrl = trimTrailingSlash(takeValue(args, ++index, arg, fail));
-        break;
       case "--team-domain":
         parsed.teamDomain = stripScheme(trimTrailingSlash(takeValue(args, ++index, arg, fail)));
-        break;
-      case "--worker-url":
-        parsed.workerUrl = trimTrailingSlash(takeValue(args, ++index, arg, fail));
         break;
       case "--help":
       case "-h":
@@ -150,14 +152,17 @@ function checkConfiguredValue(name, value, placeholders) {
   return passCheck(name, `${name} is configured.`, { value });
 }
 
-function checkCorsOrigin(corsOrigin, pagesUrl) {
+function checkAdminCorsOrigin(corsOrigin, adminUrl) {
   if (corsOrigin.length === 0) {
-    return failCheck("admin_cors_origin", "ADMIN_CORS_ORIGIN is empty.");
+    return passCheck("admin_cors_origin", "ADMIN_CORS_ORIGIN is unset; Worker will trust its own same-origin URL.");
   }
-  if (trimTrailingSlash(corsOrigin) !== trimTrailingSlash(pagesUrl)) {
-    return failCheck("admin_cors_origin", "ADMIN_CORS_ORIGIN does not match the Pages URL.", { configured: corsOrigin, expected: pagesUrl });
+  if (corsOrigin === "*") {
+    return failCheck("admin_cors_origin", "ADMIN_CORS_ORIGIN must not be '*'.");
   }
-  return passCheck("admin_cors_origin", "ADMIN_CORS_ORIGIN matches the Pages URL.", { origin: corsOrigin });
+  if (trimTrailingSlash(corsOrigin) !== trimTrailingSlash(adminUrl)) {
+    return failCheck("admin_cors_origin", "ADMIN_CORS_ORIGIN does not match the admin URL.", { configured: corsOrigin, expected: adminUrl });
+  }
+  return passCheck("admin_cors_origin", "ADMIN_CORS_ORIGIN matches the admin URL.", { origin: corsOrigin });
 }
 
 async function checkJwks(fetchImpl, teamDomain) {
@@ -172,75 +177,76 @@ async function checkJwks(fetchImpl, teamDomain) {
   return passCheck("access_jwks", "Access JWKS is reachable and contains signing keys.", { key_count: keys.length });
 }
 
-async function checkWorkerHealth(fetchImpl, workerUrl) {
-  const response = await fetchText(fetchImpl, `${workerUrl}/healthz`, { method: "GET", headers: { accept: "application/json" } });
+async function checkWorkerHealth(fetchImpl, adminUrl) {
+  const response = await fetchText(fetchImpl, `${adminUrl}/healthz`, { method: "GET", redirect: "manual", headers: { accept: "application/json" } });
+  if (isRedirect(response)) {
+    return failCheck("worker_healthz", "Worker /healthz was intercepted by Access; /healthz must remain outside the Access app.", redirectDetails(response));
+  }
   if (!response.ok || response.body?.ok !== true) {
-    return failCheck("worker_healthz", `Worker /healthz failed with HTTP ${response.status}.`, response.body);
+    return failCheck("worker_healthz", `Worker /healthz failed with HTTP ${response.status}.`, response.body ?? response.text);
   }
-  return passCheck("worker_healthz", "Worker /healthz is healthy.", { version: response.body.version, git_sha: response.body.git_sha });
+  return passCheck("worker_healthz", "Worker /healthz is healthy and not Access-gated.", { version: response.body.version, git_sha: response.body.git_sha });
 }
 
-async function checkPagesArtifact(fetchImpl, pagesUrl, workerUrl, accessJwt) {
-  const headers = { accept: "text/html" };
-  if (accessJwt !== undefined) {
-    headers["cf-access-jwt-assertion"] = accessJwt;
-    headers.cookie = `CF_Authorization=${accessJwt}`;
-  }
-  const response = await fetchText(fetchImpl, pagesUrl, { method: "GET", redirect: "manual", headers });
-  const location = response.headers.get("location") ?? "";
-  if (response.status >= 300 && response.status < 400 && location.length > 0) {
-    if (accessJwt !== undefined) {
-      return failCheck("pages_artifact", "Pages URL still redirected with the provided Access JWT.", { status: response.status, location });
-    }
-    return passCheck("pages_artifact", "Pages URL is protected by Cloudflare Access before serving the artifact.", { status: response.status, location });
-  }
-  if (!response.ok) {
-    return failCheck("pages_artifact", `Pages fetch failed with HTTP ${response.status}.`, response.text);
-  }
-  if (!response.text.includes(workerUrl)) {
-    return failCheck("pages_artifact", "Pages artifact does not contain the configured Worker URL.", { worker_url: workerUrl });
-  }
-  return passCheck("pages_artifact", "Pages artifact points at the configured Worker URL.", { worker_url: workerUrl });
-}
-
-async function checkUnauthenticatedAdminGate(fetchImpl, workerUrl, pagesUrl) {
-  const response = await fetchText(fetchImpl, `${workerUrl}/admin/api/session`, {
+async function checkUnauthenticatedAccessGate(fetchImpl, adminUrl, path, name) {
+  const response = await fetchText(fetchImpl, `${adminUrl}${path}`, {
     method: "GET",
     redirect: "manual",
-    headers: {
-      accept: "application/json,text/html",
-      origin: pagesUrl,
-    },
+    headers: { accept: "application/json,text/html", origin: adminUrl },
   });
-  const location = response.headers.get("location") ?? "";
-  if (response.status >= 300 && response.status < 400 && location.length > 0) {
-    return passCheck("unauthenticated_admin_gate", "Unauthenticated admin request was redirected before reaching the Worker.", {
-      status: response.status,
-      location,
-    });
+  if (isRedirect(response)) {
+    return passCheck(name, `${path} is protected by Cloudflare Access.`, redirectDetails(response));
   }
   if (response.body?.error === "missing_access_jwt") {
-    return failCheck("unauthenticated_admin_gate", "Worker returned missing_access_jwt directly; Cloudflare Access is not enforcing the admin API yet.", {
-      status: response.status,
-    });
+    return failCheck(name, `${path} reached the Worker without an Access JWT; Cloudflare Access is not enforcing this path.`, { status: response.status });
   }
   if (response.status === 401 || response.status === 403) {
-    return passCheck("unauthenticated_admin_gate", "Unauthenticated admin request was blocked before a Worker JSON session response.", {
-      status: response.status,
-    });
+    return passCheck(name, `${path} was blocked before a Worker session response.`, { status: response.status });
   }
-  return failCheck("unauthenticated_admin_gate", `Unexpected unauthenticated admin response HTTP ${response.status}.`, response.body ?? response.text);
+  return failCheck(name, `${path} was reachable without Cloudflare Access.`, { status: response.status, body: response.body ?? response.text.slice(0, 200) });
 }
 
-async function checkAuthenticatedSession(fetchImpl, workerUrl, pagesUrl, jwt) {
-  const response = await fetchText(fetchImpl, `${workerUrl}/admin/api/session`, {
+async function checkUnauthenticatedWorkerRoute(fetchImpl, adminUrl, path, name, options) {
+  const response = await fetchText(fetchImpl, `${adminUrl}${path}`, {
+    method: options.method,
+    redirect: "manual",
+    headers: { accept: "application/json" },
+  });
+  if (isRedirect(response)) {
+    return failCheck(name, `${path} was intercepted by Access; this route must remain outside the Access app.`, redirectDetails(response));
+  }
+  if (options.expectedError !== undefined && response.body?.error !== options.expectedError) {
+    return failCheck(name, `${path} did not return the expected Worker auth error.`, { expected_error: options.expectedError, status: response.status, body: response.body ?? response.text });
+  }
+  if (response.status >= 400 && response.status < 500) {
+    return passCheck(name, `${path} reached the Worker and returned its own auth/validation response.`, { status: response.status, error: response.body?.error ?? null });
+  }
+  return failCheck(name, `${path} returned unexpected HTTP ${response.status}.`, response.body ?? response.text);
+}
+
+async function checkAuthenticatedUi(fetchImpl, adminUrl, jwt) {
+  const response = await fetchText(fetchImpl, adminUrl, {
     method: "GET",
-    headers: {
-      accept: "application/json",
-      "cf-access-jwt-assertion": jwt,
-      cookie: `CF_Authorization=${jwt}`,
-      origin: pagesUrl,
-    },
+    redirect: "manual",
+    headers: accessHeaders(jwt, "text/html", adminUrl),
+  });
+  if (isRedirect(response)) {
+    return failCheck("authenticated_ui", "Admin UI still redirected with the provided Access JWT.", redirectDetails(response));
+  }
+  if (!response.ok) {
+    return failCheck("authenticated_ui", `Admin UI fetch failed with HTTP ${response.status}.`, response.text);
+  }
+  if (!response.text.includes('id="app"')) {
+    return failCheck("authenticated_ui", "Admin UI response did not look like the built app shell.", response.text.slice(0, 200));
+  }
+  return passCheck("authenticated_ui", "Admin UI served the app shell with the provided Access JWT.");
+}
+
+async function checkAuthenticatedSession(fetchImpl, adminUrl, jwt) {
+  const response = await fetchText(fetchImpl, `${adminUrl}/admin/api/session`, {
+    method: "GET",
+    redirect: "manual",
+    headers: accessHeaders(jwt, "application/json", adminUrl),
   });
   if (!response.ok || response.body?.ok !== true) {
     return failCheck("authenticated_session", `Authenticated /admin/api/session failed with HTTP ${response.status}.`, response.body ?? response.text);
@@ -249,6 +255,15 @@ async function checkAuthenticatedSession(fetchImpl, workerUrl, pagesUrl, jwt) {
     user_id: response.body.user?.id,
     email: response.body.user?.email,
   });
+}
+
+function accessHeaders(jwt, accept, origin) {
+  return {
+    accept,
+    "cf-access-jwt-assertion": jwt,
+    cookie: `CF_Authorization=${jwt}`,
+    origin,
+  };
 }
 
 async function fetchText(fetchImpl, url, init) {
@@ -272,6 +287,14 @@ function parseJsonOrNull(text) {
   } catch {
     return null;
   }
+}
+
+function isRedirect(response) {
+  return response.status >= 300 && response.status < 400 && (response.headers.get("location") ?? "").length > 0;
+}
+
+function redirectDetails(response) {
+  return { status: response.status, location: response.headers.get("location") ?? "" };
 }
 
 function passCheck(name, message, details = {}) {
@@ -307,17 +330,18 @@ function stripScheme(value) {
 }
 
 function usage() {
-  return `Usage: node infra/wrangler/access-verify.mjs [options]
+  return `Usage: node infra/wrangler/access-verify.mjs --admin-url https://mail.example.com [options]
 
-Verifies the Cloudflare Access gate from local config and live endpoints.
+Verifies the same-origin Cloudflare Access gate from local config and live endpoints.
 
 Options:
   --config <path>            wrangler.toml path (default: worker/wrangler.toml)
-  --pages-url <url>          Pages UI URL (default: https://cf-mail-relay-ui.pages.dev)
-  --worker-url <url>         Worker URL (default: https://cf-mail-relay-worker.milfred.workers.dev)
+  --admin-url <url>          Admin UI + API origin, e.g. https://mail.example.com
+  --pages-url <url>          Legacy alias for --admin-url
+  --worker-url <url>         Legacy alias for --admin-url
   --team-domain <domain>     Override ACCESS_TEAM_DOMAIN from wrangler.toml
   --audience <aud>           Override ACCESS_AUDIENCE from wrangler.toml
-  --access-jwt-env <name>    Optional env var containing an Access JWT or CF_Authorization cookie value for /admin/api/session
+  --access-jwt-env <name>    Optional env var containing an Access JWT or CF_Authorization cookie value
   --require-authenticated-session
                              Fail unless --access-jwt-env is set and /admin/api/session passes
 `;

@@ -12,7 +12,7 @@ This is a release-ready SMTP-to-Cloudflare-Email-Sending bridge:
   `worker/public/`). Same-origin admin — no separate Pages project.
 - `ui/`: Astro source for the admin UI. Builds into `worker/public/`.
 - `shared/`: shared TypeScript contracts.
-- `infra/`: setup wizard (`pnpm setup --apply`), OpenTofu reference module,
+- `infra/`: setup wizard (`pnpm run setup --apply`), OpenTofu reference module,
   Cloudflare Access helpers, HMAC rotation, doctor scripts, and Docker
   relay deployment templates.
 

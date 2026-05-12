@@ -36,13 +36,13 @@ id = "kv"
       {
         ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
         ACCESS_AUDIENCE: "aud_123",
-        ADMIN_CORS_ORIGIN: "https://cf-mail-relay-ui.pages.dev",
+        ADMIN_CORS_ORIGIN: "https://admin.example.com",
       },
     );
 
     assert.match(updated, /ACCESS_TEAM_DOMAIN = "team\.cloudflareaccess\.com"/);
     assert.match(updated, /ACCESS_AUDIENCE = "aud_123"/);
-    assert.match(updated, /ADMIN_CORS_ORIGIN = "https:\/\/cf-mail-relay-ui\.pages\.dev" # keep comment/);
+    assert.match(updated, /ADMIN_CORS_ORIGIN = "https:\/\/admin\.example\.com" # keep comment/);
     assert.match(updated, /\[\[kv_namespaces\]\]\nid = "kv"/);
   });
 
@@ -57,13 +57,13 @@ binding = "D1_MAIN"
       {
         ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
         ACCESS_AUDIENCE: "aud_123",
-        ADMIN_CORS_ORIGIN: "https://cf-mail-relay-ui.pages.dev",
+        ADMIN_CORS_ORIGIN: "https://admin.example.com",
       },
     );
 
     assert.match(
       updated,
-      /REQUIRED_D1_SCHEMA_VERSION = "1"\nACCESS_TEAM_DOMAIN = "team\.cloudflareaccess\.com"\nACCESS_AUDIENCE = "aud_123"\nADMIN_CORS_ORIGIN = "https:\/\/cf-mail-relay-ui\.pages\.dev"\n\n\[\[d1_databases\]\]/,
+      /REQUIRED_D1_SCHEMA_VERSION = "1"\nACCESS_TEAM_DOMAIN = "team\.cloudflareaccess\.com"\nACCESS_AUDIENCE = "aud_123"\nADMIN_CORS_ORIGIN = "https:\/\/admin\.example\.com"\n\n\[\[d1_databases\]\]/,
     );
   });
 
@@ -74,13 +74,13 @@ binding = "D1_MAIN"
     await writeFile(config, `[vars]\nACCESS_TEAM_DOMAIN = "old.cloudflareaccess.com"\nACCESS_AUDIENCE = "old_aud"\n`);
     await writeFile(json, JSON.stringify({ access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_123" }));
 
-    const result = await run(["--config", config, "--json", json, "--pages-url", "https://cf-mail-relay-ui.pages.dev/"]);
+    const result = await run(["--config", config, "--json", json, "--pages-url", "https://admin.example.com/"]);
     const written = await readFile(config, "utf8");
 
     assert.equal(result.changed, true);
     assert.match(written, /ACCESS_TEAM_DOMAIN = "team\.cloudflareaccess\.com"/);
     assert.match(written, /ACCESS_AUDIENCE = "aud_123"/);
-    assert.match(written, /ADMIN_CORS_ORIGIN = "https:\/\/cf-mail-relay-ui\.pages\.dev"/);
+    assert.match(written, /ADMIN_CORS_ORIGIN = "https:\/\/admin\.example\.com"/);
   });
 
   it("does not write in dry-run mode", async () => {

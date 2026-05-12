@@ -68,64 +68,62 @@ pnpm install
 wrangler login
 ```
 
-Run the setup preflight. Repeat `--domain` for every sending domain:
+Print the setup plan. Repeat `--domain` for every sending domain:
 
 ```sh
-pnpm run setup --account-id <cloudflare-account-id> --domain example.com --dry-run
+pnpm run setup \
+  --account-id <cloudflare-account-id> \
+  --admin-url https://mail.example.com \
+  --domain example.com \
+  --dry-run
 ```
 
 Use `pnpm run setup`, not bare `pnpm setup`; pnpm reserves the bare command for
 its own shell setup helper.
 
-Create and bind the Cloudflare resources:
+Run a live preflight without mutating Cloudflare:
 
 ```sh
-pnpm --dir worker exec wrangler d1 create cf-mail-relay
-pnpm --dir worker exec wrangler kv namespace create cf-mail-relay-hot
-cp worker/wrangler.toml.example worker/wrangler.toml
-```
-
-Paste the D1/KV IDs into `worker/wrangler.toml`, then apply migrations and set
-secrets:
-
-```sh
-pnpm --dir worker exec wrangler d1 migrations apply cf-mail-relay --remote
-pnpm --dir worker exec wrangler secret put CF_API_TOKEN
-pnpm --dir worker exec wrangler secret put CREDENTIAL_PEPPER
-pnpm --dir worker exec wrangler secret put METADATA_PEPPER
-pnpm --dir worker exec wrangler secret put RELAY_HMAC_SECRET_CURRENT
-pnpm --dir worker exec wrangler secret put BOOTSTRAP_SETUP_TOKEN
-```
-
-Apply D1 migrations, including `0002_security_hardening.sql`, before deploying
-a newer Worker. `/healthz` checks the schema version and returns
-`schema_version_mismatch` until the database is at the version expected by the
-code.
-
-Edit `worker/wrangler.toml` so the `routes` block points at your admin
-hostname (e.g. `mail.example.com` on a Cloudflare-managed zone), then create
-the Cloudflare Access app for that hostname:
-
-```sh
-pnpm access:setup \
+pnpm run setup \
   --account-id <cloudflare-account-id> \
-  --allow-email <admin@example.com> \
-  --pages-url https://mail.example.com \
-  --apply-config worker/wrangler.toml
+  --admin-url https://mail.example.com \
+  --domain example.com
 ```
 
-Build the UI into the Worker's asset directory, then deploy the Worker:
+Create the Cloudflare resources, apply migrations, deploy the Worker, bootstrap
+the first admin, and write `RUNBOOK.md`:
 
 ```sh
-pnpm --filter @cf-mail-relay/ui build      # outputs to worker/public/
-pnpm --dir worker exec wrangler deploy
+pnpm run setup --apply \
+  --account-id <cloudflare-account-id> \
+  --admin-url https://mail.example.com \
+  --allow-email <admin@example.com> \
+  --domain example.com
 ```
 
-The Worker serves the admin UI from the same hostname as the API; no
-separate Pages project is involved.
+The wizard intentionally does **not** push its broad setup API token as the
+Worker runtime `CF_API_TOKEN`. After `--apply`, create a least-privilege
+Cloudflare API token with **Account -> Email Sending -> Edit**, then push it:
 
-Bootstrap the first admin user with `POST /bootstrap/admin`, then rotate or
-remove `BOOTSTRAP_SETUP_TOKEN`.
+```sh
+pnpm --dir worker exec wrangler secret put CF_API_TOKEN
+```
+
+Validate the same-origin Access gate:
+
+```sh
+pnpm access:verify --admin-url https://mail.example.com
+```
+
+The Worker serves the admin UI from the same hostname as the API; no separate
+Pages project is involved. The Access app must be path-scoped to `/`,
+`/_astro/*`, `/admin/api/*`, and `/self/api/*`. Do not put `/relay/*`, `/send`,
+`/bootstrap/admin`, or `/healthz` behind Access.
+
+Manual setup is still possible: copy `worker/wrangler.toml.example`, create D1
+and KV, apply all migrations before deploying, set secrets with `wrangler secret
+put`, build `ui/` into `worker/public/`, deploy the Worker, then bootstrap the
+first admin with `POST /bootstrap/admin`.
 
 ## DNS
 

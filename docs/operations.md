@@ -111,9 +111,9 @@ pnpm exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN
 
 The Worker has a scheduled handler (`crons = ["17 3 * * *"]` in
 `wrangler.toml`) that runs at 03:17 UTC and prunes expired
-`relay_nonces` rows. The cadence is intentionally off-cycle to avoid the top
-of every hour. Bump the schedule if you operate at scale and start seeing
-nonce-table growth between runs.
+`relay_nonces` and `idempotency_keys` rows. The cadence is intentionally
+off-cycle to avoid the top of every hour. Bump the schedule if you operate at
+scale and start seeing table growth between runs.
 
 ## Schema migrations
 

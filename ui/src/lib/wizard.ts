@@ -1,6 +1,6 @@
 // "Set up sender" wizard — strings user creation, sender allowlist, and a
 // fresh SMTP credential into one continuous flow. This is the canonical path
-// admins should take when on-boarding a new person to "Send mail as".
+// admins should take when on-boarding a person or application for SMTP sending.
 
 import { api, describeError } from "./api";
 import { h, icon, setChildren } from "./dom";
@@ -77,7 +77,7 @@ export async function runUserWizard(init: WizardInit) {
       return h(
         "div",
         { class: "row-between flex-fill" },
-        h("span", { class: "soft", style: "font-size: 12px" }, "All set up"),
+        h("span", { class: "soft", style: "font-size: 12px" }, state.domain?.status === "verified" ? "All set up" : "Verify domain before first send"),
         h(
           "button",
           {
@@ -493,24 +493,24 @@ export async function runUserWizard(init: WizardInit) {
     const sender = state.senderEmail ?? "";
     const credential = state.credential;
     if (!credential) return h("div", null, "No credential created.");
+    const domainVerified = state.domain?.status === "verified";
     return h(
       "div",
       { class: "stack", style: "gap: 14px" },
       h(
         "div",
-        { class: "banner ok" },
-        icon("check", 14),
+        { class: `banner ${domainVerified ? "ok" : "warn"}` },
+        icon(domainVerified ? "check" : "warn", 14),
         h(
           "div",
           null,
-          h("strong", null, "Sender ready."),
+          h("strong", null, domainVerified ? "Sender ready." : "Credential created."),
           h(
             "div",
             { class: "soft", style: "font-size: 12.5px; margin-top: 2px" },
-            user,
-            " can now send as ",
+            domainVerified ? `${user} can now send as ` : `${user} can send as `,
             h("span", { class: "mono" }, sender),
-            ".",
+            domainVerified ? "." : " after the domain is verified for Cloudflare Email Sending.",
           ),
         ),
       ),
@@ -521,7 +521,9 @@ export async function runUserWizard(init: WizardInit) {
           { label: "SMTP host", value: "your relay's hostname, port 587, STARTTLS" },
         ],
         secret: credential.secret,
-        warning: "Save this SMTP password now. It will not be shown again.",
+        warning: domainVerified
+          ? "Save this SMTP password now. It will not be shown again."
+          : "Save this SMTP password now. It will not be shown again. Sending will fail until the domain is verified.",
       }),
       h(
         "div",
@@ -565,7 +567,9 @@ export async function runUserWizard(init: WizardInit) {
       case 3:
         return "Mint the SMTP password. Use the username + secret in your SMTP client or application.";
       case 4:
-        return "All set — copy the secret now, it cannot be retrieved later.";
+        return state.domain?.status === "verified"
+          ? "All set — copy the secret now, it cannot be retrieved later."
+          : "Copy the secret now. The credential is stored, but sending waits on domain verification.";
       default:
         return "";
     }

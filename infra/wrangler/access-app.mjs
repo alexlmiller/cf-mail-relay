@@ -120,6 +120,9 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   if (config.email.length === 0) {
     failImpl("at least one --allow-email is required");
   }
+  if (!isHttpsOrigin(config.pagesUrl)) {
+    failImpl("--pages-url is required and must be an HTTPS origin, for example https://mail.example.com");
+  }
   // Same-origin model: workerUrl defaults to the admin host. Warn if the
   // caller passed --worker-url with a different value (legacy two-origin
   // setup — supported by setting ADMIN_CORS_ORIGIN, but not the default).
@@ -244,6 +247,15 @@ function findPlatformHostnames(urls) {
 
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, "");
+}
+
+function isHttpsOrigin(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.pathname === "/" && url.search === "" && url.hash === "";
+  } catch {
+    return false;
+  }
 }
 
 function usage(code) {

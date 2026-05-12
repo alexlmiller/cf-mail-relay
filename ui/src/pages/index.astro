@@ -15,21 +15,6 @@ import "../styles/global.css";
     <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin />
     <link rel="stylesheet" href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600&display=swap" />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" />
-    <script is:inline>
-      (function () {
-        try {
-          var stored = localStorage.getItem("cfmr-theme");
-          var root = document.documentElement;
-          if (stored === "light" || stored === "dark") {
-            root.dataset.theme = stored;
-          } else {
-            var prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-            root.dataset.theme = prefersDark ? "dark" : "light";
-            if (stored !== "auto") localStorage.setItem("cfmr-theme", "auto");
-          }
-        } catch (e) {}
-      })();
-    </script>
   </head>
   <body>
     <div id="app">
