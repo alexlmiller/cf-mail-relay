@@ -21,10 +21,12 @@ The project has two deployable pieces:
 - A Go SMTP relay you run on a public Docker host.
 
 Most of the stack runs on Cloudflare. The SMTP relay is the exception: SMTP
-clients need a public raw TCP listener on port `587`, which Cloudflare
-Workers/Containers do not currently provide. Run the relay anywhere you
-already operate Docker, or on a small public VM such as a GCP free-tier
-eligible `e2-micro` instance in one of Google's supported free-tier regions.
+clients need a raw TCP listener on port `587`, which Cloudflare
+Workers/Containers do not currently provide. That listener only needs to be
+reachable from your SMTP clients; it can be public for Gmail-style send-as
+workflows or private for internal applications. Run the relay anywhere you
+already operate Docker, or on a small VM such as a GCP free-tier eligible
+`e2-micro` instance in one of Google's supported free-tier regions.
 
 ```mermaid
 flowchart LR
@@ -79,9 +81,12 @@ resources are changed.
   relay's control plane.
 - Each sending domain must use Cloudflare DNS and have Cloudflare Email Sending
   enabled and verified.
-- A Docker host reachable on TCP `587` for the SMTP relay. This can be existing
-  infrastructure or a small VM such as a GCP free-tier eligible `e2-micro`
-  instance. Check the provider's current free-tier region and egress limits.
+- A Docker host reachable on TCP `587` from the clients or services that will
+  submit mail. It only needs to be public if public clients such as Gmail need
+  to connect to it; for private applications, it can live behind your firewall
+  or on an internal network. This can be existing infrastructure or a small VM
+  such as a GCP free-tier eligible `e2-micro` instance. Check the provider's
+  current free-tier region and egress limits.
 - Local `pnpm`, `wrangler`, and `docker`.
 
 ## Setup
