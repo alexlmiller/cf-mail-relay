@@ -40,6 +40,19 @@ flowchart LR
 - Multi-domain sending from one Cloudflare account.
 - Metadata-only audit log, idempotency, quotas, and basic operational doctors.
 
+## Demo
+
+Try the admin UI without connecting it to Cloudflare:
+
+```text
+https://relay-demo.alexmiller.net
+```
+
+The demo uses the real UI with an in-browser mock API and sample data. Actions
+such as creating credentials, refreshing domains, rolling API keys, and opening
+event drawers are simulated locally; no email is sent and no Cloudflare
+resources are changed.
+
 ## What It Does Not Do
 
 - No inbound email handling.

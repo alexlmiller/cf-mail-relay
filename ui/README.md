@@ -18,6 +18,8 @@ file (security headers including the CSP) is copied during build.
 
 - `/` — dashboard, domains, allowed senders, SMTP credentials, users, API
   keys, send events, and auth failures. All admin actions on `/admin/api/*`.
+- `/demo` — public click-through demo. It installs an in-browser mock API
+  before booting the same app shell; no Worker API calls are made.
 - `/#/me` — same-origin self-service for any signed-in user (admins + sender
   role). Calls `/self/api/*`.
 
