@@ -18,11 +18,16 @@
     "access:verify": "node infra/wrangler/access-verify.mjs",
     "rotate:hmac": "node infra/wrangler/rotate-hmac.mjs",
     "doctor:local": "bash infra/setup/doctor-local.sh",
-    "doctor:delivery": "bash infra/setup/doctor-delivery.sh"
+    "doctor:delivery": "bash infra/setup/doctor-delivery.sh",
+    "screenshots": "tsx infra/screenshots/capture.ts"
   },
   "workspaces": [
     "worker",
     "ui",
     "shared"
-  ]
+  ],
+  "devDependencies": {
+    "playwright": "^1.60.0",
+    "tsx": "^4.21.0"
+  }
 }

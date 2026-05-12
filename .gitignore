@@ -68,3 +68,6 @@ test-results/
 
 # Local doctor outputs
 infra/setup/*.log
+
+# Screenshot staging — only docs/images/ is committed
+infra/screenshots/out/
