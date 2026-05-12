@@ -6,6 +6,12 @@ or any SMTP-capable client that needs authenticated outbound mail.
 
 ![Admin dashboard — service health, ops actions, recent send activity](docs/images/01-dashboard.png)
 
+[Live demo: explore the admin UI with sample data](https://relay-demo.alexmiller.net)
+
+The demo uses the real UI with an in-browser mock API. You can click through
+domains, senders, users, credentials, API keys, and events without sending mail
+or changing Cloudflare resources.
+
 The project has two deployable pieces:
 
 - A Cloudflare Worker that enforces policy, calls Email Sending `send_raw`, and
