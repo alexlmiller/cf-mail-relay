@@ -136,6 +136,55 @@ function paint(root: HTMLElement, senders: Sender[], domains: Domain[], users: U
         render: (row) => copyable({ value: row.id, display: row.id.slice(0, 12), title: row.id }),
         width: 150,
       },
+      {
+        key: "actions",
+        label: "",
+        render: (row) => {
+          const enabled = row.enabled === 1;
+          return h(
+            "div",
+            { class: "row", style: "gap: 4px; justify-content: flex-end" },
+            h(
+              "button",
+              {
+                type: "button",
+                class: "btn ghost sm",
+                "on:click": async (event: Event) => {
+                  event.stopPropagation();
+                  try {
+                    await api.updateSender(row.id, { enabled: !enabled });
+                    toast(`${row.email} ${enabled ? "disabled" : "enabled"}`);
+                    await renderSenders(root);
+                  } catch (error) {
+                    toast(describeError(error, "Could not update sender"), "err");
+                  }
+                },
+              },
+              enabled ? "Disable" : "Enable",
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                class: "btn ghost sm danger",
+                "on:click": async (event: Event) => {
+                  event.stopPropagation();
+                  if (!confirm(`Remove ${row.email} from ${row.domain}? This is immediate and cannot be undone.`)) return;
+                  try {
+                    await api.deleteSender(row.id);
+                    toast(`${row.email} removed`);
+                    await renderSenders(root);
+                  } catch (error) {
+                    toast(describeError(error, "Could not delete sender"), "err");
+                  }
+                },
+              },
+              "Remove",
+            ),
+          );
+        },
+        width: 160,
+      },
     ],
     rows: senders,
     defaultSort: { key: "created", dir: "desc" },

@@ -155,6 +155,19 @@ function paint(root: HTMLElement, credentials: SmtpCredential[], users: User[], 
                   {
                     type: "button",
                     class: "btn ghost sm",
+                    title: "Rename this credential",
+                    "on:click": (event: Event) => {
+                      event.stopPropagation();
+                      openRenameCredential(row, () => renderCredentials(root));
+                    },
+                  },
+                  "Edit",
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "btn ghost sm",
                     title: "Generate a new secret on this same credential",
                     "on:click": async (event: Event) => {
                       event.stopPropagation();
@@ -189,7 +202,7 @@ function paint(root: HTMLElement, credentials: SmtpCredential[], users: User[], 
                   "Revoke",
                 ),
               ),
-        width: 150,
+        width: 200,
       },
     ],
     rows: credentials,
@@ -349,6 +362,41 @@ export function openNewCredential(users: User[], senders: Sender[], onCreated: (
 
   openModal({
     title: "New SMTP credential",
+    body: form,
+    footer: h("div", { class: "row-between flex-fill" }, cancel, submit),
+  });
+}
+
+export function openRenameCredential(credential: SmtpCredential, onSaved: () => void) {
+  const { form, setBanner, busy } = buildForm(
+    [
+      {
+        name: "name",
+        label: "Label",
+        required: true,
+        value: credential.name,
+        hint: "For your reference — never sent over the wire.",
+      },
+    ],
+    async (raw) => {
+      setBanner(null);
+      busy(true);
+      try {
+        await api.updateSmtpCredential(credential.id, { name: raw.name });
+        toast("Credential renamed");
+        closeModal();
+        onSaved();
+      } catch (error) {
+        setBanner(describeError(error, "Could not rename credential."));
+        busy(false);
+      }
+    },
+  );
+  const submit = h("button", { type: "submit", class: "btn primary" }, "Save");
+  const cancel = h("button", { type: "button", class: "btn ghost", "on:click": () => closeModal() }, "Cancel");
+  submit.addEventListener("click", () => form.requestSubmit());
+  openModal({
+    title: `Edit ${credential.username}`,
     body: form,
     footer: h("div", { class: "row-between flex-fill" }, cancel, submit),
   });

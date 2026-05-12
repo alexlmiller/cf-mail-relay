@@ -162,6 +162,19 @@ function paint(root: HTMLElement, keys: ApiKey[], users: User[], senders: Sender
                   {
                     type: "button",
                     class: "btn ghost sm",
+                    title: "Rename this API key",
+                    "on:click": (event: Event) => {
+                      event.stopPropagation();
+                      openRenameApiKey(row, () => renderApiKeys(root));
+                    },
+                  },
+                  "Edit",
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    class: "btn ghost sm",
                     title: "Generate a new bearer token on this same key",
                     "on:click": async (event: Event) => {
                       event.stopPropagation();
@@ -196,7 +209,7 @@ function paint(root: HTMLElement, keys: ApiKey[], users: User[], senders: Sender
                   "Revoke",
                 ),
               ),
-        width: 150,
+        width: 200,
       },
     ],
     rows: keys,
@@ -323,6 +336,41 @@ export function openNewApiKey(users: User[], senders: Sender[], onCreated: (id: 
 
   openModal({
     title: "New API key",
+    body: form,
+    footer: h("div", { class: "row-between flex-fill" }, cancel, submit),
+  });
+}
+
+export function openRenameApiKey(key: ApiKey, onSaved: () => void) {
+  const { form, setBanner, busy } = buildForm(
+    [
+      {
+        name: "name",
+        label: "Label",
+        required: true,
+        value: key.name,
+        hint: "For your reference.",
+      },
+    ],
+    async (raw) => {
+      setBanner(null);
+      busy(true);
+      try {
+        await api.updateApiKey(key.id, { name: raw.name });
+        toast("API key renamed");
+        closeModal();
+        onSaved();
+      } catch (error) {
+        setBanner(describeError(error, "Could not rename API key."));
+        busy(false);
+      }
+    },
+  );
+  const submit = h("button", { type: "submit", class: "btn primary" }, "Save");
+  const cancel = h("button", { type: "button", class: "btn ghost", "on:click": () => closeModal() }, "Cancel");
+  submit.addEventListener("click", () => form.requestSubmit());
+  openModal({
+    title: `Edit ${key.name}`,
     body: form,
     footer: h("div", { class: "row-between flex-fill" }, cancel, submit),
   });

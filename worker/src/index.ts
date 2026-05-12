@@ -16,10 +16,16 @@ import {
   listSenders,
   listSmtpCredentials,
   listUsers,
+  deleteSender,
   revokeApiKey,
   revokeSmtpCredential,
   rollApiKey,
   rollSmtpCredential,
+  updateApiKey,
+  updateDomain,
+  updateSender,
+  updateSmtpCredential,
+  updateUser,
 } from "./admin";
 import { requireAdmin, requireAuthenticated } from "./access";
 import {
@@ -411,6 +417,26 @@ app.post("/admin/api/api-keys/:id/roll", async (c) =>
 );
 app.get("/admin/api/send-events", async (c) => adminJson(c, () => listSendEvents(c.env)));
 app.get("/admin/api/auth-failures", async (c) => adminJson(c, () => listAuthFailures(c.env)));
+
+// PATCH / DELETE — sparse updates and hard deletes for senders. All bump policy_version.
+app.patch("/admin/api/users/:id", async (c) =>
+  adminJson(c, async () => updateUser(c.env, c.req.param("id"), await readJsonObject(c.req.raw))),
+);
+app.patch("/admin/api/domains/:id", async (c) =>
+  adminJson(c, async () => updateDomain(c.env, c.req.param("id"), await readJsonObject(c.req.raw))),
+);
+app.patch("/admin/api/senders/:id", async (c) =>
+  adminJson(c, async () => updateSender(c.env, c.req.param("id"), await readJsonObject(c.req.raw))),
+);
+app.delete("/admin/api/senders/:id", async (c) =>
+  adminJson(c, async () => deleteSender(c.env, c.req.param("id"))),
+);
+app.patch("/admin/api/smtp-credentials/:id", async (c) =>
+  adminJson(c, async () => updateSmtpCredential(c.env, c.req.param("id"), await readJsonObject(c.req.raw))),
+);
+app.patch("/admin/api/api-keys/:id", async (c) =>
+  adminJson(c, async () => updateApiKey(c.env, c.req.param("id"), await readJsonObject(c.req.raw))),
+);
 
 // ───────────────────────── Self-service ─────────────────────────
 // Any authenticated, non-disabled user (admin or sender). All queries are
@@ -873,7 +899,7 @@ function setAdminCors(c: Context<{ Bindings: Env }>): void {
     c.header("access-control-allow-credentials", "true");
     c.header("vary", "Origin");
   }
-  c.header("access-control-allow-methods", "GET,POST,OPTIONS");
+  c.header("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
   c.header("access-control-allow-headers", "content-type");
   c.header("access-control-max-age", "600");
 }

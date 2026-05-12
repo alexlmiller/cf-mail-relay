@@ -281,6 +281,164 @@ export async function rollApiKey(env: Env, id: string): Promise<{ id: string; ke
   throw new Error("api_key_prefix_collision");
 }
 
+// ───────────────────────── Updates (PATCH endpoints) ─────────────────────────
+// Sparse semantics: only fields present in the body are updated.
+// All updates bump policy_version so KV credential caches miss on next read.
+
+export async function updateUser(env: Env, id: string, body: Record<string, unknown>): Promise<{ id: string }> {
+  const fields: string[] = [];
+  const params: unknown[] = [];
+  if ("display_name" in body) {
+    const value = body.display_name;
+    if (value === null) {
+      fields.push("display_name = NULL");
+    } else {
+      fields.push("display_name = ?");
+      params.push(requireString(value, "display_name"));
+    }
+  }
+  if ("role" in body) {
+    fields.push("role = ?");
+    params.push(requireRole(body.role));
+  }
+  if ("disabled_at" in body) {
+    const value = body.disabled_at;
+    if (value === null) {
+      fields.push("disabled_at = NULL");
+    } else if (value === true || value === "now") {
+      fields.push("disabled_at = ?");
+      params.push(nowSeconds());
+    } else if (typeof value === "number") {
+      fields.push("disabled_at = ?");
+      params.push(value);
+    } else {
+      throw new Error("invalid_disabled_at");
+    }
+  }
+  if (fields.length === 0) {
+    throw new Error("no_fields_to_update");
+  }
+  fields.push("updated_at = ?");
+  params.push(nowSeconds());
+  params.push(id);
+  const result = await env.D1_MAIN.prepare(`UPDATE users SET ${fields.join(", ")} WHERE id = ?`).bind(...params).run();
+  if (result.meta.changes === 0) {
+    throw new Error("user_not_found");
+  }
+  await bumpPolicyVersion(env);
+  return { id };
+}
+
+export async function updateDomain(env: Env, id: string, body: Record<string, unknown>): Promise<{ id: string }> {
+  const fields: string[] = [];
+  const params: unknown[] = [];
+  if ("enabled" in body) {
+    fields.push("enabled = ?");
+    params.push(body.enabled ? 1 : 0);
+  }
+  if ("status" in body) {
+    fields.push("status = ?");
+    params.push(statusOrDefault(body.status));
+  }
+  if ("cloudflare_zone_id" in body) {
+    const value = body.cloudflare_zone_id;
+    if (value === null || (typeof value === "string" && value.trim().length === 0)) {
+      fields.push("cloudflare_zone_id = NULL");
+    } else {
+      fields.push("cloudflare_zone_id = ?");
+      params.push(requireString(value, "cloudflare_zone_id"));
+    }
+  }
+  if (fields.length === 0) {
+    throw new Error("no_fields_to_update");
+  }
+  fields.push("updated_at = ?");
+  params.push(nowSeconds());
+  params.push(id);
+  const result = await env.D1_MAIN.prepare(`UPDATE domains SET ${fields.join(", ")} WHERE id = ?`).bind(...params).run();
+  if (result.meta.changes === 0) {
+    throw new Error("domain_not_found");
+  }
+  await bumpPolicyVersion(env);
+  return { id };
+}
+
+export async function updateSender(env: Env, id: string, body: Record<string, unknown>): Promise<{ id: string }> {
+  const fields: string[] = [];
+  const params: unknown[] = [];
+  if ("enabled" in body) {
+    fields.push("enabled = ?");
+    params.push(body.enabled ? 1 : 0);
+  }
+  if (fields.length === 0) {
+    throw new Error("no_fields_to_update");
+  }
+  fields.push("updated_at = ?");
+  params.push(nowSeconds());
+  params.push(id);
+  const result = await env.D1_MAIN.prepare(`UPDATE allowlisted_senders SET ${fields.join(", ")} WHERE id = ?`).bind(...params).run();
+  if (result.meta.changes === 0) {
+    throw new Error("sender_not_found");
+  }
+  await bumpPolicyVersion(env);
+  return { id };
+}
+
+export async function deleteSender(env: Env, id: string): Promise<{ deleted: true }> {
+  const result = await env.D1_MAIN.prepare("DELETE FROM allowlisted_senders WHERE id = ?").bind(id).run();
+  if (result.meta.changes === 0) {
+    throw new Error("sender_not_found");
+  }
+  await bumpPolicyVersion(env);
+  return { deleted: true };
+}
+
+export async function updateSmtpCredential(env: Env, id: string, body: Record<string, unknown>): Promise<{ id: string }> {
+  const fields: string[] = [];
+  const params: unknown[] = [];
+  if ("name" in body) {
+    fields.push("name = ?");
+    params.push(requireString(body.name, "name"));
+  }
+  if ("allowed_sender_ids" in body) {
+    fields.push("allowed_sender_ids_json = ?");
+    params.push(allowedSenderIdsJson(body.allowed_sender_ids));
+  }
+  if (fields.length === 0) {
+    throw new Error("no_fields_to_update");
+  }
+  params.push(id);
+  const result = await env.D1_MAIN.prepare(`UPDATE smtp_credentials SET ${fields.join(", ")} WHERE id = ?`).bind(...params).run();
+  if (result.meta.changes === 0) {
+    throw new Error("credential_not_found");
+  }
+  await bumpPolicyVersion(env);
+  return { id };
+}
+
+export async function updateApiKey(env: Env, id: string, body: Record<string, unknown>): Promise<{ id: string }> {
+  const fields: string[] = [];
+  const params: unknown[] = [];
+  if ("name" in body) {
+    fields.push("name = ?");
+    params.push(requireString(body.name, "name"));
+  }
+  if ("allowed_sender_ids" in body) {
+    fields.push("allowed_sender_ids_json = ?");
+    params.push(allowedSenderIdsJson(body.allowed_sender_ids));
+  }
+  if (fields.length === 0) {
+    throw new Error("no_fields_to_update");
+  }
+  params.push(id);
+  const result = await env.D1_MAIN.prepare(`UPDATE api_keys SET ${fields.join(", ")} WHERE id = ?`).bind(...params).run();
+  if (result.meta.changes === 0) {
+    throw new Error("api_key_not_found");
+  }
+  await bumpPolicyVersion(env);
+  return { id };
+}
+
 export async function listSendEvents(env: Env): Promise<unknown[]> {
   const result = await env.D1_MAIN.prepare(
     `SELECT id, ts, trace_id, source, user_id, credential_id, api_key_id, domain_id, envelope_from,

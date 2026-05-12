@@ -1,9 +1,11 @@
-import { api } from "../api";
+import { api, describeError } from "../api";
 import { h, icon, setChildren } from "../dom";
 import { copyable } from "../clipboard";
 import { recordRow, recordsFor } from "../dns";
 import { formatAbsolute } from "../format";
+import { buildForm, closeModal, openModal } from "../modal";
 import { domainStatusKind, pill } from "../status";
+import { toast } from "../toast";
 import { navigate } from "../router";
 import type { Domain, Sender } from "../types";
 
@@ -86,18 +88,54 @@ function paint(root: HTMLElement, domain: Domain, senders: Sender[]) {
     h(
       "div",
       { class: "spread" },
-      summaryCard(domain),
+      summaryCard(domain, root),
       dnsCard(domain),
       sendersCard(domain, senders),
     ),
   );
 }
 
-function summaryCard(domain: Domain): HTMLElement {
+function summaryCard(domain: Domain, root: HTMLElement): HTMLElement {
+  const enabled = domain.enabled === 1;
   return h(
     "div",
     { class: "card" },
-    h("div", { class: "card-head" }, h("h2", null, "Summary")),
+    h(
+      "div",
+      { class: "card-head" },
+      h("h2", null, "Summary"),
+      h(
+        "div",
+        { class: "row", style: "gap: 6px" },
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn ghost sm",
+            "on:click": () => openEditDomain(domain, () => renderDomainDetail(root, domain.id)),
+          },
+          "Edit",
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            class: enabled ? "btn ghost sm danger" : "btn ghost sm",
+            "on:click": async () => {
+              if (enabled && !confirm(`Disable ${domain.domain}? Active senders on this domain will be unable to send.`)) return;
+              try {
+                await api.updateDomain(domain.id, { enabled: !enabled });
+                toast(`${domain.domain} ${enabled ? "disabled" : "enabled"}`);
+                await renderDomainDetail(root, domain.id);
+              } catch (error) {
+                toast(describeError(error, "Could not update domain"), "err");
+              }
+            },
+          },
+          enabled ? "Disable" : "Enable",
+        ),
+      ),
+    ),
     h(
       "div",
       { class: "card-body" },
@@ -105,6 +143,7 @@ function summaryCard(domain: Domain): HTMLElement {
         "dl",
         { class: "dl" },
         h("dt", null, "Status"), h("dd", null, pill(domain.status, domainStatusKind(domain.status))),
+        h("dt", null, "Enabled"), h("dd", null, enabled ? pill("yes", "ok") : pill("no", "muted")),
         h("dt", null, "Domain"), h("dd", null, copyable({ value: domain.domain, display: domain.domain })),
         h("dt", null, "Zone ID"), h("dd", null, domain.cloudflare_zone_id ? copyable({ value: domain.cloudflare_zone_id }) : h("span", { class: "soft" }, "—")),
         h("dt", null, "DKIM"), h("dd", null, domain.dkim_status ? h("span", { class: "mono" }, domain.dkim_status) : h("span", { class: "soft" }, "—")),
@@ -115,6 +154,56 @@ function summaryCard(domain: Domain): HTMLElement {
       ),
     ),
   );
+}
+
+function openEditDomain(domain: Domain, onSaved: () => void): void {
+  const { form, setBanner, busy } = buildForm(
+    [
+      {
+        name: "status",
+        label: "Status",
+        kind: "select",
+        value: domain.status,
+        options: [
+          { value: "pending", label: "pending" },
+          { value: "verified", label: "verified" },
+          { value: "sandbox", label: "sandbox" },
+          { value: "disabled", label: "disabled" },
+        ],
+        hint: "Track what Cloudflare Email Sending reports for this domain.",
+      },
+      {
+        name: "cloudflare_zone_id",
+        label: "Cloudflare Zone ID",
+        value: domain.cloudflare_zone_id ?? "",
+        hint: "Optional — leave blank to clear.",
+      },
+    ],
+    async (raw) => {
+      setBanner(null);
+      busy(true);
+      try {
+        await api.updateDomain(domain.id, {
+          status: raw.status,
+          cloudflare_zone_id: raw.cloudflare_zone_id.trim().length === 0 ? null : raw.cloudflare_zone_id,
+        });
+        toast("Domain updated");
+        closeModal();
+        onSaved();
+      } catch (error) {
+        setBanner(describeError(error, "Could not update domain."));
+        busy(false);
+      }
+    },
+  );
+  const submit = h("button", { type: "submit", class: "btn primary" }, "Save");
+  const cancel = h("button", { type: "button", class: "btn ghost", "on:click": () => closeModal() }, "Cancel");
+  submit.addEventListener("click", () => form.requestSubmit());
+  openModal({
+    title: `Edit ${domain.domain}`,
+    body: form,
+    footer: h("div", { class: "row-between flex-fill" }, cancel, submit),
+  });
 }
 
 function dnsCard(domain: Domain): HTMLElement {

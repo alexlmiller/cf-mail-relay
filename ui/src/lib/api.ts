@@ -109,14 +109,22 @@ export const api = {
   listUsers: () => request<User[]>("/admin/api/users"),
   createUser: (body: { email: string; display_name?: string; role: "admin" | "sender" }) =>
     request<{ id: string }>("/admin/api/users", { method: "POST", body: JSON.stringify(body) }),
+  updateUser: (id: string, body: { display_name?: string | null; role?: "admin" | "sender"; disabled_at?: number | "now" | null }) =>
+    request<{ id: string }>(`/admin/api/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
 
   listDomains: () => request<Domain[]>("/admin/api/domains"),
   createDomain: (body: { domain: string; cloudflare_zone_id?: string; status?: string }) =>
     request<{ id: string }>("/admin/api/domains", { method: "POST", body: JSON.stringify(body) }),
+  updateDomain: (id: string, body: { enabled?: boolean; status?: string; cloudflare_zone_id?: string | null }) =>
+    request<{ id: string }>(`/admin/api/domains/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
 
   listSenders: () => request<Sender[]>("/admin/api/senders"),
   createSender: (body: { domain_id: string; email: string; user_id?: string }) =>
     request<{ id: string }>("/admin/api/senders", { method: "POST", body: JSON.stringify(body) }),
+  updateSender: (id: string, body: { enabled?: boolean }) =>
+    request<{ id: string }>(`/admin/api/senders/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteSender: (id: string) =>
+    request<{ deleted: true }>(`/admin/api/senders/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   listSmtpCredentials: () => request<SmtpCredential[]>("/admin/api/smtp-credentials"),
   createSmtpCredential: (body: { user_id: string; name: string; username: string; allowed_sender_ids?: string[] }) =>
@@ -131,6 +139,8 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  updateSmtpCredential: (id: string, body: { name?: string; allowed_sender_ids?: string[] | null }) =>
+    request<{ id: string }>(`/admin/api/smtp-credentials/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
 
   listApiKeys: () => request<ApiKey[]>("/admin/api/api-keys"),
   createApiKey: (body: { user_id: string; name: string; allowed_sender_ids?: string[] }) =>
@@ -145,6 +155,8 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  updateApiKey: (id: string, body: { name?: string; allowed_sender_ids?: string[] | null }) =>
+    request<{ id: string }>(`/admin/api/api-keys/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
 
   listSendEvents: () => request<SendEvent[]>("/admin/api/send-events"),
   listAuthFailures: () => request<AuthFailure[]>("/admin/api/auth-failures"),

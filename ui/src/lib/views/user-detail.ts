@@ -3,6 +3,7 @@ import type { Child } from "../dom";
 import { h, icon, setChildren } from "../dom";
 import { copyable } from "../clipboard";
 import { formatAbsolute, formatRelative, initialsFor } from "../format";
+import { buildForm, closeModal, openModal } from "../modal";
 import { pill } from "../status";
 import { toast } from "../toast";
 import { openNewSender } from "./senders";
@@ -125,19 +126,72 @@ function paint(root: HTMLElement, data: DetailData) {
     h(
       "div",
       { class: "spread" },
-      summaryCard(data.user),
-      sendersCard(data),
+      summaryCard(data.user, root),
+      sendersCard(data, root),
       credentialsCard(data, root),
       apiKeysCard(data, root),
     ),
   );
 }
 
-function summaryCard(user: User): HTMLElement {
+function summaryCard(user: User, root: HTMLElement): HTMLElement {
   return h(
     "div",
     { class: "card" },
-    h("div", { class: "card-head" }, h("h2", null, "Profile")),
+    h(
+      "div",
+      { class: "card-head" },
+      h("h2", null, "Profile"),
+      h(
+        "div",
+        { class: "row", style: "gap: 6px" },
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn ghost sm",
+            "on:click": () => openEditUser(user, () => renderUserDetail(root, user.id)),
+          },
+          "Edit",
+        ),
+        user.disabled_at
+          ? h(
+              "button",
+              {
+                type: "button",
+                class: "btn ghost sm",
+                "on:click": async () => {
+                  try {
+                    await api.updateUser(user.id, { disabled_at: null });
+                    toast(`${user.email} re-enabled`);
+                    await renderUserDetail(root, user.id);
+                  } catch (error) {
+                    toast(describeError(error, "Could not enable"), "err");
+                  }
+                },
+              },
+              "Enable",
+            )
+          : h(
+              "button",
+              {
+                type: "button",
+                class: "btn ghost sm danger",
+                "on:click": async () => {
+                  if (!confirm(`Disable ${user.email}? They will lose access immediately on next request.`)) return;
+                  try {
+                    await api.updateUser(user.id, { disabled_at: "now" });
+                    toast(`${user.email} disabled`);
+                    await renderUserDetail(root, user.id);
+                  } catch (error) {
+                    toast(describeError(error, "Could not disable"), "err");
+                  }
+                },
+              },
+              "Disable",
+            ),
+      ),
+    ),
     h(
       "div",
       { class: "card-body" },
@@ -156,7 +210,55 @@ function summaryCard(user: User): HTMLElement {
   );
 }
 
-function sendersCard(data: DetailData): HTMLElement {
+function openEditUser(user: User, onSaved: () => void): void {
+  const { form, setBanner, busy } = buildForm(
+    [
+      {
+        name: "display_name",
+        label: "Display name",
+        placeholder: "Alex",
+        value: user.display_name ?? "",
+        hint: "Leave blank to clear.",
+      },
+      {
+        name: "role",
+        label: "Role",
+        kind: "select",
+        value: user.role,
+        options: [
+          { value: "admin", label: "admin" },
+          { value: "sender", label: "sender" },
+        ],
+      },
+    ],
+    async (raw) => {
+      setBanner(null);
+      busy(true);
+      try {
+        await api.updateUser(user.id, {
+          display_name: raw.display_name.length === 0 ? null : raw.display_name,
+          role: raw.role === "admin" ? "admin" : "sender",
+        });
+        toast("User updated");
+        closeModal();
+        onSaved();
+      } catch (error) {
+        setBanner(describeError(error, "Could not update user."));
+        busy(false);
+      }
+    },
+  );
+  const submit = h("button", { type: "submit", class: "btn primary" }, "Save");
+  const cancel = h("button", { type: "button", class: "btn ghost", "on:click": () => closeModal() }, "Cancel");
+  submit.addEventListener("click", () => form.requestSubmit());
+  openModal({
+    title: `Edit ${user.email}`,
+    body: form,
+    footer: h("div", { class: "row-between flex-fill" }, cancel, submit),
+  });
+}
+
+function sendersCard(data: DetailData, root: HTMLElement): HTMLElement {
   const head = h(
     "div",
     { class: "card-head" },
@@ -212,15 +314,16 @@ function sendersCard(data: DetailData): HTMLElement {
 
   const list = h("div", { class: "stack", style: "gap: 0" });
   for (const sender of data.senders) {
-    list.appendChild(senderRow(sender));
+    list.appendChild(senderRow(sender, data.user.id, root));
   }
   return h("div", { class: "card pad-0" }, head, list);
 }
 
-function senderRow(sender: Sender): HTMLElement {
+function senderRow(sender: Sender, userId: string, root: HTMLElement): HTMLElement {
+  const enabled = sender.enabled === 1;
   return h(
     "div",
-    { class: "row-between", style: "padding: 12px 16px; border-bottom: 1px solid var(--border)" },
+    { class: "row-between", style: "padding: 12px 16px; border-bottom: 1px solid var(--border); gap: 12px" },
     h(
       "div",
       { class: "row", style: "gap: 10px; min-width: 0" },
@@ -229,7 +332,46 @@ function senderRow(sender: Sender): HTMLElement {
       h("span", { class: "soft", style: "font-size: 12px" }, "·"),
       h("a", { class: "soft", style: "font-size: 12px", href: `#/domains/${sender.domain_id}` }, sender.domain),
     ),
-    sender.enabled ? pill("enabled", "ok") : pill("disabled", "muted"),
+    h(
+      "div",
+      { class: "row", style: "gap: 8px" },
+      enabled ? pill("enabled", "ok") : pill("disabled", "muted"),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "btn ghost sm",
+          "on:click": async () => {
+            try {
+              await api.updateSender(sender.id, { enabled: !enabled });
+              toast(`${sender.email} ${enabled ? "disabled" : "enabled"}`);
+              await renderUserDetail(root, userId);
+            } catch (error) {
+              toast(describeError(error, "Could not update sender"), "err");
+            }
+          },
+        },
+        enabled ? "Disable" : "Enable",
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "btn ghost sm danger",
+          "on:click": async () => {
+            if (!confirm(`Remove ${sender.email} from ${sender.domain}? Any credential restricted to this sender will lose access.`)) return;
+            try {
+              await api.deleteSender(sender.id);
+              toast(`${sender.email} removed`);
+              await renderUserDetail(root, userId);
+            } catch (error) {
+              toast(describeError(error, "Could not delete sender"), "err");
+            }
+          },
+        },
+        "Remove",
+      ),
+    ),
   );
 }
 
