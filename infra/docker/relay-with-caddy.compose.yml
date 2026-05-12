@@ -1,0 +1,67 @@
+# Turnkey relay deployment using Caddy as an ACME sidecar.
+#
+# Caddy handles cert issuance and renewal automatically via HTTP-01 (default)
+# or via the DNS-01 challenge if you set CADDY_DNS_PROVIDER+CADDY_DNS_TOKEN.
+# Certs land in a shared volume at /data/caddy/certificates/.../<domain>;
+# the relay mounts that read-only and points its TLS paths at them.
+#
+# For most adopters, copy this file to your relay host, fill in the .env file,
+# and `docker compose up -d`. The wizard (pnpm setup --apply) emits a copy
+# with every value pre-filled.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      # ACME HTTP-01 challenge port. Only inbound 80 is needed; outbound
+      # HTTPS to letsencrypt.org is required regardless.
+      - "80:80"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      # Optional: switch to DNS-01 if port 80 isn't reachable for ACME.
+      # CADDY_DNS_PROVIDER: cloudflare
+      # CADDY_DNS_TOKEN: ${CADDY_DNS_TOKEN}
+      RELAY_DOMAIN: ${RELAY_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+
+  relay:
+    image: ghcr.io/alexlmiller/cf-mail-relay/relay:latest
+    restart: unless-stopped
+    depends_on:
+      - caddy
+    ports:
+      - "587:587"
+    volumes:
+      - caddy-data:/caddy-data:ro
+    environment:
+      RELAY_LISTEN_ADDR: ":587"
+      RELAY_DOMAIN: ${RELAY_DOMAIN}
+      RELAY_WORKER_URL: ${RELAY_WORKER_URL}
+      RELAY_KEY_ID: ${RELAY_KEY_ID}
+      RELAY_HMAC_SECRET: ${RELAY_HMAC_SECRET}
+      # Caddy stores certs at:
+      #   /data/caddy/certificates/<acme-issuer>/<domain>/<domain>.crt
+      #   /data/caddy/certificates/<acme-issuer>/<domain>/<domain>.key
+      # The default issuer is acme-v02.api.letsencrypt.org-directory.
+      RELAY_TLS_CERT_FILE: /caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${RELAY_DOMAIN}/${RELAY_DOMAIN}.crt
+      RELAY_TLS_KEY_FILE:  /caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${RELAY_DOMAIN}/${RELAY_DOMAIN}.key
+
+volumes:
+  caddy-data:
+  caddy-config:
+
+# Companion Caddyfile (save next to this compose as ./Caddyfile):
+#
+#   {
+#       email {$ACME_EMAIL}
+#   }
+#   {$RELAY_DOMAIN}:80 {
+#       respond /healthz "ok"
+#       # Caddy will request a cert for $RELAY_DOMAIN automatically because
+#       # this site block names the hostname; the resulting cert + key are
+#       # what the relay reads from the shared caddy-data volume.
+#   }
