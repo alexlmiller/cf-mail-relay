@@ -160,4 +160,10 @@ export const api = {
 
   listSendEvents: () => request<SendEvent[]>("/admin/api/send-events"),
   listAuthFailures: () => request<AuthFailure[]>("/admin/api/auth-failures"),
+
+  // Ops
+  bumpPolicyVersion: () =>
+    request<{ policy_version: string }>("/admin/api/ops/bump-policy-version", { method: "POST", body: "{}" }),
+  flushCaches: () =>
+    request<{ deleted: number; prefixes: string[] }>("/admin/api/ops/flush-caches", { method: "POST", body: "{}" }),
 };

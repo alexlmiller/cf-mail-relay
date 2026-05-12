@@ -672,6 +672,41 @@ export async function listAuthFailures(env: Env): Promise<unknown[]> {
   return result.results ?? [];
 }
 
+/** Manual policy bump exposed via ops endpoint. */
+export async function bumpPolicyVersionAction(env: Env): Promise<{ policy_version: string }> {
+  const next = String(nowSeconds());
+  await env.D1_MAIN.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('policy_version', ?, ?)")
+    .bind(JSON.stringify(next), nowSeconds())
+    .run();
+  return { policy_version: next };
+}
+
+/** Bulk delete the in-worker KV caches. Returns the number of keys removed. */
+export async function flushKvCaches(env: Env): Promise<{ deleted: number; prefixes: string[] }> {
+  const prefixes = ["cred:", "apikey:", "domain:", "sender:", "idem:", "tombstone:cred:", "tombstone:apikey:"];
+  let deleted = 0;
+  for (const prefix of prefixes) {
+    let cursor: string | null = null;
+    let done = false;
+    while (!done) {
+      const list: KVNamespaceListResult<unknown> = cursor === null
+        ? await env.KV_HOT.list({ prefix })
+        : await env.KV_HOT.list({ prefix, cursor });
+      for (const entry of list.keys) {
+        await env.KV_HOT.delete(entry.name);
+        deleted += 1;
+      }
+      if (list.list_complete) {
+        done = true;
+      } else {
+        cursor = list.cursor ?? null;
+        if (cursor === null) done = true;
+      }
+    }
+  }
+  return { deleted, prefixes };
+}
+
 async function bumpPolicyVersion(env: Env): Promise<void> {
   await env.D1_MAIN.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('policy_version', ?, ?)")
     .bind(JSON.stringify(String(nowSeconds())), nowSeconds())

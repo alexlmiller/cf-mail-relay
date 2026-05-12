@@ -1,9 +1,10 @@
-import { api } from "../api";
+import { api, describeError } from "../api";
 import type { Child } from "../dom";
 import { h, icon, on, setChildren } from "../dom";
 import { eventStatusPill, eventStatusKind } from "../status";
 import { formatBytes, formatNumber, formatRelative, formatShort } from "../format";
 import { navigate } from "../router";
+import { toast } from "../toast";
 import type { DashboardData, Domain, HealthProbe, SendEvent, Sender, SmtpCredential, User } from "../types";
 
 interface SnapshotState {
@@ -124,6 +125,7 @@ function paint(root: HTMLElement, snapshot: SnapshotState) {
     statRow(data, events),
     checklist ?? false,
     healthCard(data),
+    opsCard(root),
     recentActivityCard(events),
   );
 }
@@ -207,6 +209,78 @@ function healthCard(data: DashboardData): HTMLElement {
               ),
             ),
           ),
+    ),
+  );
+}
+
+function opsCard(root: HTMLElement): HTMLElement {
+  return h(
+    "div",
+    { class: "card" },
+    h("div", { class: "card-head" }, h("h2", null, "Operations")),
+    h(
+      "div",
+      { class: "card-body" },
+      h(
+        "div",
+        { class: "stack", style: "gap: 12px" },
+        h(
+          "div",
+          { class: "row-between", style: "gap: 12px; flex-wrap: wrap" },
+          h(
+            "div",
+            { class: "stack", style: "gap: 2px; min-width: 0" },
+            h("div", { style: "font-weight: 500" }, "Bump policy version"),
+            h("div", { class: "soft", style: "font-size: 12px" }, "Forces every KV credential cache to miss on next read. Safe; just causes the next request to re-fetch from D1."),
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "btn",
+              "on:click": async () => {
+                if (!confirm("Bump policy_version? Subsequent SMTP and API requests will re-fetch credentials from D1.")) return;
+                try {
+                  const result = await api.bumpPolicyVersion();
+                  toast(`policy_version → ${result.policy_version}`);
+                  await renderDashboard(root);
+                } catch (error) {
+                  toast(describeError(error, "Could not bump"), "err");
+                }
+              },
+            },
+            "Bump",
+          ),
+        ),
+        h(
+          "div",
+          { class: "row-between", style: "gap: 12px; flex-wrap: wrap" },
+          h(
+            "div",
+            { class: "stack", style: "gap: 2px; min-width: 0" },
+            h("div", { style: "font-weight: 500" }, "Flush KV caches"),
+            h("div", { class: "soft", style: "font-size: 12px" }, "Drops cached credentials, API keys, allowed senders, idempotency responses, and revocation tombstones. Next request rebuilds from D1."),
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              class: "btn danger",
+              "on:click": async () => {
+                if (!confirm("Flush all KV caches? The next request to each cached row pays one D1 round-trip to rebuild.")) return;
+                try {
+                  const result = await api.flushCaches();
+                  toast(`Flushed ${result.deleted} key${result.deleted === 1 ? "" : "s"}`);
+                  await renderDashboard(root);
+                } catch (error) {
+                  toast(describeError(error, "Could not flush"), "err");
+                }
+              },
+            },
+            "Flush",
+          ),
+        ),
+      ),
     ),
   );
 }

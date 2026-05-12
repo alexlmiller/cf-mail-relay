@@ -16,7 +16,9 @@ import {
   listSenders,
   listSmtpCredentials,
   listUsers,
+  bumpPolicyVersionAction,
   deleteSender,
+  flushKvCaches,
   revokeApiKey,
   revokeSmtpCredential,
   rollApiKey,
@@ -436,6 +438,14 @@ app.patch("/admin/api/smtp-credentials/:id", async (c) =>
 );
 app.patch("/admin/api/api-keys/:id", async (c) =>
   adminJson(c, async () => updateApiKey(c.env, c.req.param("id"), await readJsonObject(c.req.raw))),
+);
+
+// Ops actions: manual policy_version bump + bulk KV cache flush.
+app.post("/admin/api/ops/bump-policy-version", async (c) =>
+  adminJson(c, () => bumpPolicyVersionAction(c.env)),
+);
+app.post("/admin/api/ops/flush-caches", async (c) =>
+  adminJson(c, () => flushKvCaches(c.env)),
 );
 
 // ───────────────────────── Self-service ─────────────────────────
