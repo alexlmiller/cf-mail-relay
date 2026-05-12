@@ -18,8 +18,6 @@ file (security headers including the CSP) is copied during build.
 
 - `/` — dashboard, domains, allowed senders, SMTP credentials, users, API
   keys, send events, and auth failures. All admin actions on `/admin/api/*`.
-- `/demo` — public click-through demo. It installs an in-browser mock API
-  before booting the same app shell; no Worker API calls are made.
 - `/#/me` — same-origin self-service for any signed-in user (admins + sender
   role). Calls `/self/api/*`.
 
@@ -39,6 +37,12 @@ display-only.
 
 Browser POSTs/PATCHes/DELETEs additionally pass an Origin check on the
 Worker. Same-origin satisfies this trivially without `ADMIN_CORS_ORIGIN`.
+
+## Demo
+
+The public demo lives in the separate `demo/` workspace and deploys as its own
+static Worker. Production `ui/` builds should not include demo mode, demo
+routes, or the `relay-demo.alexmiller.net` hostname.
 
 ## Local development
 

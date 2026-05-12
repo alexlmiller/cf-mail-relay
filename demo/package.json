@@ -1,0 +1,21 @@
+{
+  "name": "@cf-mail-relay/demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "astro build",
+    "typecheck": "astro check && tsc --noEmit",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@cf-mail-relay/shared": "workspace:*",
+    "astro": "^6.3.1"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "@cloudflare/workers-types": "^4.20240925.0",
+    "typescript": "^5.5.0",
+    "wrangler": "^4.0.0"
+  }
+}

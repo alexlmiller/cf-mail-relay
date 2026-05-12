@@ -26,11 +26,7 @@ import "../styles/global.css";
     </div>
     <script>
       import { boot } from "../lib/app";
-      import { installDemoApi, shouldEnableDemoForLocation } from "../lib/demo/api";
 
-      if (shouldEnableDemoForLocation(window.location)) {
-        installDemoApi();
-      }
       boot();
     </script>
   </body>

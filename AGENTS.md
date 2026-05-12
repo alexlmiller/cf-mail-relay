@@ -11,6 +11,9 @@ This is a release-ready SMTP-to-Cloudflare-Email-Sending bridge:
   `send_raw`, AND serves the admin UI bundle (Workers Static Assets at
   `worker/public/`). Same-origin admin — no separate Pages project.
 - `ui/`: Astro source for the admin UI. Builds into `worker/public/`.
+- `demo/`: standalone static Worker for the public click-through demo. It
+  imports the UI shell, installs the mock API, and must not be deployed with
+  production D1/KV/secrets or the production Worker route list.
 - `shared/`: shared TypeScript contracts.
 - `infra/`: setup wizard (`pnpm run setup --apply`), OpenTofu reference module,
   Cloudflare Access helpers, HMAC rotation, doctor scripts, and Docker
@@ -38,6 +41,8 @@ This is a release-ready SMTP-to-Cloudflare-Email-Sending bridge:
   Sending Edit plus Zone Read for the sending zones. The setup wizard does NOT
   auto-push the operator's broader setup token; the runbook covers the manual
   step.
+- Keep the public demo separate. Do not add `relay-demo.alexmiller.net` or demo
+  mode back to the production Worker; deploy the demo with `demo/wrangler.toml`.
 
 ## Working Rules
 

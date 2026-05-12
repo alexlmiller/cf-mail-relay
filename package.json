@@ -9,9 +9,11 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' build",
-    "typecheck": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' typecheck",
+    "build": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' --filter='./demo' build",
+    "typecheck": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' --filter='./demo' typecheck",
     "test": "pnpm -r --filter='./worker' --filter='./shared' test && node --test infra/wrangler/*.test.mjs infra/setup/*.test.mjs",
+    "demo:build": "pnpm --filter @cf-mail-relay/demo build",
+    "demo:deploy": "pnpm --dir worker exec wrangler deploy --config ../demo/wrangler.toml",
     "setup": "node infra/wrangler/setup.mjs",
     "access:setup": "node infra/wrangler/access-app.mjs",
     "access:apply": "node infra/wrangler/access-apply.mjs",
@@ -24,6 +26,7 @@
   "workspaces": [
     "worker",
     "ui",
+    "demo",
     "shared"
   ],
   "devDependencies": {

@@ -15,6 +15,28 @@ importers:
         specifier: ^4.21.0
         version: 4.21.0
 
+  demo:
+    dependencies:
+      '@cf-mail-relay/shared':
+        specifier: workspace:*
+        version: link:../shared
+      astro:
+        specifier: ^6.3.1
+        version: 6.3.1(rollup@4.60.3)(tsx@4.21.0)(yaml@2.9.0)
+    devDependencies:
+      '@astrojs/check':
+        specifier: ^0.9.9
+        version: 0.9.9(prettier@3.8.3)(typescript@5.9.3)
+      '@cloudflare/workers-types':
+        specifier: ^4.20240925.0
+        version: 4.20260511.1
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      wrangler:
+        specifier: ^4.0.0
+        version: 4.90.0(@cloudflare/workers-types@4.20260511.1)
+
   shared:
     dependencies:
       zod:

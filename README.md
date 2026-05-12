@@ -8,9 +8,10 @@ or any SMTP-capable client that needs authenticated outbound mail.
 
 [Live demo: explore the admin UI with sample data](https://relay-demo.alexmiller.net)
 
-The demo uses the real UI with an in-browser mock API. You can click through
-domains, senders, users, credentials, API keys, and events without sending mail
-or changing Cloudflare resources.
+The demo is deployed separately from the production Worker. It uses the real UI
+with an in-browser mock API, so you can click through domains, senders, users,
+credentials, API keys, and events without sending mail or changing Cloudflare
+resources.
 
 The project has two deployable pieces:
 
@@ -18,7 +19,10 @@ The project has two deployable pieces:
   serves the admin UI bundle at the same hostname (Workers Static Assets). The
   static shell is public; admin and self-service data APIs are protected by
   Cloudflare Access.
-- A Go SMTP relay you run on a public Docker host.
+- A Go SMTP relay you run on a Docker host reachable from your SMTP clients.
+
+The public demo is a third, optional static Worker. It has no D1, KV, Access,
+Email Sending token, HMAC secret, or send endpoints.
 
 Most of the stack runs on Cloudflare. The SMTP relay is the exception: SMTP
 clients need a raw TCP listener on port `587`, which Cloudflare
@@ -56,10 +60,11 @@ Try the admin UI without connecting it to Cloudflare:
 https://relay-demo.alexmiller.net
 ```
 
-The demo uses the real UI with an in-browser mock API and sample data. Actions
-such as creating credentials, refreshing domains, rolling API keys, and opening
-event drawers are simulated locally; no email is sent and no Cloudflare
-resources are changed.
+The demo is a separate static Worker, not a route on a production relay
+deployment. It uses the real UI with an in-browser mock API and sample data.
+Actions such as creating credentials, refreshing domains, rolling API keys, and
+opening event drawers are simulated locally; no email is sent and no
+Cloudflare resources are changed.
 
 ## What It Does Not Do
 

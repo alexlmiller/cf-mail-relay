@@ -1,7 +1,7 @@
 import type { SelfProfile, SelfSender } from "../api-self";
 import type { ApiKey, AuthFailure, DashboardData, Domain, SendEvent, Sender, Session, SmtpCredential, User } from "../types";
 
-const STORAGE_KEY = "cf-mail-relay-demo-state-v1";
+const STORAGE_KEY = "cf-mail-relay-demo-state-v2";
 const NOW = Math.floor(Date.now() / 1000);
 const MIN = 60;
 const HOUR = 60 * MIN;
@@ -20,10 +20,6 @@ interface DemoState {
 interface JsonEnvelope<T> {
   ok: true;
   result: T;
-}
-
-export function shouldEnableDemoForLocation(location: Location = window.location): boolean {
-  return location.hostname === "relay-demo.alexmiller.net" || location.pathname.replace(/\/+$/u, "") === "/demo";
 }
 
 export function installDemoApi(): void {
@@ -299,9 +295,9 @@ function defaultState(): DemoState {
 function demoUsers(): User[] {
   return [
     { id: "usr_alex", email: "alex@acme.example", display_name: "Alex Rivera", access_subject: "demo:alex", role: "admin", disabled_at: null, created_at: t(45 * DAY), updated_at: t(2 * DAY) },
-    { id: "usr_app", email: "noreply@acme.example", display_name: "Transactional app", access_subject: "demo:noreply", role: "sender", disabled_at: null, created_at: t(31 * DAY), updated_at: t(4 * HOUR) },
-    { id: "usr_alerts", email: "alerts@acme.example", display_name: "On-call alerts", access_subject: "demo:alerts", role: "sender", disabled_at: null, created_at: t(20 * DAY), updated_at: t(2 * HOUR) },
-    { id: "usr_billing", email: "billing@acme.example", display_name: "Billing service", access_subject: "demo:billing", role: "sender", disabled_at: t(7 * DAY), created_at: t(60 * DAY), updated_at: t(7 * DAY) },
+    { id: "usr_app", email: "app-mailer@acme.example", display_name: "Product mailer", access_subject: "demo:app-mailer", role: "sender", disabled_at: null, created_at: t(31 * DAY), updated_at: t(4 * HOUR) },
+    { id: "usr_alerts", email: "oncall-automation@acme.example", display_name: "On-call automation", access_subject: "demo:oncall-automation", role: "sender", disabled_at: null, created_at: t(20 * DAY), updated_at: t(2 * HOUR) },
+    { id: "usr_billing", email: "billing-automation@acme.example", display_name: "Billing automation", access_subject: "demo:billing-automation", role: "sender", disabled_at: t(7 * DAY), created_at: t(60 * DAY), updated_at: t(7 * DAY) },
   ];
 }
 
@@ -315,7 +311,7 @@ function demoDomains(): Domain[] {
 
 function demoSenders(users: User[], domains: Domain[]): Sender[] {
   return [
-    sender("snd_noreply", domains[0]!, "noreply@mail.acme.example", users[1]!),
+    sender("snd_notifications", domains[0]!, "notifications@mail.acme.example", users[1]!),
     sender("snd_receipts", domains[0]!, "receipts@mail.acme.example", users[1]!),
     sender("snd_alerts", domains[1]!, "alerts@status.acme.example", users[2]!),
     sender("snd_incidents", domains[1]!, "incidents@status.acme.example", users[2]!),
@@ -343,12 +339,12 @@ function demoApiKeys(users: User[], senders: Sender[]): ApiKey[] {
 
 function demoEvents(users: User[], domains: Domain[], credentials: SmtpCredential[], apiKeys: ApiKey[]): SendEvent[] {
   return [
-    event("evt_accepted_1", "accepted", "noreply@mail.acme.example", users[1]!, domains[0]!, credentials[0]!, null, t(45), 1, 8412, "250"),
+    event("evt_accepted_1", "accepted", "notifications@mail.acme.example", users[1]!, domains[0]!, credentials[0]!, null, t(45), 1, 8412, "250"),
     event("evt_accepted_2", "accepted", "alerts@status.acme.example", users[2]!, domains[1]!, credentials[2]!, null, t(2 * MIN), 3, 22140, "250"),
     event("evt_bounce", "all_bounced", "receipts@mail.acme.example", users[1]!, domains[0]!, credentials[0]!, null, t(6 * MIN), 1, 11220, "550", "550-5.1.1"),
     event("evt_policy", "policy_rejected", "alerts@status.acme.example", users[2]!, domains[1]!, credentials[2]!, null, t(17 * MIN), 1, 9810, "550", null, "sender_not_allowed"),
     event("evt_http", "accepted", "support@mail.acme.example", users[0]!, domains[0]!, null, apiKeys[2]!, t(74 * MIN), 1, 6240, "250"),
-    event("evt_size", "rejected_size", "noreply@mail.acme.example", users[1]!, domains[0]!, credentials[0]!, null, t(2 * HOUR), 1, 26_214_400, "552", null, "mime_too_large"),
+    event("evt_size", "rejected_size", "notifications@mail.acme.example", users[1]!, domains[0]!, credentials[0]!, null, t(2 * HOUR), 1, 26_214_400, "552", null, "mime_too_large"),
   ];
 }
 

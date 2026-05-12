@@ -30,6 +30,7 @@ HTTP client
 | `relay/` | Go, Docker | SMTP STARTTLS/AUTH, size and recipient caps, HMAC relay calls |
 | `worker/` | TypeScript, Hono, Cloudflare Workers | Policy, auth, idempotency, quotas, audit metadata, Email Sending API calls, **serves the admin UI bundle via Workers Static Assets** |
 | `ui/` | Astro, static bundle | Admin UI source; builds into `worker/public/` and is shipped with the Worker |
+| `demo/` | Astro + Workers Static Assets | Standalone public demo Worker with an in-browser mock API and no production bindings |
 | `shared/` | TypeScript | Shared schemas and delivery status mapping |
 | `infra/` | Shell/Node/Docker examples | Setup, Access helper, doctors, relay deployment examples |
 
@@ -68,6 +69,17 @@ run_worker_first = true
 fall through to the catch-all in `worker/src/index.ts` which delegates to
 `env.ASSETS.fetch(req)` — Workers Static Assets serves the matched file or
 the SPA shell (`/index.html`) per the `single-page-application` fallback.
+
+### Public Demo
+
+The click-through demo is a separate static Worker under `demo/`. It imports the
+same UI app shell and installs an in-browser mock API before booting. It must
+not share the production Worker's route list, D1 database, KV namespace, Access
+app, Email Sending token, relay HMAC secrets, or bootstrap token.
+
+Production `worker/wrangler.toml` should only bind the real relay/admin
+hostname. Demo deployments use `demo/wrangler.toml` and currently bind
+`relay-demo.alexmiller.net`.
 
 ## Cloudflare Boundary
 
