@@ -48,7 +48,7 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   }
 
   checks.push(await checkWorkerHealth(fetchImpl, options.adminUrl));
-  checks.push(await checkUnauthenticatedAccessGate(fetchImpl, options.adminUrl, "/", "ui_gate"));
+  checks.push(await checkPublicUiShell(fetchImpl, options.adminUrl));
   checks.push(await checkUnauthenticatedAccessGate(fetchImpl, options.adminUrl, "/admin/api/session", "admin_api_gate"));
   checks.push(await checkUnauthenticatedAccessGate(fetchImpl, options.adminUrl, "/self/api/session", "self_api_gate"));
   checks.push(await checkUnauthenticatedWorkerRoute(fetchImpl, options.adminUrl, "/send", "send_public_path", { method: "POST", expectedError: "missing_api_key" }));
@@ -61,7 +61,7 @@ export async function run(rawArgs = process.argv.slice(2), env = process.env, fe
   } else if (options.requireAuthenticatedSession) {
     checks.push(failCheck("authenticated_session", "Set --access-jwt-env to an environment variable containing a live Access JWT."));
   } else {
-    checks.push(warnCheck("authenticated_session", "Set --access-jwt-env to verify the protected UI and /admin/api/session."));
+    checks.push(warnCheck("authenticated_session", "Set --access-jwt-env to verify /admin/api/session with a live Access JWT."));
   }
 
   return {
@@ -186,6 +186,21 @@ async function checkWorkerHealth(fetchImpl, adminUrl) {
     return failCheck("worker_healthz", `Worker /healthz failed with HTTP ${response.status}.`, response.body ?? response.text);
   }
   return passCheck("worker_healthz", "Worker /healthz is healthy and not Access-gated.", { version: response.body.version, git_sha: response.body.git_sha });
+}
+
+async function checkPublicUiShell(fetchImpl, adminUrl) {
+  const response = await fetchText(fetchImpl, adminUrl, {
+    method: "GET",
+    redirect: "manual",
+    headers: { accept: "text/html" },
+  });
+  if (isRedirect(response)) {
+    return failCheck("ui_shell", "Admin UI shell was intercepted by Access; only admin/self API paths should be Access-gated.", redirectDetails(response));
+  }
+  if (!response.ok || !response.text.includes('id="app"')) {
+    return failCheck("ui_shell", `Admin UI shell failed with HTTP ${response.status}.`, response.text.slice(0, 200));
+  }
+  return passCheck("ui_shell", "Admin UI shell is reachable; data APIs remain Access-gated.");
 }
 
 async function checkUnauthenticatedAccessGate(fetchImpl, adminUrl, path, name) {

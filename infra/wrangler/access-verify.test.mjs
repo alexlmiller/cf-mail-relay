@@ -71,8 +71,8 @@ ACCESS_AUDIENCE = "aud_123"
       if (url === "https://mail.example.com/healthz") {
         return json({ ok: true, version: "0.1.0-ms7", git_sha: "ms7" });
       }
-      if (url === "https://mail.example.com/" && init.redirect === "manual") {
-        return redirect();
+      if ((url === "https://mail.example.com" || url === "https://mail.example.com/") && init.redirect === "manual") {
+        return text('<html><body><div id="app"></div></body></html>');
       }
       if (url === "https://mail.example.com/admin/api/session" && init.redirect === "manual") {
         return redirect();
@@ -94,7 +94,7 @@ ACCESS_AUDIENCE = "aud_123"
 
     assert.equal(result.ok, true);
     assert.equal(result.checks.find((check) => check.name === "admin_cors_origin").status, "pass");
-    assert.equal(result.checks.find((check) => check.name === "ui_gate").status, "pass");
+    assert.equal(result.checks.find((check) => check.name === "ui_shell").status, "pass");
     assert.equal(result.checks.find((check) => check.name === "send_public_path").status, "pass");
     assert.equal(result.checks.find((check) => check.name === "authenticated_session").status, "warn");
   });
@@ -112,7 +112,7 @@ ACCESS_AUDIENCE = "aud_123"
       if (url.endsWith("/healthz")) return json({ ok: true });
       if (url.endsWith("/admin/api/session")) return json({ ok: false, error: "missing_access_jwt" }, 401);
       if (url.endsWith("/self/api/session")) return redirect();
-      if (url === "https://mail.example.com/") return redirect();
+      if (url === "https://mail.example.com" || url === "https://mail.example.com/") return text('<html><body><div id="app"></div></body></html>');
       if (url.endsWith("/send")) return json({ ok: false, error: "missing_api_key" }, 401);
       if (url.endsWith("/relay/auth")) return json({ ok: false, error: "missing_hmac_headers" }, 401);
       if (url.endsWith("/bootstrap/admin")) return json({ ok: false, error: "invalid_json" }, 400);
@@ -134,7 +134,7 @@ ACCESS_AUDIENCE = "aud_123"
         return json({ keys: [{ kid: "key_1" }] });
       }
       if (url.endsWith("/healthz")) return json({ ok: true });
-      if (url === "https://mail.example.com/") return redirect();
+      if (url === "https://mail.example.com" || url === "https://mail.example.com/") return text('<html><body><div id="app"></div></body></html>');
       if (url.endsWith("/admin/api/session")) return redirect();
       if (url.endsWith("/self/api/session")) return redirect();
       if (url.endsWith("/send")) return redirect();
@@ -160,11 +160,11 @@ ACCESS_AUDIENCE = "aud_123"
       if (url === "https://mail.example.com/healthz") {
         return json({ ok: true, version: "0.1.0-ms7", git_sha: "ms7" });
       }
-      if ((url === "https://mail.example.com/" || url === "https://mail.example.com") && init.headers?.["cf-access-jwt-assertion"] === "jwt") {
+      if ((url === "https://mail.example.com" || url === "https://mail.example.com/") && init.headers?.["cf-access-jwt-assertion"] === "jwt") {
         return text('<html><body><div id="app"></div></body></html>');
       }
-      if (url === "https://mail.example.com/") {
-        return redirect();
+      if (url === "https://mail.example.com" || url === "https://mail.example.com/") {
+        return text('<html><body><div id="app"></div></body></html>');
       }
       if (url.endsWith("/admin/api/session") && init.headers?.["cf-access-jwt-assertion"] === "jwt") {
         return json({ ok: true, user: { id: "usr_1", email: "admin@example.com" } });

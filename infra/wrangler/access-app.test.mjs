@@ -27,16 +27,14 @@ describe("access-app helper", () => {
       email: ["admin@example.com"],
     });
 
-    // Path-scoped: only the UI + admin/self API are gated. /relay/*, /send,
+    // Path-scoped: only the admin/self API are gated. /relay/*, /send,
     // /bootstrap/admin, /healthz are deliberately NOT in destinations so the
     // worker's own auth (HMAC, bearer, bootstrap token) sees the request.
     assert.deepEqual(bodies.app.destinations, [
-      { type: "public", uri: "admin.example.com/" },
-      { type: "public", uri: "admin.example.com/_astro/*" },
       { type: "public", uri: "admin.example.com/admin/api/*" },
       { type: "public", uri: "admin.example.com/self/api/*" },
     ]);
-    assert.equal(bodies.app.domain, "admin.example.com");
+    assert.equal(bodies.app.domain, "admin.example.com/admin/api/*");
     assert.deepEqual(bodies.app.cors_headers.allowed_origins, ["https://admin.example.com/"]);
     assert.deepEqual(bodies.policy.include, [{ email: { email: "admin@example.com" } }]);
   });
@@ -186,7 +184,7 @@ ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
       },
     );
 
-    assert.equal(result.app.domain, "admin.example.com");
+    assert.equal(result.app.domain, "admin.example.com/admin/api/*");
   });
 });
 

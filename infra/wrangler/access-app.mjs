@@ -21,21 +21,22 @@ export const defaults = {
 const platformHostnameSuffixes = [".pages.dev", ".workers.dev"];
 
 export function buildBodies(config) {
-  // Same-origin model: the Worker serves the UI and the API at one hostname,
-  // but the Access app only gates the UI + admin/self API paths. The relay's
-  // HMAC-authenticated /relay/*, the bearer-authenticated /send, the
-  // bootstrap-token-authenticated /bootstrap/admin, and the public /healthz
-  // MUST NOT carry an Access JWT requirement — they have their own auth and
-  // their clients can't carry an Access cookie. Path-scoped destinations:
+  // Same-origin model: the Worker serves the UI and the API at one hostname.
+  // Cloudflare Access gates only the admin/self data APIs; the static UI shell
+  // is public, but it cannot read data unless the API calls carry a valid
+  // Access JWT. The relay's HMAC-authenticated /relay/*, the bearer-
+  // authenticated /send, the bootstrap-token-authenticated /bootstrap/admin,
+  // and the public /healthz MUST NOT carry an Access JWT requirement — they
+  // have their own auth and their clients can't carry an Access cookie.
+  //
+  // Do not add `${adminHost}/` here: Access treats that as the whole hostname.
   const adminHost = withoutScheme(config.pagesUrl);
   return {
     app: {
       name: config.name,
       type: "self_hosted",
-      domain: adminHost,
+      domain: `${adminHost}/admin/api/*`,
       destinations: [
-        { type: "public", uri: `${adminHost}/` },
-        { type: "public", uri: `${adminHost}/_astro/*` },
         { type: "public", uri: `${adminHost}/admin/api/*` },
         { type: "public", uri: `${adminHost}/self/api/*` },
       ],

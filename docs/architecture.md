@@ -14,8 +14,9 @@ SMTP client or application
   -> recipient MX
 
 Browser
-  -> Cloudflare Access (path-scoped UI + admin/self API)
+  -> public UI shell
   -> Worker serves /index.html via Workers Static Assets
+  -> Cloudflare Access (path-scoped admin/self API)
   -> Worker /admin/api/* and /self/api/*  (same origin)
   -> D1/KV
 
@@ -38,11 +39,12 @@ The admin UI is served by the Worker (Workers Static Assets), not from a
 separate Cloudflare Pages project. Everything an adopter exposes lives at one
 hostname — `mail.<zone>` by default — so:
 
-- One Cloudflare Access app with path-scoped destinations for `/`,
-  `/_astro/*`, `/admin/api/*`, and `/self/api/*`.
-- `/relay/*`, `/send`, `/bootstrap/admin`, and `/healthz` are deliberately not
-  Access-gated; they use HMAC, bearer, bootstrap-token, or public liveness
-  semantics.
+- One Cloudflare Access app with path-scoped destinations for `/admin/api/*`
+  and `/self/api/*`.
+- `/`, `/_astro/*`, `/relay/*`, `/send`, `/bootstrap/admin`, and `/healthz` are
+  deliberately not Access-gated. The static UI shell is public, while the data
+  APIs validate Access JWTs. Relay/send/bootstrap/health use HMAC, bearer,
+  bootstrap-token, or public liveness semantics.
 - No cross-origin requests from the UI to the API; the browser never issues a
   CORS preflight and Access never gates an `OPTIONS` request.
 - No `PUBLIC_CF_MAIL_RELAY_API_BASE` to bake into the UI build; admin/self API
@@ -214,7 +216,7 @@ Quotas:
 | `POST /relay/auth` | SMTP credential auth | HMAC |
 | `POST /relay/send` | SMTP raw MIME send | HMAC |
 | `POST /send` | HTTP raw MIME send | API key |
-| `GET /` and `/_astro/*` | Admin UI bundle | Cloudflare Access JWT |
+| `GET /` and `/_astro/*` | Admin UI bundle | none; API calls require Access |
 | `/admin/api/*` | Admin API | Cloudflare Access JWT + Origin on unsafe browser methods |
 | `/self/api/*` | Sender self-service API | Cloudflare Access JWT + Origin on unsafe browser methods |
 

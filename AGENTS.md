@@ -25,9 +25,9 @@ This is a release-ready SMTP-to-Cloudflare-Email-Sending bridge:
 - One deployment serves one Cloudflare account, with many sending domains.
 - Single-origin admin: the Worker serves the UI + admin/self API on one
   host (default `mail.<adopter-zone>`). Cloudflare Access is path-scoped
-  to `/`, `/_astro/*`, `/admin/api/*`, `/self/api/*` so `/relay/*`,
-  `/send`, `/bootstrap/admin`, and `/healthz` reach the Worker without
-  an Access cookie (they have their own HMAC / bearer / token auth).
+  only to `/admin/api/*` and `/self/api/*`. Do not protect `/` or
+  `/_astro/*`: Access treats a root destination as the whole hostname, which
+  breaks `/relay/*`, `/send`, `/bootstrap/admin`, and `/healthz`.
 - D1 is source of truth. KV is cache only.
 - Relay-to-Worker auth is HMAC. The canonical string commits both the
   body hash and a sorted `signedHeaders` block.

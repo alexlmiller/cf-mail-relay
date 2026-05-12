@@ -10,7 +10,7 @@ imperatively if you don't want IaC.
 |---|---|
 | `cloudflare_d1_database.main` | The `cf-mail-relay` D1 database (state of truth) |
 | `cloudflare_workers_kv_namespace.hot` | `cf-mail-relay-hot` KV cache namespace |
-| `cloudflare_access_application.admin` | Cloudflare Access app gating the admin host |
+| `cloudflare_access_application.admin` | Cloudflare Access app gating the admin/self API paths |
 | `cloudflare_access_policy.allow_admins` | Email-allowlist policy on the Access app |
 
 What this module **deliberately does not** create:
@@ -18,8 +18,8 @@ What this module **deliberately does not** create:
 - The Worker script itself. Deploy it via `wrangler deploy`.
 - Worker secrets (peppers, HMAC, bootstrap token). Always set via
   `wrangler secret put`. Secrets in tfstate is a footgun.
-- Worker route DNS. The wizard's `wrangler deploy` step + the `routes`
-  block in `worker/wrangler.toml` handle this. You can manage it
+- Worker custom-domain DNS. The wizard's `wrangler deploy` step + the `routes`
+  block in `worker/wrangler.toml` handle this. You can manage records
   separately with `cloudflare_record` if you prefer.
 
 ## Two-phase workflow
@@ -65,14 +65,18 @@ The CF API token the OpenTofu provider uses needs:
 
 - Account · D1 · Edit
 - Account · Workers KV Storage · Edit
-- Account · Access · Apps · Edit
+- Account · Access: Apps · Edit
+- Account · Access: Policies · Edit
 - (Add Account · Workers Scripts · Edit if you decide to push the
   Worker via terraform; not needed for the recommended split.)
 
 The token the wizard uses (`CLOUDFLARE_API_TOKEN`) needs the same scopes
-plus **Account · Email Sending · Edit** for the runtime worker. You can
-use one token for both if it has all the scopes; the wizard never
-writes the token into tfstate.
+plus **Account · Email Sending · Edit**, **Account · Account Settings · Read**,
+**Account · Access: Organizations · Read**, **Account · Workers Scripts ·
+Edit**, **Account · Workers Tail · Read**, **Zone · Zone · Read**, **Zone ·
+DNS · Edit**, and **Zone · Zone DNS Settings · Edit**. You can use one token
+for both if it has all the scopes; the wizard never writes the token into
+tfstate.
 
 ## Alternatives
 

@@ -152,7 +152,7 @@ export async function runApply(ctx) {
 
   // 5. Apply D1 migrations.
   if (!options.skipMigrations) {
-    await execImpl("wrangler", ["d1", "migrations", "apply", d1.name, "--remote"], { cwd: options.workerDir });
+    await runWrangler(execImpl, options.workerDir, ["d1", "migrations", "apply", d1.name, "--remote"]);
     steps.push({ step: "migrations_applied" });
   }
 
@@ -163,7 +163,7 @@ export async function runApply(ctx) {
   //    Opt-in: --push-cf-api-token reuses the setup token (with a warning).
   if (secrets !== null) {
     for (const [name, value] of Object.entries(secrets)) {
-      await execImpl("wrangler", ["secret", "put", name], { cwd: options.workerDir, stdin: value });
+      await runWrangler(execImpl, options.workerDir, ["secret", "put", name], value);
     }
     let cfTokenPushed = false;
     if (options.pushCfApiToken && env[options.tokenEnv]) {
@@ -171,7 +171,7 @@ export async function runApply(ctx) {
         "warning: --push-cf-api-token reuses your setup token as the worker's runtime CF_API_TOKEN.\n" +
         "         Create a least-privilege Email-Sending-Edit-only token and rotate this after first send.\n",
       );
-      await execImpl("wrangler", ["secret", "put", "CF_API_TOKEN"], { cwd: options.workerDir, stdin: env[options.tokenEnv] ?? "" });
+      await runWrangler(execImpl, options.workerDir, ["secret", "put", "CF_API_TOKEN"], env[options.tokenEnv] ?? "");
       cfTokenPushed = true;
     }
     steps.push({ step: "secrets_pushed", count: Object.keys(secrets).length + (cfTokenPushed ? 1 : 0), cf_api_token_pushed: cfTokenPushed });
@@ -180,7 +180,7 @@ export async function runApply(ctx) {
   // 7. Build UI (outputs into worker/public/) and deploy worker.
   if (!options.skipBuildDeploy) {
     await execImpl("pnpm", ["--filter", "@cf-mail-relay/ui", "build"], { cwd: options.repoRoot });
-    await execImpl("wrangler", ["deploy"], { cwd: options.workerDir });
+    await runWrangler(execImpl, options.workerDir, ["deploy"]);
     steps.push({ step: "deployed", admin_url: options.adminUrl });
   }
 
@@ -204,11 +204,11 @@ export async function runApply(ctx) {
         `Bootstrap admin failed: HTTP ${bootstrapResponse.status} ${bodyText}\n` +
         `The relay is deployed but no admin user was created.\n` +
         `BOOTSTRAP_SETUP_TOKEN is still active — delete it once you've manually bootstrapped:\n` +
-        `  pnpm --dir worker exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN --force`,
+        `  pnpm --dir worker exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN`,
       );
     }
     steps.push({ step: "bootstrap_admin", email: adminEmail });
-    await execImpl("wrangler", ["secret", "delete", "BOOTSTRAP_SETUP_TOKEN", "--force"], { cwd: options.workerDir });
+    await runWrangler(execImpl, options.workerDir, ["secret", "delete", "BOOTSTRAP_SETUP_TOKEN"]);
     steps.push({ step: "bootstrap_token_cleared" });
   }
 
@@ -232,6 +232,10 @@ export async function runApply(ctx) {
     admin_url: options.adminUrl,
     steps,
   };
+}
+
+function runWrangler(execImpl, cwd, args, stdin) {
+  return execImpl("pnpm", ["exec", "wrangler", ...args], stdin === undefined ? { cwd } : { cwd, stdin });
 }
 
 // ───────────────────────── Resource helpers ─────────────────────────
@@ -282,6 +286,7 @@ export function renderWranglerToml(input) {
   body = body.replace(/name = "cf-mail-relay-worker"/u, `name = "${input.workerScriptName ?? "cf-mail-relay-worker"}"`);
   body = body.replaceAll("REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID", input.accountId);
   body = body.replaceAll("REPLACE_WITH_D1_DATABASE_ID", input.d1Id);
+  body = body.replace(/database_name = "cf-mail-relay"/u, `database_name = "${input.d1Name ?? "cf-mail-relay"}"`);
   body = body.replaceAll("REPLACE_WITH_KV_NAMESPACE_ID", input.kvId);
   body = body.replaceAll("REPLACE_WITH_ACCESS_APPLICATION_AUD", input.accessAudience);
   body = body.replaceAll("your-team.cloudflareaccess.com", input.accessTeamDomain);
@@ -498,7 +503,7 @@ function buildPlan(options) {
 
 async function checkToken(client) {
   const response = await client.get("/user/tokens/verify");
-  return response.ok ? passCheck("api_token", "Cloudflare API token verified.") : failCheck("api_token", `Token verification failed with HTTP ${response.status}.`, response.body);
+  return response.ok ? passCheck("api_token", "Cloudflare API token verified.") : warnCheck("api_token", `Token self-verification failed with HTTP ${response.status}; continuing because scoped account endpoints may still accept this token type.`, response.body);
 }
 
 async function checkAccount(client, accountId) {

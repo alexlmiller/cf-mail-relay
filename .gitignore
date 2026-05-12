@@ -52,6 +52,7 @@ __pycache__/
 .env.local
 .env.*.local
 !.env.example
+RUNBOOK.md
 
 # Test artifacts
 .coverage/

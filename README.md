@@ -7,8 +7,9 @@ or any SMTP-capable client that needs authenticated outbound mail.
 The project has two deployable pieces:
 
 - A Cloudflare Worker that enforces policy, calls Email Sending `send_raw`, and
-  serves the admin UI bundle at the same hostname (Workers Static Assets).
-  Protected by Cloudflare Access.
+  serves the admin UI bundle at the same hostname (Workers Static Assets). The
+  static shell is public; admin and self-service data APIs are protected by
+  Cloudflare Access.
 - A Go SMTP relay you run on a public Docker host.
 
 Most of the stack runs on Cloudflare. The SMTP relay is the exception: SMTP
@@ -90,6 +91,21 @@ pnpm run setup \
   --domain example.com
 ```
 
+The setup token should have these Cloudflare permissions:
+
+- Account: Email Sending Write
+- Account: Account Settings Read
+- Account: Workers Scripts Write
+- Account: Workers KV Storage Write
+- Account: D1 Write
+- Account: Access: Organizations Read
+- Account: Access: Apps Write
+- Account: Access: Policies Write
+- Account: Workers Tail Read
+- Zone: Zone Read
+- Zone: DNS Write
+- Zone: Zone DNS Settings Write
+
 Create the Cloudflare resources, apply migrations, deploy the Worker, bootstrap
 the first admin, and write `RUNBOOK.md`:
 
@@ -116,9 +132,9 @@ pnpm access:verify --admin-url https://mail.example.com
 ```
 
 The Worker serves the admin UI from the same hostname as the API; no separate
-Pages project is involved. The Access app must be path-scoped to `/`,
-`/_astro/*`, `/admin/api/*`, and `/self/api/*`. Do not put `/relay/*`, `/send`,
-`/bootstrap/admin`, or `/healthz` behind Access.
+Pages project is involved. The Access app must be path-scoped to
+`/admin/api/*` and `/self/api/*`. Do not put `/`, `/_astro/*`, `/relay/*`,
+`/send`, `/bootstrap/admin`, or `/healthz` behind Access.
 
 Manual setup is still possible: copy `worker/wrangler.toml.example`, create D1
 and KV, apply all migrations before deploying, set secrets with `wrangler secret

@@ -182,6 +182,7 @@ describe("setup apply helpers", () => {
   it("renderWranglerToml substitutes placeholders + mail.example.com route", () => {
     const template = `name = "cf-mail-relay-worker"
 account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
+database_name = "cf-mail-relay"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
 id = "REPLACE_WITH_KV_NAMESPACE_ID"
 ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
@@ -194,7 +195,7 @@ routes = [
       template,
       accountId: "acc_xyz",
       d1Id: "d1_xyz",
-      d1Name: "cf-mail-relay",
+      d1Name: "cf-mail-relay-v1-test",
       kvId: "kv_xyz",
       accessTeamDomain: "team.cloudflareaccess.com",
       accessAudience: "aud_xyz",
@@ -204,6 +205,7 @@ routes = [
     });
     assert.match(rendered, /name = "cf-mail-relay-v1-test"/);
     assert.match(rendered, /account_id = "acc_xyz"/);
+    assert.match(rendered, /database_name = "cf-mail-relay-v1-test"/);
     assert.match(rendered, /database_id = "d1_xyz"/);
     assert.match(rendered, /id = "kv_xyz"/);
     assert.match(rendered, /ACCESS_TEAM_DOMAIN = "team\.cloudflareaccess\.com"/);
