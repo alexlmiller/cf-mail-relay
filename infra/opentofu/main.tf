@@ -7,7 +7,7 @@
 // Two-phase workflow:
 //
 //   1. tofu init && tofu apply -var "admin_url=https://mail.example.com" -var 'admin_emails=["you@example.com"]'
-//   2. pnpm setup --apply \
+//   2. pnpm run setup --apply \
 //        --account-id "$(tofu output -raw account_id)" \
 //        --admin-url "$(tofu output -raw admin_url)" \
 //        --d1-id "$(tofu output -raw d1_database_id)" \
@@ -94,21 +94,14 @@ resource "cloudflare_access_application" "admin" {
   account_id       = var.account_id
   name             = var.access_app_name
   type             = "self_hosted"
-  domain           = local.admin_host
+  domain           = "${local.admin_host}/admin/api/*"
   session_duration = var.session_duration
 
-  // Path-scoped. The relay's HMAC /relay/*, the bearer /send, the bootstrap
-  // token /bootstrap/admin, and the public /healthz are deliberately NOT
-  // gated by Access — they have their own auth and their clients can't carry
-  // an Access cookie.
-  destinations {
-    type = "public"
-    uri  = "${local.admin_host}/"
-  }
-  destinations {
-    type = "public"
-    uri  = "${local.admin_host}/_astro/*"
-  }
+  // Path-scoped. The static UI shell is public, while /admin/api/* and
+  // /self/api/* are Access-gated. The relay's HMAC /relay/*, the bearer
+  // /send, the bootstrap-token /bootstrap/admin, and the public /healthz are
+  // deliberately NOT gated by Access — they have their own auth and their
+  // clients can't carry an Access cookie.
   destinations {
     type = "public"
     uri  = "${local.admin_host}/admin/api/*"

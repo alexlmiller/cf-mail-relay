@@ -1,6 +1,6 @@
 # Relay docker-compose recipes
 
-The `pnpm setup --apply` wizard writes a per-adopter `RUNBOOK.md` that includes
+The `pnpm run setup --apply` wizard writes a per-adopter `RUNBOOK.md` that includes
 a docker-compose block with every value pre-filled. The files in this directory
 are the templates the wizard chooses from.
 
@@ -20,7 +20,7 @@ RELAY_DOMAIN=smtp.example.com
 RELAY_HOSTNAME=smtp.example.com         # alias used by some templates
 ACME_EMAIL=ops@example.com
 
-# Worker contract — copy from RUNBOOK.md after `pnpm setup --apply`
+# Worker contract — copy from RUNBOOK.md after `pnpm run setup --apply`
 RELAY_WORKER_URL=https://mail.example.com
 RELAY_KEY_ID=rel_01
 RELAY_HMAC_SECRET=...                   # 32-byte base64url, matches worker RELAY_HMAC_SECRET_CURRENT
@@ -30,8 +30,9 @@ CLOUDFLARE_DNS_API_TOKEN=...            # Zone:DNS:Edit on the relay's zone
 ```
 
 `CLOUDFLARE_DNS_API_TOKEN` is **distinct** from the worker's `CF_API_TOKEN`. The
-worker token is account-scoped Email Sending Edit; the relay's DNS token is
-zone-scoped DNS Edit. Don't reuse the same token for both.
+worker token needs Account Email Sending Edit plus Zone Read for the sending
+zones; the relay's DNS token is zone-scoped DNS Edit for certificate issuance.
+Don't reuse the same token for both.
 
 ## Quickstart with the recommended default
 

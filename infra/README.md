@@ -5,7 +5,7 @@ Adopter-side tooling. Not deployed; runs locally on the adopter's workstation or
 | Path | Purpose |
 |---|---|
 | `wrangler/setup.mjs` | Setup orchestrator. Default mode = preflight checker; `--apply` end-to-end creator (D1 + KV + Access + secrets + migrate + deploy + bootstrap + runbook). |
-| `wrangler/access-app.mjs` | Create/update the Cloudflare Access app (path-scoped destinations: `/`, `/_astro/*`, `/admin/api/*`, `/self/api/*`). |
+| `wrangler/access-app.mjs` | Create/update the Cloudflare Access app (path-scoped destinations: `/admin/api/*`, `/self/api/*`). |
 | `wrangler/access-apply.mjs` | Write Access values into `worker/wrangler.toml`. |
 | `wrangler/access-verify.mjs` | Strict live verifier for the Access gate. |
 | `wrangler/rotate-hmac.mjs` | Generate a new HMAC secret and print the rotation runbook. |

@@ -26,7 +26,7 @@ and `Message-ID:`) are rejected before delivery with `duplicate_from_header` /
 | `POST /send` | Send raw MIME from an app/client | API key |
 | `/admin/api/*` | Admin UI API | Cloudflare Access JWT + Origin on unsafe browser methods |
 | `/self/api/*` | Sender self-service API | Cloudflare Access JWT + Origin on unsafe browser methods |
-| `GET /` and `/_astro/*` | Admin UI bundle (Workers Static Assets) | Cloudflare Access JWT |
+| `GET /` and `/_astro/*` | Admin UI bundle (Workers Static Assets) | none; API calls require Access |
 | `GET /<other>` | SPA fallback → serves `/index.html` | none at the edge (the SPA's JS triggers Access on its own API calls) |
 
 Unsafe admin/self requests from browsers must include the configured trusted
@@ -48,6 +48,10 @@ See `wrangler.toml.example`. Required bindings include:
 - `ACCESS_TEAM_DOMAIN`
 - `ACCESS_AUDIENCE`
 - `REQUIRED_D1_SCHEMA_VERSION`
+
+`CF_API_TOKEN` should be scoped to Account Email Sending Edit plus Zone Read for
+the sending zones. The send path uses Email Sending; domain create/refresh uses
+Zone Read to discover the Cloudflare zone and Email Sending status.
 
 ## Local Development
 

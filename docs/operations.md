@@ -133,10 +133,10 @@ Current schema baseline: `worker/migrations/0001_init.sql` + `0002_security_hard
 
 ## Managing infra with OpenTofu (optional)
 
-The setup wizard is idempotent and will reuse existing D1/KV/Access apps when
-given `--d1-id`, `--kv-id`, `--access-app-id` flags or when it finds matching
-names. Adopters who prefer declarative state can drive the resource creation
-via OpenTofu and pass the resulting IDs to `pnpm setup`.
+The setup wizard is idempotent and will reuse existing D1/KV resources when
+given `--d1-id` and `--kv-id`; the Access helper updates the matching Access
+app by name. Adopters who prefer declarative state can drive resource creation
+via OpenTofu and pass the resulting IDs to `pnpm run setup`.
 
 A reference module is in `infra/opentofu/`; see its `README.md` for the
 two-phase workflow.

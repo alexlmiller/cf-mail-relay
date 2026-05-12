@@ -82,6 +82,12 @@ infrastructure or a small public VM, including a GCP free-tier eligible
 delivery remain in Cloudflare. Provider free tiers usually have region, disk,
 and egress limits, so deployment docs should avoid promising zero cost.
 
+The Worker runtime Cloudflare API token is intentionally narrower than the
+setup token. It needs Account Email Sending Edit for `send_raw` plus Zone Read
+for the sending zones so admin domain create/refresh can discover zone IDs and
+Email Sending status. It does not need DNS edit or Access/D1/KV management
+permissions at runtime.
+
 ## Trust Model
 
 - D1 is the source of truth.
@@ -174,7 +180,8 @@ The schema is in `worker/migrations/0001_init.sql`.
 Important tables:
 
 - `users`
-- `domains`
+- `domains` — Cloudflare zone ID and Email Sending status are synced through
+  the Cloudflare API on create and via the admin refresh action.
 - `allowlisted_senders`
 - `smtp_credentials`
 - `api_keys`

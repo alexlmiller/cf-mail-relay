@@ -1,7 +1,7 @@
 # OpenTofu reference module
 
 Declarative provisioning of the Cloudflare resources cf-mail-relay needs.
-Optional — the `pnpm setup --apply` wizard creates the same resources
+Optional — the `pnpm run setup --apply` wizard creates the same resources
 imperatively if you don't want IaC.
 
 ## What this module creates
@@ -33,10 +33,10 @@ tofu apply \
   -var "admin_url=https://mail.example.com" \
   -var 'admin_emails=["you@example.com"]'
 
-# Phase 2 — pnpm setup detects the existing resources and just does
+# Phase 2 — pnpm run setup detects the existing resources and just does
 # secrets + migrations + deploy + bootstrap on top.
 cd ../..
-CLOUDFLARE_API_TOKEN=... pnpm setup --apply \
+CLOUDFLARE_API_TOKEN=... pnpm run setup --apply \
   --account-id "$(cd infra/opentofu && tofu output -raw account_id)" \
   --admin-url "$(cd infra/opentofu && tofu output -raw admin_url)" \
   --d1-id    "$(cd infra/opentofu && tofu output -raw d1_database_id)" \
@@ -55,9 +55,8 @@ app's ID isn't required.
 After Phase 2, `tofu plan` should show **no drift** — the wizard reuses
 the existing Access app rather than re-creating it. If it shows drift,
 something diverged (most commonly the destinations list — the wizard
-collapses to a single same-origin destination; if your tf module is on
-an older revision that listed Pages + Worker separately, update the tf
-to match).
+protects only `/admin/api/*` and `/self/api/*`; if your tf module is on an
+older revision that also gated `/` or `/_astro/*`, update the tf to match).
 
 ## Token scopes
 
@@ -82,5 +81,5 @@ tfstate.
 
 - Pulumi / Terraform CDK — the resource model is identical; port the
   module verbatim.
-- The wizard — `pnpm setup --apply` covers everything imperatively if
+- The wizard — `pnpm run setup --apply` covers everything imperatively if
   you don't want an IaC tool in the loop.

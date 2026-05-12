@@ -26,11 +26,14 @@ and the browser issues relative-URL fetches.
 
 ## Auth
 
-Cloudflare Access protects the UI paths (`/`, `/_astro/*`) and the
-admin/self API paths (`/admin/api/*`, `/self/api/*`) via path-scoped
-destinations. The Worker validates the `Cf-Access-Jwt-Assertion` header
-against the team's JWKS, audience, issuer, and `type === "app"`. The
-`Cf-Access-Authenticated-User-Email` header is display-only.
+The static UI shell (`/`, `/_astro/*`, and SPA fallback routes) is public.
+Cloudflare Access protects only the admin/self API paths (`/admin/api/*`,
+`/self/api/*`) via path-scoped destinations. The sign-in button navigates to
+`/self/api/login`, which is inside the Access-gated path, then redirects back
+to the UI after Access auth. The Worker validates the
+`Cf-Access-Jwt-Assertion` header against the team's JWKS, audience, issuer,
+and `type === "app"`. The `Cf-Access-Authenticated-User-Email` header is
+display-only.
 
 Browser POSTs/PATCHes/DELETEs additionally pass an Origin check on the
 Worker. Same-origin satisfies this trivially without `ADMIN_CORS_ORIGIN`.

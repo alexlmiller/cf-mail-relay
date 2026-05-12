@@ -34,9 +34,10 @@ This is a release-ready SMTP-to-Cloudflare-Email-Sending bridge:
 - Admin auth is Cloudflare Access. Worker validates JWT (issuer + aud +
   `type === "app"`) and the Origin on browser POSTs.
 - Credential/API-key hashes use HMAC-SHA256 keyed with a secret pepper.
-- The worker runtime needs a least-privilege `CF_API_TOKEN` (Email Sending
-  Edit only). The setup wizard does NOT auto-push the operator's broader
-  setup token; the runbook covers the manual step.
+- The worker runtime needs a least-privilege `CF_API_TOKEN` with Account Email
+  Sending Edit plus Zone Read for the sending zones. The setup wizard does NOT
+  auto-push the operator's broader setup token; the runbook covers the manual
+  step.
 
 ## Working Rules
 
