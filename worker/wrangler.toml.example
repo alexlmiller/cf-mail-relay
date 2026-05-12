@@ -24,6 +24,13 @@ RELAY_HMAC_KEY_ID = "rel_REPLACE_ME"
 [triggers]
 crons = ["17 3 * * *"]
 
+# Bind the Worker to a custom hostname on a Cloudflare-managed zone.
+# `pnpm run setup --apply` fills this in; for manual setups, change pattern to
+# your zone.
+routes = [
+  { pattern = "mail.example.com", custom_domain = true },
+]
+
 # Admin UI is served same-origin via Workers Static Assets. `pnpm --filter ui
 # build` writes the bundle into ./public/ which is uploaded with the Worker.
 # Workers Static Assets handles GET/HEAD for matched files; the Worker's
@@ -46,12 +53,6 @@ migrations_dir = "migrations"
 [[kv_namespaces]]
 binding = "KV_HOT"
 id = "REPLACE_WITH_KV_NAMESPACE_ID"
-
-# Bind the Worker to a custom hostname on a Cloudflare-managed zone.
-# `pnpm setup` fills this in; for manual setups, change pattern to your zone.
-routes = [
-  { pattern = "mail.example.com", custom_domain = true },
-]
 
 # Secrets are set via `wrangler secret put <NAME>`, not in this file:
 #   CF_API_TOKEN

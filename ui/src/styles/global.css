@@ -345,11 +345,18 @@ html[data-theme="dark"] {
 
 .page-head {
   display: flex;
-  align-items: flex-end;
+  /* Top-align so the actions sit next to the title row, not pushed down to the
+     bottom of a multi-line description. */
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
 }
+.page-head > div:first-child { min-width: 0; flex: 1 1 320px; }
+/* Drop the actions row past the breadcrumb (font-size 12 × line-height 1.5 = 18px,
+ * plus the 6px crumbs margin-bottom = 24px) so the action button top-aligns
+ * with the h1 instead of sitting next to a multi-line description. */
+.page-head .actions { flex-shrink: 0; padding-top: 24px; }
 .page-head .crumbs {
   display: flex;
   align-items: center;

@@ -27,6 +27,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter worker typecheck
       - run: pnpm --filter worker test
+      - run: pnpm --filter ui build
       - name: prepare wrangler dry-run config
         run: cp worker/wrangler.toml.example worker/wrangler.toml
       - name: wrangler deploy --dry-run
