@@ -171,6 +171,10 @@ html[data-theme="dark"] {
 .shell {
   min-height: 100%;
   display: grid;
+  /* Explicit full-width column. Without this the implicit grid uses an `auto`
+     track that shrinks to the widest item's intrinsic content, so pages whose
+     only content is a narrow card render visibly narrower than other pages. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr;
 }
 
@@ -335,6 +339,7 @@ html[data-theme="dark"] {
 /* ───────────────────────── Main content ───────────────────────── */
 
 .main {
+  width: 100%;
   max-width: 1320px;
   margin: 0 auto;
   padding: 22px 22px 80px;
@@ -343,6 +348,11 @@ html[data-theme="dark"] {
 
 #route {
   display: grid;
+  /* Explicit single full-width track. Without this the implicit grid uses an
+     `auto` track that shrinks to the widest item's intrinsic content width —
+     pages whose only content is a narrow card (e.g. Domains after we hid the
+     Zone column) end up narrower than other views. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 22px;
   min-width: 0;
 }
@@ -1462,18 +1472,19 @@ table.list tbody td.right { text-align: right; }
     border-left: 0;
   }
 
-  /* Modal as a full-screen sheet on phones. */
-  .modal-backdrop { padding-top: 0; place-items: stretch; }
+  /* Phone modals: content-sized (not full-screen). A nearly-full-width sheet
+     centered in the viewport with internal scrolling if it overflows. The
+     previous full-screen approach stretched the body and left huge gaps
+     inside short forms. */
+  .modal-backdrop { padding-top: 0; place-items: center; padding: 14px; }
   .modal {
-    width: 100vw;
-    min-height: 100vh;
-    border-radius: 0;
-    border: 0;
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100vh - 28px);
     display: flex;
     flex-direction: column;
   }
-  .modal-body { flex: 1; overflow-y: auto; }
-  .modal-foot { position: sticky; bottom: 0; }
+  .modal-body { overflow-y: auto; }
 
   /* Palette as a top-anchored sheet on phones. */
   .modal-backdrop:has(.palette) { padding-top: 0; }
