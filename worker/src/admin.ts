@@ -3,7 +3,7 @@ import type { Env } from "./index";
 
 export async function dashboard(env: Env): Promise<Record<string, unknown>> {
   const since = Math.floor(Date.now() / 1000) - 24 * 60 * 60;
-  const [sendStats, authStats, lastError, counts, cfApiHealth] = await Promise.all([
+  const [sendStats, authStats, lastError, counts, systemHealth] = await Promise.all([
     env.D1_MAIN.prepare(
       `SELECT
          COUNT(*) AS total,
@@ -22,8 +22,10 @@ export async function dashboard(env: Env): Promise<Record<string, unknown>> {
       env.D1_MAIN.prepare("SELECT COUNT(*) AS total FROM allowlisted_senders WHERE enabled = 1").first<{ total: number }>(),
       env.D1_MAIN.prepare("SELECT COUNT(*) AS total FROM smtp_credentials WHERE revoked_at IS NULL").first<{ total: number }>(),
     ]),
-    checkCloudflareApiHealth(env),
+    checkSystemHealth(env),
   ]);
+
+  const cfApiHealth = systemHealth.find((probe) => probe.name === "cloudflare_api") ?? null;
 
   return {
     window_seconds: 24 * 60 * 60,
@@ -40,8 +42,221 @@ export async function dashboard(env: Env): Promise<Record<string, unknown>> {
       senders: counts[2]?.total ?? 0,
       smtp_credentials: counts[3]?.total ?? 0,
     },
-    cf_api_health: cfApiHealth,
+    // cf_api_health is preserved for backwards compatibility; new clients
+    // should consume `system_health` which is a richer multi-probe list.
+    cf_api_health: cfApiHealth === null ? null : {
+      ok: cfApiHealth.ok,
+      status: cfApiHealth.status,
+      error_code: cfApiHealth.error_code,
+      checked_at: cfApiHealth.checked_at,
+    },
+    system_health: systemHealth,
   };
+}
+
+export interface HealthProbe {
+  name: string;
+  ok: boolean;
+  status: number | null;
+  error_code: string | null;
+  detail: string | null;
+  checked_at: number;
+}
+
+export async function checkSystemHealth(env: Env): Promise<HealthProbe[]> {
+  const probes = await Promise.all([
+    probeCloudflareApi(env),
+    probeD1Schema(env),
+    probeKv(env),
+    probeAccessJwks(env),
+    probeRecentRelaySend(env),
+    probeBootstrapFailures(env),
+  ]);
+  return probes;
+}
+
+async function probeCloudflareApi(env: Env): Promise<HealthProbe> {
+  const base = await checkCloudflareApiHealth(env);
+  return {
+    name: "cloudflare_api",
+    ok: base.ok,
+    status: base.status,
+    error_code: base.error_code,
+    detail: base.ok ? "Token verifies" : null,
+    checked_at: base.checked_at,
+  };
+}
+
+async function probeD1Schema(env: Env): Promise<HealthProbe> {
+  const checkedAt = nowSeconds();
+  try {
+    const required = env.REQUIRED_D1_SCHEMA_VERSION || "1";
+    const row = await env.D1_MAIN.prepare("SELECT value_json FROM settings WHERE key = 'schema_version'").first<{ value_json: string }>();
+    const actual = row?.value_json !== undefined ? parseSettingValue(row.value_json) : null;
+    const ok = actual === required;
+    return {
+      name: "d1_schema",
+      ok,
+      status: ok ? 200 : 500,
+      error_code: ok ? null : "schema_version_mismatch",
+      detail: actual === null ? "schema_version row missing" : `actual=${actual} required=${required}`,
+      checked_at: checkedAt,
+    };
+  } catch (error) {
+    return {
+      name: "d1_schema",
+      ok: false,
+      status: null,
+      error_code: "d1_fetch_failed",
+      detail: error instanceof Error ? error.message : null,
+      checked_at: checkedAt,
+    };
+  }
+}
+
+async function probeKv(env: Env): Promise<HealthProbe> {
+  const checkedAt = nowSeconds();
+  const sentinel = `health:probe:${checkedAt}`;
+  try {
+    await env.KV_HOT.put(sentinel, "ok", { expirationTtl: 60 });
+    const value = await env.KV_HOT.get(sentinel);
+    await env.KV_HOT.delete(sentinel);
+    const ok = value === "ok";
+    return {
+      name: "kv",
+      ok,
+      status: ok ? 200 : 500,
+      error_code: ok ? null : "kv_sentinel_mismatch",
+      detail: ok ? "Sentinel round-trips" : "Sentinel did not round-trip",
+      checked_at: checkedAt,
+    };
+  } catch (error) {
+    return {
+      name: "kv",
+      ok: false,
+      status: null,
+      error_code: "kv_fetch_failed",
+      detail: error instanceof Error ? error.message : null,
+      checked_at: checkedAt,
+    };
+  }
+}
+
+async function probeAccessJwks(env: Env): Promise<HealthProbe> {
+  const checkedAt = nowSeconds();
+  if (env.ACCESS_JWKS_JSON !== undefined && env.ACCESS_JWKS_JSON.length > 0) {
+    return {
+      name: "access_jwks",
+      ok: true,
+      status: 200,
+      error_code: null,
+      detail: "Using ACCESS_JWKS_JSON override",
+      checked_at: checkedAt,
+    };
+  }
+  try {
+    const response = await fetch(`https://${env.ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`);
+    if (!response.ok) {
+      return {
+        name: "access_jwks",
+        ok: false,
+        status: response.status,
+        error_code: `http_${response.status}`,
+        detail: null,
+        checked_at: checkedAt,
+      };
+    }
+    const body = (await response.json()) as { keys?: unknown[] };
+    const keys = Array.isArray(body.keys) ? body.keys.length : 0;
+    return {
+      name: "access_jwks",
+      ok: keys > 0,
+      status: response.status,
+      error_code: keys > 0 ? null : "jwks_empty",
+      detail: `${keys} key${keys === 1 ? "" : "s"}`,
+      checked_at: checkedAt,
+    };
+  } catch (error) {
+    return {
+      name: "access_jwks",
+      ok: false,
+      status: null,
+      error_code: "fetch_failed",
+      detail: error instanceof Error ? error.message : null,
+      checked_at: checkedAt,
+    };
+  }
+}
+
+async function probeRecentRelaySend(env: Env): Promise<HealthProbe> {
+  const checkedAt = nowSeconds();
+  const since = checkedAt - 24 * 60 * 60;
+  try {
+    const row = await env.D1_MAIN.prepare(
+      "SELECT MAX(ts) AS last_ts FROM send_events WHERE source = 'smtp' AND status = 'accepted' AND ts >= ?",
+    )
+      .bind(since)
+      .first<{ last_ts: number | null }>();
+    const lastTs = row?.last_ts ?? null;
+    const ok = lastTs !== null;
+    return {
+      name: "recent_relay_send",
+      ok,
+      status: 200,
+      error_code: null,
+      detail: lastTs === null ? "No accepted relay sends in 24h" : `Last accepted relay send ${checkedAt - lastTs}s ago`,
+      checked_at: checkedAt,
+    };
+  } catch (error) {
+    return {
+      name: "recent_relay_send",
+      ok: false,
+      status: null,
+      error_code: "d1_fetch_failed",
+      detail: error instanceof Error ? error.message : null,
+      checked_at: checkedAt,
+    };
+  }
+}
+
+async function probeBootstrapFailures(env: Env): Promise<HealthProbe> {
+  const checkedAt = nowSeconds();
+  const since = checkedAt - 24 * 60 * 60;
+  try {
+    const row = await env.D1_MAIN.prepare(
+      "SELECT COUNT(*) AS total FROM auth_failures WHERE source = 'bootstrap' AND ts >= ?",
+    )
+      .bind(since)
+      .first<{ total: number }>();
+    const count = row?.total ?? 0;
+    const ok = count === 0;
+    return {
+      name: "bootstrap_failures_24h",
+      ok,
+      status: 200,
+      error_code: null,
+      detail: count === 0 ? "No bootstrap attempts" : `${count} failed bootstrap attempt${count === 1 ? "" : "s"} in 24h`,
+      checked_at: checkedAt,
+    };
+  } catch (error) {
+    return {
+      name: "bootstrap_failures_24h",
+      ok: false,
+      status: null,
+      error_code: "d1_fetch_failed",
+      detail: error instanceof Error ? error.message : null,
+      checked_at: checkedAt,
+    };
+  }
+}
+
+function parseSettingValue(raw: string): string | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === "string" || typeof parsed === "number" ? String(parsed) : null;
+  } catch {
+    return raw;
+  }
 }
 
 export interface CloudflareApiHealth {

@@ -127,6 +127,15 @@ export interface CfApiHealth {
   error_code: string | null;
 }
 
+export interface HealthProbe {
+  name: string;
+  ok: boolean;
+  status: number | null;
+  error_code: string | null;
+  detail: string | null;
+  checked_at: number;
+}
+
 export interface DashboardData {
   window_seconds: number;
   sends_24h: { total: number; accepted: number | null; failed: number | null };
@@ -138,7 +147,8 @@ export interface DashboardData {
     senders: number;
     smtp_credentials: number;
   };
-  cf_api_health: CfApiHealth;
+  cf_api_health: CfApiHealth | null;
+  system_health: HealthProbe[];
 }
 
 export interface CreateSecretResult {

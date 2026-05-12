@@ -4,7 +4,7 @@ import { h, icon, on, setChildren } from "../dom";
 import { eventStatusPill, eventStatusKind } from "../status";
 import { formatBytes, formatNumber, formatRelative, formatShort } from "../format";
 import { navigate } from "../router";
-import type { DashboardData, Domain, SendEvent, Sender, SmtpCredential, User } from "../types";
+import type { DashboardData, Domain, HealthProbe, SendEvent, Sender, SmtpCredential, User } from "../types";
 
 interface SnapshotState {
   dashboard?: DashboardData;
@@ -175,8 +175,8 @@ function statTile(opts: { label: string; value: string; foot: string; unit?: str
 }
 
 function healthCard(data: DashboardData): HTMLElement {
-  const ok = data.cf_api_health.ok;
-  const status = ok ? "Healthy" : data.cf_api_health.error_code ?? "Unhealthy";
+  const probes = data.system_health ?? [];
+  const latest = probes.reduce<number>((acc, p) => Math.max(acc, p.checked_at), 0);
   return h(
     "div",
     { class: "card" },
@@ -184,34 +184,59 @@ function healthCard(data: DashboardData): HTMLElement {
       "div",
       { class: "card-head" },
       h("h2", null, "Service health"),
-      h("span", { class: "soft", style: "font-size: 12px" }, `Checked ${formatRelative(data.cf_api_health.checked_at)}`),
+      latest > 0 ? h("span", { class: "soft", style: "font-size: 12px" }, `Checked ${formatRelative(latest)}`) : false,
     ),
     h(
       "div",
       { class: "card-body" },
-      h(
-        "div",
-        { class: "health-grid" },
-        healthCell("Cloudflare API", ok ? "ok" : "bad", status),
-        healthCell("Worker", "ok", "Responding"),
-        healthCell("D1 reachability", "ok", "Reachable via Worker"),
-        healthCell(
-          "Last error",
-          data.last_error ? "warn" : "muted",
-          data.last_error ? "See events" : "None",
-        ),
-      ),
+      probes.length === 0
+        ? h(
+            "div",
+            { class: "health-grid" },
+            healthCell("Cloudflare API", "muted", "checking…", null),
+          )
+        : h(
+            "div",
+            { class: "health-grid" },
+            ...probes.map((probe) =>
+              healthCell(
+                probeLabel(probe.name),
+                probe.ok ? "ok" : probeKindWhenFailing(probe.name),
+                probe.ok ? "Healthy" : probe.error_code ?? "Unhealthy",
+                probe,
+              ),
+            ),
+          ),
     ),
   );
 }
 
-function healthCell(label: string, kind: "ok" | "bad" | "warn" | "muted", value: string): HTMLElement {
+function probeLabel(name: string): string {
+  switch (name) {
+    case "cloudflare_api": return "Cloudflare API";
+    case "d1_schema": return "D1 schema";
+    case "kv": return "KV";
+    case "access_jwks": return "Access JWKS";
+    case "recent_relay_send": return "Recent relay send";
+    case "bootstrap_failures_24h": return "Bootstrap attempts";
+    default: return name;
+  }
+}
+
+function probeKindWhenFailing(name: string): "bad" | "warn" {
+  // Informational signals warn rather than alarm.
+  if (name === "recent_relay_send" || name === "bootstrap_failures_24h") return "warn";
+  return "bad";
+}
+
+function healthCell(label: string, kind: "ok" | "bad" | "warn" | "muted", value: string, probe: HealthProbe | null): HTMLElement {
   const className = kind === "muted" ? "pill muted" : `pill ${kind}`;
   return h(
     "div",
-    { class: "health-item" },
+    { class: "health-item", title: probe?.detail ?? undefined },
     h("span", { class: "label" }, label),
     h("div", { class: "value" }, h("span", { class: className }, value)),
+    probe?.detail ? h("div", { class: "soft", style: "font-size: 11px; margin-top: 4px" }, probe.detail) : false,
   );
 }
 
