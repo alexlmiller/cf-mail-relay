@@ -73,6 +73,7 @@ function paint(root: HTMLElement, domains: Domain[]) {
       {
         key: "domain",
         label: "Domain",
+        primary: true,
         render: (row) => h("span", { class: "row", style: "gap: 8px" }, icon("globe", 13), h("span", { class: "id", style: "font-size: 13px; color: var(--text)" }, row.domain)),
         sort: (row) => row.domain,
       },
@@ -86,6 +87,7 @@ function paint(root: HTMLElement, domains: Domain[]) {
       {
         key: "zone",
         label: "Zone",
+        hideOnCard: true,
         render: (row) =>
           row.cloudflare_zone_id
             ? copyable({ value: row.cloudflare_zone_id, display: row.cloudflare_zone_id, withIcon: true })
@@ -104,6 +106,7 @@ function paint(root: HTMLElement, domains: Domain[]) {
       {
         key: "created",
         label: "Created",
+        hideOnCard: true,
         render: (row) => h("span", { class: "mono num soft" }, formatDayOnly(row.created_at)),
         sort: (row) => row.created_at,
         width: 130,

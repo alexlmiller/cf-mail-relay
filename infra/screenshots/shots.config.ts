@@ -217,6 +217,15 @@ export function shots(): Shot[] {
       waitFor: "tbody tr",
     },
 
+    // 19 — Mobile domains (currently narrower than other tables)
+    {
+      name: "19-mobile-domains",
+      fixtures: adminFixtures(),
+      route: "/domains",
+      viewport: { width: 390, height: 844 },
+      waitFor: "tbody tr",
+    },
+
     // 19 — Mobile SMTP credentials (stacked actions + card layout)
     {
       name: "19-mobile-credentials",

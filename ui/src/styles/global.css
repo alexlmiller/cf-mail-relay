@@ -1429,7 +1429,11 @@ table.list tbody td.right { text-align: right; }
    (set automatically by buildTable). */
 @media (max-width: 720px) {
   .table-shell[data-cards="1"] .table-wrap { overflow-x: hidden; }
-  .table-shell[data-cards="1"] table.list { min-width: 0; }
+  /* display: block on the table itself — otherwise the table-layout algorithm
+     still honours each column's intrinsic width (e.g. width: 220 on a hidden
+     column) and shrinks the shell to that natural width. Without this, tables
+     with wide explicit-width columns render visibly narrower than the rest. */
+  .table-shell[data-cards="1"] table.list { display: block; width: 100%; min-width: 0; }
   .table-shell[data-cards="1"] thead { display: none; }
   .table-shell[data-cards="1"] tbody, .table-shell[data-cards="1"] tr,
   .table-shell[data-cards="1"] td { display: block; max-width: none; white-space: normal; }
@@ -1456,14 +1460,20 @@ table.list tbody td.right { text-align: right; }
     color: var(--text-mute);
     font-weight: 500;
   }
-  /* Cells flagged primary span the full row and lose the label slot. */
+  /* Cells flagged primary span the full row and lose the label slot — used
+     for the card's main identifier (e.g. domain name, credential label). */
   .table-shell[data-cards="1"] tbody td[data-primary] {
     grid-template-columns: 1fr;
-    margin-bottom: 4px;
-    padding-bottom: 8px;
+    margin-bottom: 6px;
+    padding-bottom: 10px;
     border-bottom: 1px dashed var(--border);
+    font-weight: 500;
   }
   .table-shell[data-cards="1"] tbody td[data-primary]::before { content: none; }
+  /* Cells flagged hide-on-card disappear in card mode — used for secondary
+     detail (Zone ID, Created date) that's also visible on the row's detail
+     page. Has no effect outside card mode. */
+  .table-shell[data-cards="1"] tbody td[data-hide-card] { display: none; }
 }
 
 /* Reduced motion */

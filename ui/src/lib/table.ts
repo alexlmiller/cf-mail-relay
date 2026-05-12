@@ -17,6 +17,18 @@ export interface ColumnDef<Row> {
   width?: number | string;
   /** Right-align the cell content. */
   right?: boolean;
+  /**
+   * In cardMode, render this cell as the card's title — full-width, no label,
+   * with a separator below. Use for the row's main identifier (e.g. the
+   * domain name, the credential label).
+   */
+  primary?: boolean;
+  /**
+   * In cardMode, hide this cell entirely on phone. Use for secondary detail
+   * that's also reachable via the row's detail page (e.g. Zone ID, Created
+   * date). Has no effect on desktop.
+   */
+  hideOnCard?: boolean;
 }
 
 export interface TableOptions<Row> {
@@ -251,7 +263,16 @@ export function buildTable<Row>(options: TableOptions<Row>): { root: HTMLElement
         tr.tabIndex = 0;
       }
       for (const col of options.columns) {
-        const td = h("td", { class: col.cell ?? "", "data-label": col.label }, col.render(row));
+        const td = h(
+          "td",
+          {
+            class: col.cell ?? "",
+            "data-label": col.label,
+            "data-primary": col.primary ? "1" : undefined,
+            "data-hide-card": col.hideOnCard ? "1" : undefined,
+          },
+          col.render(row),
+        );
         if (col.right) td.classList.add("right");
         tr.appendChild(td);
       }
