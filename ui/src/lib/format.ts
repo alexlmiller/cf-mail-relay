@@ -119,6 +119,33 @@ const errorMessages: Record<string, string> = {
   not_found: "No matching credential.",
   tls_required: "AUTH attempted before STARTTLS.",
   throttled: "Throttled by the relay's auth-failure window.",
+
+  // Security audit additions
+  invalid_envelope_from: "SMTP envelope From was malformed.",
+  invalid_recipients: "Recipient list was malformed.",
+  invalid_from: "From address was malformed.",
+  missing_from: "From address missing on the request body.",
+  from_header_mismatch: "MIME From: header doesn't match the authorized sender.",
+  sender_header_not_allowed: "MIME Sender: header isn't on the allowed-senders list.",
+  singleton_header_duplicated: "Duplicate identity header (From/Sender/Reply-To/Message-ID) rejected.",
+  idempotency_key_conflict: "Idempotency key reused with a different request body.",
+  missing_signed_headers: "Relay HMAC missing the X-Relay-Signed-Headers list.",
+  missing_required_signed_header: "Relay HMAC didn't sign a required header.",
+  invalid_access_jwt_type: "Cloudflare Access JWT was not an app token.",
+  sender_domain_mismatch: "Sender email's domain doesn't match the granted zone.",
+  domain_not_found: "Granted domain not found or disabled.",
+  invalid_role: "User role must be 'admin' or 'sender'.",
+  user_not_found: "User not found.",
+  user_disabled: "User is disabled — re-enable from the user detail page.",
+  user_not_provisioned: "Your Cloudflare Access identity isn't provisioned as a user in this relay yet.",
+  no_fields_to_update: "PATCH body had no recognised fields.",
+  rate_limited: "Send quota exceeded for this scope.",
+
+  // Bootstrap-specific
+  invalid_bootstrap_token: "Bootstrap token didn't match.",
+  bootstrap_already_completed: "Bootstrap already completed — additional admins are added via the UI.",
+  bootstrap_not_configured: "BOOTSTRAP_SETUP_TOKEN secret is not set on the worker.",
+  invalid_email: "Email is malformed.",
 };
 
 export function explainError(code: string | null | undefined): string {

@@ -212,9 +212,9 @@ function authFailureTable(rows: AuthFailure[]): HTMLElement {
       {
         key: "source",
         label: "Source",
-        render: (row) => h("span", { class: "uppercase soft", style: "font-size: 11px" }, row.source),
+        render: (row) => sourcePill(row.source),
         sort: (row) => row.source,
-        width: 80,
+        width: 110,
       },
       {
         key: "id",
@@ -227,13 +227,26 @@ function authFailureTable(rows: AuthFailure[]): HTMLElement {
     rows,
     defaultSort: { key: "ts", dir: "desc" },
     chips: authFailureChips,
-    chipValue: (row) => row.reason ?? "",
+    chipValue: (row) => `${row.source}:${row.reason ?? ""}`,
     search: (row) => `${row.attempted_username ?? ""} ${row.reason ?? ""} ${row.source}`,
     searchPlaceholder: "Search by username or reason…",
     emptyTitle: "No authentication failures",
     emptyHint: "If someone tries to AUTH with a bad username or password, it'll land here.",
   });
   return built.root;
+}
+
+function sourcePill(source: string): HTMLElement {
+  switch (source) {
+    case "bootstrap":
+      return pill("bootstrap", "warn", "Failed bootstrap-admin attempt — investigate the source IP");
+    case "smtp":
+      return pill("smtp", "muted");
+    case "http":
+      return pill("http", "muted");
+    default:
+      return h("span", { class: "uppercase soft", style: "font-size: 11px" }, source);
+  }
 }
 
 function reasonLabel(reason: string | null): string {

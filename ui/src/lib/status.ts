@@ -74,9 +74,13 @@ export const sendEventChips: FilterChip[] = [
   { key: "rate", label: "Rate-limited", match: (s) => s === "rate_limited" },
 ];
 
+// Auth failure chips filter on a composite "source:reason" string so we can
+// distinguish bootstrap attempts from regular SMTP/HTTP auth failures.
 export const authFailureChips: FilterChip[] = [
   { key: "all", label: "All", match: () => true },
-  { key: "bad_creds", label: "Bad creds", match: (s) => s === "bad_creds" },
-  { key: "disabled", label: "Disabled", match: (s) => s === "disabled" },
-  { key: "not_found", label: "Unknown user", match: (s) => s === "not_found" },
+  { key: "bootstrap", label: "Bootstrap", match: (s) => s.startsWith("bootstrap:") },
+  { key: "smtp", label: "SMTP", match: (s) => s.startsWith("smtp:") },
+  { key: "bad_creds", label: "Bad creds", match: (s) => s.endsWith(":bad_creds") },
+  { key: "disabled", label: "Disabled", match: (s) => s.endsWith(":disabled") },
+  { key: "not_found", label: "Unknown user", match: (s) => s.endsWith(":not_found") },
 ];
