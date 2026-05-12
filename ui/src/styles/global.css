@@ -494,6 +494,22 @@ select.input { appearance: none; padding-right: 24px; background-image: linear-g
 .card-body { padding: 16px; }
 .card.pad-0 .card-body { padding: 0; }
 
+/* Section — labelled group inside a page (Credentials, Settings, etc).
+   A heading row + optional helper text, then content (usually a table-shell). */
+.section { display: flex; flex-direction: column; gap: 10px; }
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.section-head h2 {
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.006em;
+}
+
 /* Compact list — 2-line activity-feed rendering used by buildTable when
    options.compact is set (Events, Auth failures, dashboard recent activity).
    Visually matches the dashboard's first-run checklist rows. */

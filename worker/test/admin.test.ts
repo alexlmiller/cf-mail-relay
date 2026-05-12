@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   checkCloudflareApiHealth,
+  createSmtpCredential,
   createApiKey,
   createDomain,
   createUser,
   dashboard,
   deleteSender,
+  getAppSettings,
   refreshDomainFromCloudflare,
   revokeApiKey,
+  updateAppSettings,
   updateApiKey,
   updateDomain,
   updateSender,
@@ -149,6 +152,54 @@ describe("admin dashboard", () => {
     await expect(revokeApiKey(makeEnv(), created.id)).resolves.toBeUndefined();
   });
 
+  it("reads SMTP client settings with fixed secure connection values", async () => {
+    const env = envWith(makeSettingsD1({ smtp_host: JSON.stringify("mailer.example.com") }));
+
+    await expect(getAppSettings(env)).resolves.toEqual({
+      smtp_host: "mailer.example.com",
+      smtp_port: 587,
+      smtp_security: "STARTTLS",
+    });
+  });
+
+  it("normalizes, stores, and clears SMTP host settings", async () => {
+    const settings: Record<string, string> = {};
+    const env = envWith(makeSettingsD1(settings));
+
+    await expect(updateAppSettings(env, { smtp_host: "SMTP://Mailer.Example.COM/" })).resolves.toMatchObject({
+      smtp_host: "mailer.example.com",
+      smtp_port: 587,
+      smtp_security: "STARTTLS",
+    });
+    expect(settings.smtp_host).toBe(JSON.stringify("mailer.example.com"));
+
+    await expect(updateAppSettings(env, { smtp_host: "" })).resolves.toMatchObject({
+      smtp_host: null,
+    });
+    expect(settings.smtp_host).toBe("null");
+  });
+
+  it("rejects malformed SMTP host settings", async () => {
+    const env = envWith(makeSettingsD1({}));
+
+    await expect(updateAppSettings(env, { smtp_host: "mailer.example.com:587" })).rejects.toThrow("invalid_smtp_host");
+    await expect(updateAppSettings(env, { smtp_host: "evil host.example.com" })).rejects.toThrow("invalid_smtp_host");
+    await expect(updateAppSettings(env, { smtp_host: "https://mailer.example.com" })).rejects.toThrow("invalid_smtp_host");
+    await expect(updateAppSettings(env, { smtp_host: "-mailer.example.com" })).rejects.toThrow("invalid_smtp_host");
+    await expect(updateAppSettings(env, { smtp_host: 42 })).rejects.toThrow("invalid_smtp_host");
+  });
+
+  it("includes SMTP client settings in new credential reveal payloads", async () => {
+    const env = envWith(makeSettingsD1({ smtp_host: JSON.stringify("mailer.example.com") }));
+
+    await expect(createSmtpCredential(env, { user_id: "usr_1", name: "Laptop", username: "gmail-relay" })).resolves.toMatchObject({
+      username: "gmail-relay",
+      smtp_host: "mailer.example.com",
+      smtp_port: 587,
+      smtp_security: "STARTTLS",
+    });
+  });
+
   it("rejects missing user role instead of defaulting to admin", async () => {
     await expect(createUser(makeEnv(), { email: "next@example.net" })).rejects.toThrow("invalid_role");
   });
@@ -259,6 +310,40 @@ function makeRecordingD1(changes: number = 1): { db: D1Database; capture: Captur
   };
   const db = { prepare: (sql: string) => makeStatement(sql) } as unknown as D1Database;
   return { db, capture };
+}
+
+function makeSettingsD1(settings: Record<string, string>): D1Database {
+  const makeStatement = (sql: string) => {
+    const statement = {
+      bound: [] as unknown[],
+      bind(...params: unknown[]) {
+        this.bound = params;
+        return this;
+      },
+      async first() {
+        if (sql.includes("FROM settings WHERE key = ?")) {
+          const key = String(this.bound[0]);
+          return settings[key] === undefined ? null : { value_json: settings[key] };
+        }
+        if (sql.includes("FROM send_events") && sql.includes("ORDER BY ts DESC")) {
+          return null;
+        }
+        return { total: 0 };
+      },
+      async all() {
+        return { results: [] };
+      },
+      async run() {
+        if (sql.includes("INSERT OR REPLACE INTO settings")) {
+          if (sql.includes("'smtp_host'")) settings.smtp_host = String(this.bound[0]);
+          if (sql.includes("'policy_version'")) settings.policy_version = String(this.bound[0]);
+        }
+        return { meta: { changes: 1 } };
+      },
+    };
+    return statement;
+  };
+  return { prepare: (sql: string) => makeStatement(sql) } as unknown as D1Database;
 }
 
 function envWith(d1: D1Database): Env {

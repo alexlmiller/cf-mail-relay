@@ -153,7 +153,16 @@ export async function runApply(ctx) {
   // 5. Apply D1 migrations.
   if (!options.skipMigrations) {
     await runWrangler(execImpl, options.workerDir, ["d1", "migrations", "apply", d1.name, "--remote"]);
+    await runWrangler(execImpl, options.workerDir, [
+      "d1",
+      "execute",
+      d1.name,
+      "--remote",
+      "--command",
+      `INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('smtp_host', ${sqlStringLiteral(JSON.stringify(options.relayHost))}, unixepoch())`,
+    ]);
     steps.push({ step: "migrations_applied" });
+    steps.push({ step: "smtp_host_configured", smtp_host: options.relayHost });
   }
 
   // 6. Push the generated secrets via wrangler. CF_API_TOKEN is NOT pushed
@@ -223,6 +232,7 @@ export async function runApply(ctx) {
     domains: options.domains,
     relayHmacSecret: secrets?.RELAY_HMAC_SECRET_CURRENT ?? "<existing>",
     relayKeyId: options.relayKeyId,
+    relayHost: options.relayHost,
   });
   writeFileImpl(options.runbookPath, runbook);
   steps.push({ step: "runbook_written", path: options.runbookPath });
@@ -319,6 +329,7 @@ export function renderWranglerToml(input) {
 }
 
 export function renderRunbook(input) {
+  const relayHost = input.relayHost ?? `smtp.${input.domains[0]}`;
   const lines = [
     `# cf-mail-relay — adopter runbook`,
     ``,
@@ -338,7 +349,7 @@ export function renderRunbook(input) {
     `RELAY_WORKER_URL=${input.adminUrl}`,
     `RELAY_KEY_ID=${input.relayKeyId}`,
     `RELAY_HMAC_SECRET=${input.relayHmacSecret}`,
-    `RELAY_DOMAIN=smtp.${input.domains[0]}`,
+    `RELAY_DOMAIN=${relayHost}`,
     `RELAY_TLS_CERT_FILE=/tls/fullchain.pem`,
     `RELAY_TLS_KEY_FILE=/tls/privkey.pem`,
     `\`\`\``,
@@ -350,7 +361,7 @@ export function renderRunbook(input) {
       ``,
       ...dnsRecordPlan(domain).map((record) => `- \`${record.type}  ${record.name}\` — ${record.value}`),
       ``,
-      `Plus a DNS-only A record for the relay: \`smtp.${input.domains[0]}\` -> your relay host IP.`,
+      `Plus a DNS-only A record for the relay: \`${relayHost}\` -> your relay host IP.`,
       ``,
     ]),
     `## Set the runtime CF_API_TOKEN (do this once, with a least-privilege token)`,
@@ -398,6 +409,7 @@ export function parseArgs(argv, env = process.env) {
     kvNamespaceTitle: "cf-mail-relay-hot",
     pushCfApiToken: false,
     regenerateSecrets: false,
+    relayHost: "",
     relayKeyId: "rel_01",
     repoRoot,
     runbookPath: join(repoRoot, "RUNBOOK.md"),
@@ -434,6 +446,9 @@ export function parseArgs(argv, env = process.env) {
       case "--kv-namespace-title": options.kvNamespaceTitle = readValue(argv, index, arg); index += 1; break;
       case "--push-cf-api-token": options.pushCfApiToken = true; break;
       case "--regenerate-secrets": options.regenerateSecrets = true; break;
+      case "--relay-host":
+      case "--smtp-host":
+        options.relayHost = normalizeHostname(readValue(argv, index, arg)); index += 1; break;
       case "--relay-key-id": options.relayKeyId = readValue(argv, index, arg); index += 1; break;
       case "--skip-bootstrap": options.skipBootstrap = true; break;
       case "--skip-build-deploy": options.skipBuildDeploy = true; break;
@@ -448,6 +463,9 @@ export function parseArgs(argv, env = process.env) {
     }
   }
   options.domains = [...new Set(options.domains)];
+  if (!options.relayHost && options.domains.length > 0) {
+    options.relayHost = `smtp.${options.domains[0]}`;
+  }
   return options;
 }
 
@@ -492,7 +510,7 @@ function buildPlan(options) {
     admin_url: options.adminUrl,
     domains: options.domains.map((domain) => ({
       domain,
-      relay_hostname: `smtp.${options.domains[0]}`,
+      relay_hostname: options.relayHost,
       dns_records: dnsRecordPlan(domain),
       verification: `pnpm doctor:delivery -- --domain ${domain}`,
     })),
@@ -643,6 +661,23 @@ function normalizeDomain(raw) {
   return String(raw).trim().replace(/\.$/u, "").toLowerCase();
 }
 
+function normalizeHostname(raw) {
+  const host = String(raw)
+    .trim()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//iu, "")
+    .replace(/\/.*$/u, "")
+    .replace(/\.$/u, "")
+    .toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u.test(host)) {
+    throw new Error(`Invalid SMTP host: ${raw}`);
+  }
+  return host;
+}
+
+function sqlStringLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
 function parseJsonOrText(text) {
   if (text.length === 0) return null;
   try {
@@ -705,6 +740,8 @@ Apply flags (--apply):
                              domains are strongly preferred.
   --d1-id <id>              Use existing D1 instead of creating.
   --kv-id <id>              Use existing KV namespace instead of creating.
+  --smtp-host <host>        SMTP relay hostname shown in client setup details
+                             and RUNBOOK.md (default smtp.<first-domain>).
   --relay-key-id <id>       RELAY_HMAC_KEY_ID (default rel_01).
   --regenerate-secrets      Force regenerate even if worker/wrangler.toml exists.
   --push-cf-api-token       Push your setup CLOUDFLARE_API_TOKEN as the worker's

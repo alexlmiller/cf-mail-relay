@@ -6,89 +6,23 @@ import { formatRelative, initialsFor } from "../format";
 import { buildForm, closeModal, openModal, secretRevealBody } from "../modal";
 import { pill } from "../status";
 import { buildTable } from "../table";
-import { navigate, parse, replaceQuery } from "../router";
+import { navigate } from "../router";
 import { toast } from "../toast";
 import type { ApiKey, CreateSecretResult, Sender, User } from "../types";
 
-export async function renderApiKeys(root: HTMLElement) {
-  setChildren(
-    root,
-    head(),
-    h("div", { id: "api-keys-table" }, h("div", { class: "card" }, h("div", { class: "card-body" }, h("div", { class: "skeleton" })))),
-  );
-
-  let keys: ApiKey[] = [];
-  let users: User[] = [];
-  let senders: Sender[] = [];
-  try {
-    [keys, users, senders] = await Promise.all([
-      api.listApiKeys(),
-      api.listUsers(),
-      api.listSenders(),
-    ]);
-  } catch (error) {
-    const target = root.querySelector<HTMLElement>("#api-keys-table");
-    if (target) {
-      const message = error instanceof Error ? error.message : "Could not load API keys.";
-      setChildren(target, h("div", { class: "banner bad" }, icon("warn", 14), message));
-    }
-    return;
-  }
-  paint(root, keys, users, senders);
-
-  const query = parse().query;
-  if (query.get("new") === "1") {
-    replaceQuery({ new: undefined });
-    openNewApiKey(users, senders, () => renderApiKeys(root), { userId: query.get("user") });
-  }
+export interface ApiKeysCardData {
+  keys: ApiKey[];
+  users: User[];
+  senders: Sender[];
 }
 
-function head(): HTMLElement {
-  return h(
-    "header",
-    { class: "page-head" },
-    h(
-      "div",
-      null,
-      h(
-        "div",
-        { class: "crumbs" },
-        h("a", { href: "#/" }, "—"),
-        h("span", { class: "sep" }, "/"),
-        h("span", null, "api-keys"),
-      ),
-      h("h1", null, "API keys"),
-      h(
-        "div",
-        { class: "soft", style: "margin-top: 6px; font-size: 13px; max-width: 64ch" },
-        "Bearer tokens for the HTTP ",
-        h("span", { class: "mono" }, "/send"),
-        " endpoint. Like SMTP credentials, they inherit a user's allowed senders.",
-      ),
-    ),
-    h(
-      "div",
-      { class: "actions" },
-      h(
-        "button",
-        {
-          type: "button",
-          class: "btn primary",
-          "on:click": async () => {
-            const [users, senders] = await Promise.all([api.listUsers(), api.listSenders()]);
-            openNewApiKey(users, senders, () => navigate("/api-keys"));
-          },
-        },
-        icon("plus", 13),
-        "New API key",
-      ),
-    ),
-  );
-}
-
-function paint(root: HTMLElement, keys: ApiKey[], users: User[], senders: Sender[]) {
-  const target = root.querySelector<HTMLElement>("#api-keys-table");
-  if (!target) return;
+/**
+ * Renders the API keys section as a labelled card. Composed by the
+ * combined Credentials page (`views/credentials.ts`) alongside the SMTP
+ * credentials card; not a top-level page on its own.
+ */
+export function buildApiKeysCard(data: ApiKeysCardData, onReload: () => Promise<void> | void): HTMLElement {
+  const { keys, users, senders } = data;
   const built = buildTable<ApiKey>({
     columns: [
       {
@@ -165,7 +99,7 @@ function paint(root: HTMLElement, keys: ApiKey[], users: User[], senders: Sender
                     title: "Rename this API key",
                     "on:click": (event: Event) => {
                       event.stopPropagation();
-                      openRenameApiKey(row, () => renderApiKeys(root));
+                      openRenameApiKey(row, () => onReload());
                     },
                   },
                   "Edit",
@@ -181,7 +115,7 @@ function paint(root: HTMLElement, keys: ApiKey[], users: User[], senders: Sender
                       if (!confirm(`Roll ${row.name}? The old token will stop working immediately; replace it in any application that uses it.`)) return;
                       try {
                         const result = await api.rollApiKey(row.id);
-                        revealApiKey(result, () => renderApiKeys(root));
+                        revealApiKey(result, () => onReload());
                       } catch (error) {
                         toast(describeError(error, "Could not roll"), "err");
                       }
@@ -200,7 +134,7 @@ function paint(root: HTMLElement, keys: ApiKey[], users: User[], senders: Sender
                       try {
                         await api.revokeApiKey(row.id);
                         toast(`${row.name} revoked`);
-                        await renderApiKeys(root);
+                        await onReload();
                       } catch (error) {
                         toast(describeError(error, "Could not revoke"), "err");
                       }
@@ -224,13 +158,44 @@ function paint(root: HTMLElement, keys: ApiKey[], users: User[], senders: Sender
       {
         type: "button",
         class: "btn primary",
-        "on:click": () => openNewApiKey(users, senders, () => renderApiKeys(root)),
+        "on:click": () => openNewApiKey(users, senders, () => onReload()),
       },
       icon("plus", 12),
       "New API key",
     ) as Child,
   });
-  setChildren(target, built.root);
+  return h(
+    "section",
+    { class: "section" },
+    h(
+      "div",
+      { class: "section-head" },
+      h(
+        "h2",
+        null,
+        "API keys",
+        h("span", { class: "soft", style: "margin-left: 8px; font-weight: 400; font-size: 13px" }, `· ${keys.length}`),
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "btn primary sm",
+          "on:click": () => openNewApiKey(users, senders, () => onReload()),
+        },
+        icon("plus", 12),
+        "New API key",
+      ),
+    ),
+    h(
+      "div",
+      { class: "soft", style: "font-size: 12.5px; max-width: 64ch" },
+      "Bearer tokens for the HTTP ",
+      h("span", { class: "mono" }, "/send"),
+      " endpoint. Like SMTP credentials, they inherit a user's allowed senders.",
+    ),
+    built.root,
+  );
 }
 
 interface NewKeyOptions { userId?: string | null }

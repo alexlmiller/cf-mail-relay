@@ -29,6 +29,7 @@ export function parse(): Route {
   // /api-keys                  → api-keys
   // /users                     → users
   // /users/<id>                → user-detail
+  // /settings                  → settings
   const segments = path.split("/").filter(Boolean);
   let name = "dashboard";
 
@@ -58,6 +59,8 @@ export function parse(): Route {
     }
   } else if (segments[0] === "me") {
     name = "me";
+  } else if (segments[0] === "settings") {
+    name = "settings";
   } else {
     name = "not-found";
   }

@@ -4,6 +4,7 @@
 
 import { hmacSha256Hex } from "./hmac";
 import type { Env } from "./index";
+import { getAppSettings, type AppSettings, type SmtpSecretResult } from "./admin";
 
 export interface SelfProfile {
   id: string;
@@ -68,7 +69,11 @@ export async function selfSmtpCredentials(env: Env, userId: string): Promise<unk
   return result.results ?? [];
 }
 
-export async function selfCreateSmtpCredential(env: Env, userId: string, body: Record<string, unknown>): Promise<{ id: string; username: string; secret: string }> {
+export async function selfSettings(env: Env): Promise<AppSettings> {
+  return getAppSettings(env);
+}
+
+export async function selfCreateSmtpCredential(env: Env, userId: string, body: Record<string, unknown>): Promise<SmtpSecretResult> {
   const name = requireString(body.name, "name");
   const username = requireString(body.username, "username").trim().toLowerCase();
   const id = prefixedId("cred");
@@ -80,7 +85,7 @@ export async function selfCreateSmtpCredential(env: Env, userId: string, body: R
     .bind(id, userId, name, username, await hmacSha256Hex(env.CREDENTIAL_PEPPER, secret), now)
     .run();
   await bumpPolicyVersion(env);
-  return { id, username, secret };
+  return { id, username, secret, ...(await getAppSettings(env)) };
 }
 
 export async function selfRevokeSmtpCredential(env: Env, userId: string, credentialId: string): Promise<{ revoked: boolean }> {
@@ -96,7 +101,7 @@ export async function selfRevokeSmtpCredential(env: Env, userId: string, credent
   return { revoked: true };
 }
 
-export async function selfRollSmtpCredential(env: Env, userId: string, credentialId: string): Promise<{ id: string; username: string; secret: string }> {
+export async function selfRollSmtpCredential(env: Env, userId: string, credentialId: string): Promise<SmtpSecretResult> {
   const existing = await env.D1_MAIN.prepare(
     "SELECT id, username FROM smtp_credentials WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
   )
@@ -110,7 +115,7 @@ export async function selfRollSmtpCredential(env: Env, userId: string, credentia
     .bind(await hmacSha256Hex(env.CREDENTIAL_PEPPER, secret), credentialId, userId)
     .run();
   await bumpPolicyVersion(env);
-  return { id: existing.id, username: existing.username, secret };
+  return { id: existing.id, username: existing.username, secret, ...(await getAppSettings(env)) };
 }
 
 export async function selfApiKeys(env: Env, userId: string): Promise<unknown[]> {

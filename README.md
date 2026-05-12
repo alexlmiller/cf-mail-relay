@@ -148,12 +148,15 @@ pnpm run setup --apply \
   --account-id <cloudflare-account-id> \
   --admin-url https://mail.example.com \
   --allow-email <admin@example.com> \
-  --domain example.com
+  --domain example.com \
+  --smtp-host smtp.example.com
 ```
 
 For each `--domain`, setup and the admin UI look up the Cloudflare zone and
 Email Sending status through the Cloudflare API. You should not need to copy
-zone IDs by hand.
+zone IDs by hand. `--smtp-host` is the SMTP relay hostname shown in credential
+setup details; omit it to use `smtp.<first-domain>`. You can change it later
+from **Settings**.
 
 The wizard intentionally does **not** push its broad setup API token as the
 Worker runtime `CF_API_TOKEN`. After `--apply`, create a least-privilege
@@ -250,6 +253,8 @@ For applications, use the same values:
 
 Multiple sender domains can use the same relay hostname. For example,
 `alex@example.com` and `ops@example.org` can both use `smtp.example.com:587`.
+The app stores this hostname in **Settings** so users see the host, port, and
+STARTTLS requirement when they create or roll SMTP credentials.
 
 ## HTTP Send API
 

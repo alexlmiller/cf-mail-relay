@@ -6,7 +6,8 @@ import { api, describeError } from "./api";
 import { h, icon, setChildren } from "./dom";
 import { closeModal, openModal, setModalBody, setModalFooter, secretRevealBody } from "./modal";
 import { toast, copy } from "./toast";
-import type { ApiKey, Domain, Sender, SmtpCredential, User } from "./types";
+import { smtpSecretMeta, smtpSecretWarning } from "./smtp";
+import type { ApiKey, CreateSecretResult, Domain, Sender, SmtpCredential, User } from "./types";
 
 interface WizardSnapshot {
   users: User[];
@@ -25,7 +26,7 @@ interface WizardState {
   user?: User | { id: string; email: string };
   domain?: Domain;
   senderEmail?: string;
-  credential?: { username: string; secret: string };
+  credential?: CreateSecretResult;
 }
 
 const STEP_LABELS = ["User", "Domain", "Sender", "Credential", "Done"] as const;
@@ -253,7 +254,7 @@ export async function runUserWizard(init: WizardInit) {
           name: data.name,
           username: data.username,
         });
-        state.credential = { username: result.username ?? "", secret: result.secret };
+        state.credential = result;
         toast("Credential created");
         state.step = 4;
         repaint();
@@ -498,14 +499,11 @@ export async function runUserWizard(init: WizardInit) {
       ),
       secretRevealBody({
         title: "SMTP credential",
-        meta: [
-          { label: "Username", value: credential.username, mono: true },
-          { label: "SMTP host", value: "your relay's hostname, port 587, STARTTLS" },
-        ],
+        meta: smtpSecretMeta(credential),
         secret: credential.secret,
         warning: domainVerified
-          ? "Save this SMTP password now. It will not be shown again."
-          : "Save this SMTP password now. It will not be shown again. Sending will fail until the domain is verified.",
+          ? smtpSecretWarning(credential)
+          : `${smtpSecretWarning(credential)} Sending will fail until the domain is verified.`,
       }),
       h(
         "div",

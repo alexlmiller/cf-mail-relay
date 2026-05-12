@@ -2,6 +2,7 @@
 
 import type {
   ApiKey,
+  AppSettings,
   AuthFailure,
   CreateSecretResult,
   DashboardData,
@@ -162,6 +163,9 @@ export const api = {
 
   listSendEvents: () => request<SendEvent[]>("/admin/api/send-events"),
   listAuthFailures: () => request<AuthFailure[]>("/admin/api/auth-failures"),
+  getSettings: () => request<AppSettings>("/admin/api/settings"),
+  updateSettings: (body: { smtp_host: string | null }) =>
+    request<AppSettings>("/admin/api/settings", { method: "PATCH", body: JSON.stringify(body) }),
 
   // Ops
   bumpPolicyVersion: () =>

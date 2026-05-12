@@ -590,12 +590,20 @@ export function envelope<T>(result: T): { ok: true; result: T } {
 /** Fixture map: "METHOD /path" → JSON envelope (without ok/result wrapper). */
 export type FixtureMap = Record<string, unknown>;
 
+const APP_SETTINGS = {
+  smtp_host: "smtp.acme.example",
+  smtp_port: 587,
+  smtp_security: "STARTTLS",
+};
+
 /** Admin / populated dashboard. */
 export function adminFixtures(): FixtureMap {
   return {
     "GET /admin/api/session": envelope(ADMIN_SESSION),
     "GET /self/api/session": envelope(ADMIN_SESSION),
     "GET /admin/api/dashboard": envelope(DASHBOARD),
+    "GET /admin/api/settings": envelope(APP_SETTINGS),
+    "GET /self/api/settings": envelope(APP_SETTINGS),
     "GET /admin/api/users": envelope(USERS),
     "GET /admin/api/domains": envelope(DOMAINS),
     "GET /admin/api/senders": envelope(SENDERS),
@@ -623,6 +631,8 @@ export function emptyFixtures(): FixtureMap {
     "GET /admin/api/session": envelope(ADMIN_SESSION),
     "GET /self/api/session": envelope(ADMIN_SESSION),
     "GET /admin/api/dashboard": envelope(DASHBOARD_EMPTY),
+    "GET /admin/api/settings": envelope({ smtp_host: null, smtp_port: 587, smtp_security: "STARTTLS" }),
+    "GET /self/api/settings": envelope({ smtp_host: null, smtp_port: 587, smtp_security: "STARTTLS" }),
     "GET /admin/api/users": envelope([USERS[0]!]),
     "GET /admin/api/domains": envelope([]),
     "GET /admin/api/senders": envelope([]),
@@ -641,6 +651,7 @@ export function senderFixtures(): FixtureMap {
   return {
     "GET /admin/api/session": envelope(SENDER_SESSION),
     "GET /self/api/session": envelope(SENDER_SESSION),
+    "GET /self/api/settings": envelope(APP_SETTINGS),
     "GET /self/api/profile": envelope(SELF_PROFILE),
     "GET /self/api/senders": envelope(SELF_SENDERS),
     "GET /self/api/smtp-credentials": envelope(myCreds),

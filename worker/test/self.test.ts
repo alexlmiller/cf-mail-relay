@@ -8,6 +8,7 @@ import {
   selfRollSmtpCredential,
   selfSendEvents,
   selfSenders,
+  selfSettings,
   selfSmtpCredentials,
 } from "../src/self";
 import type { Env } from "../src/index";
@@ -75,6 +76,7 @@ function makeD1(opts: { changesOnRevoke?: number; rows?: Record<string, unknown[
 }
 
 function matchRowKey(sql: string): string {
+  if (sql.includes("FROM settings")) return "settings";
   if (sql.includes("FROM allowlisted_senders")) return "senders";
   if (sql.includes("FROM smtp_credentials")) return "credentials";
   if (sql.includes("FROM api_keys")) return "api_keys";
@@ -124,7 +126,7 @@ describe("self-service endpoints", () => {
   });
 
   it("forces user_id on credential creation regardless of body", async () => {
-    const { db, inserts } = makeD1({});
+    const { db, inserts } = makeD1({ rows: { settings: [{ value_json: JSON.stringify("mailer.example.com") }] } });
     const result = await selfCreateSmtpCredential(makeEnv(db), "usr_self", {
       name: "laptop",
       username: "gmail-relay",
@@ -132,6 +134,9 @@ describe("self-service endpoints", () => {
     });
     expect(result.secret.length).toBeGreaterThan(20);
     expect(result.username).toBe("gmail-relay");
+    expect(result.smtp_host).toBe("mailer.example.com");
+    expect(result.smtp_port).toBe(587);
+    expect(result.smtp_security).toBe("STARTTLS");
     const credInsert = inserts.find((i) => i.sql.includes("INSERT INTO smtp_credentials"));
     expect(credInsert).toBeDefined();
     expect(credInsert!.params[1]).toBe("usr_self");
@@ -170,9 +175,15 @@ describe("self-service endpoints", () => {
   });
 
   it("rolls a credential belonging to the user with a fresh secret", async () => {
-    const { db, updates } = makeD1({ rows: { credentials: [{ id: "cred_mine", username: "gmail-relay" }] } });
+    const { db, updates } = makeD1({
+      rows: {
+        credentials: [{ id: "cred_mine", username: "gmail-relay" }],
+        settings: [{ value_json: JSON.stringify("mailer.example.com") }],
+      },
+    });
     const result = await selfRollSmtpCredential(makeEnv(db), "usr_self", "cred_mine");
     expect(result.username).toBe("gmail-relay");
+    expect(result.smtp_host).toBe("mailer.example.com");
     expect(result.secret.length).toBeGreaterThan(20);
     const rollUpdate = updates.find((u) => u.sql.includes("UPDATE smtp_credentials") && u.sql.includes("secret_hash"));
     expect(rollUpdate?.sql).toMatch(/WHERE id = \? AND user_id = \? AND revoked_at IS NULL/);
@@ -207,5 +218,15 @@ describe("self-service endpoints", () => {
     const q = queries.find((row) => row.sql.includes("FROM send_events"));
     expect(q?.params).toEqual(["usr_self"]);
     expect(q?.sql).toMatch(/WHERE user_id = \?/);
+  });
+
+  it("exposes SMTP client settings read-only to signed-in users", async () => {
+    const { db } = makeD1({ rows: { settings: [{ value_json: JSON.stringify("mailer.example.com") }] } });
+
+    await expect(selfSettings(makeEnv(db))).resolves.toEqual({
+      smtp_host: "mailer.example.com",
+      smtp_port: 587,
+      smtp_security: "STARTTLS",
+    });
   });
 });

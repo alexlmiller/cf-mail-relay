@@ -1,7 +1,7 @@
 // Typed client for /self/api/*. Every endpoint scopes to the calling user.
 
 import { ApiError } from "./api";
-import type { ApiKey, CreateSecretResult, SendEvent, Session, SmtpCredential, User } from "./types";
+import type { ApiKey, AppSettings, CreateSecretResult, SendEvent, Session, SmtpCredential, User } from "./types";
 
 export interface SelfProfile extends User {
   counts: {
@@ -84,6 +84,7 @@ function parseError(raw: string): string | null {
 export const selfApi = {
   session: () => request<Session>("/self/api/session"),
   profile: () => request<SelfProfile>("/self/api/profile"),
+  settings: () => request<AppSettings>("/self/api/settings"),
   senders: () => request<SelfSender[]>("/self/api/senders"),
   smtpCredentials: () => request<SmtpCredential[]>("/self/api/smtp-credentials"),
   createSmtpCredential: (body: { name: string; username: string }) =>

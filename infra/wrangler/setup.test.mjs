@@ -21,6 +21,20 @@ describe("setup parseArgs", () => {
     assert.deepEqual(options.domains, ["example.com", "other.example.com"]);
     assert.equal(options.d1DatabaseId, "d1_123");
     assert.equal(options.kvNamespaceId, "kv_123");
+    assert.equal(options.relayHost, "smtp.example.com");
+  });
+
+  it("parses an explicit SMTP host", () => {
+    const options = parseArgs([
+      "--account-id",
+      "acc_123",
+      "--domain",
+      "example.com",
+      "--smtp-host",
+      "https://Mailer.Example.COM/submission",
+    ], {});
+
+    assert.equal(options.relayHost, "mailer.example.com");
   });
 
   it("rejects unknown options", () => {
@@ -223,6 +237,7 @@ routes = [
       domains: ["example.com", "other.example.com"],
       relayHmacSecret: "S3CR3T",
       relayKeyId: "rel_01",
+      relayHost: "mailer.example.com",
     });
     assert.match(runbook, /https:\/\/mail\.milf\.red/);
     assert.match(runbook, /Cloudflare account: acc/);
@@ -231,7 +246,8 @@ routes = [
     assert.match(runbook, /example\.com/);
     assert.match(runbook, /other\.example\.com/);
     assert.match(runbook, /RELAY_HMAC_SECRET=S3CR3T/);
-    assert.match(runbook, /smtp\.example\.com/);
+    assert.match(runbook, /RELAY_DOMAIN=mailer\.example\.com/);
+    assert.match(runbook, /relay: `mailer\.example\.com`/);
   });
 
   it("throws when bootstrap admin returns non-2xx (don't leave a half-bootstrapped relay)", async () => {
@@ -362,6 +378,10 @@ routes = [
     assert.ok(writes.has("/repo/RUNBOOK.md"));
     // Wrangler was invoked for migrations + secrets + deploy.
     assert.ok(execCalls.some((call) => call.includes("d1 migrations apply")));
+    const settingsCommand = execCalls.find((call) => call.includes("d1 execute") && call.includes("smtp_host"));
+    assert.ok(settingsCommand);
+    assert.match(settingsCommand, /VALUES \('smtp_host', '"smtp\.example\.com"', unixepoch\(\)\)/);
+    assert.doesNotMatch(settingsCommand, /\\"smtp\.example\.com\\"/);
     assert.ok(execCalls.some((call) => call.includes("secret put RELAY_HMAC_SECRET_CURRENT")));
     assert.ok(execCalls.some((call) => call.includes("wrangler deploy")));
     assert.ok(execCalls.some((call) => call.includes("secret delete BOOTSTRAP_SETUP_TOKEN")));

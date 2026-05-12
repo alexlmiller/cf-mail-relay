@@ -41,6 +41,9 @@ This is a release-ready SMTP-to-Cloudflare-Email-Sending bridge:
   Sending Edit plus Zone Read for the sending zones. The setup wizard does NOT
   auto-push the operator's broader setup token; the runbook covers the manual
   step.
+- The app stores the SMTP relay hostname in D1 `settings.smtp_host`. The setup
+  wizard initializes it from `--smtp-host` or `smtp.<first-domain>`; admins can
+  later edit it from the Settings screen.
 - Keep the public demo separate. Do not add `relay-demo.alexmiller.net` or demo
   mode back to the production Worker; deploy the demo with `demo/wrangler.toml`.
 

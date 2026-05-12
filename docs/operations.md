@@ -129,7 +129,7 @@ pnpm --dir worker exec wrangler d1 migrations apply cf-mail-relay --remote
 before deploying a newer worker.
 
 Current schema baseline: `worker/migrations/0001_init.sql` + `0002_security_hardening.sql`
-+ `0003_drop_retention.sql` (current version: 3).
++ `0003_drop_retention.sql` + `0004_smtp_host_setting.sql` (current version: 4).
 
 ## Managing infra with OpenTofu (optional)
 

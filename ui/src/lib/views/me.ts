@@ -14,11 +14,13 @@ import { eventStatusKind, eventStatusLabel, eventStatusPill, pill } from "../sta
 import { openDrawer, close as closeDrawer } from "../drawer";
 import { replaceQuery } from "../router";
 import { explainError } from "../format";
-import type { ApiKey, CreateSecretResult, SendEvent, SmtpCredential } from "../types";
+import { smtpSecretMeta, smtpSecretWarning } from "../smtp";
+import type { ApiKey, AppSettings, CreateSecretResult, SendEvent, SmtpCredential } from "../types";
 
 interface Snapshot {
   profile: SelfProfile;
   senders: SelfSender[];
+  settings: AppSettings;
   credentials: SmtpCredential[];
   apiKeys: ApiKey[];
   events: SendEvent[];
@@ -33,14 +35,15 @@ export async function renderMe(root: HTMLElement) {
 
   let snapshot: Snapshot;
   try {
-    const [profile, senders, credentials, apiKeys, events] = await Promise.all([
+    const [profile, senders, settings, credentials, apiKeys, events] = await Promise.all([
       selfApi.profile(),
       selfApi.senders(),
+      selfApi.settings(),
       selfApi.smtpCredentials(),
       selfApi.apiKeys(),
       selfApi.sendEvents().catch(() => []),
     ]);
-    snapshot = { profile, senders, credentials, apiKeys, events };
+    snapshot = { profile, senders, settings, credentials, apiKeys, events };
   } catch (error) {
     paintError(root, error);
     return;
@@ -80,6 +83,7 @@ function paint(root: HTMLElement, s: Snapshot) {
       { class: "spread" },
       profileCard(s.profile),
       sendersCard(s.senders),
+      smtpSettingsCard(s.settings),
       credentialsCard(root, s.credentials),
       apiKeysCard(root, s.apiKeys),
       activityCard(s.events),
@@ -187,6 +191,28 @@ function sendersCard(senders: SelfSender[]): HTMLElement {
     );
   }
   return h("div", { class: "card pad-0" }, head, list);
+}
+
+function smtpSettingsCard(settings: AppSettings): HTMLElement {
+  return h(
+    "div",
+    { class: "card" },
+    h("div", { class: "card-head" }, h("h2", null, "SMTP client settings")),
+    h(
+      "div",
+      { class: "card-body" },
+      h(
+        "dl",
+        { class: "dl" },
+        h("dt", null, "Server"),
+        h("dd", null, settings.smtp_host ? copyable({ value: settings.smtp_host }) : h("span", { class: "soft" }, "Not set")),
+        h("dt", null, "Port"),
+        h("dd", { class: "mono" }, String(settings.smtp_port)),
+        h("dt", null, "Security"),
+        h("dd", { class: "mono" }, settings.smtp_security),
+      ),
+    ),
+  );
 }
 
 function credentialsCard(root: HTMLElement, credentials: SmtpCredential[]): HTMLElement {
@@ -652,9 +678,9 @@ function revealCredential(result: CreateSecretResult, onDone: () => void) {
     title: "Credential created",
     body: secretRevealBody({
       title: "SMTP credential",
-      meta: [{ label: "Username", value: result.username ?? "", mono: true }],
+      meta: smtpSecretMeta(result),
       secret: result.secret,
-      warning: "Paste this into Gmail's \"Send mail as\" form now. We cannot show it again.",
+      warning: smtpSecretWarning(result),
     }),
     footer: h(
       "div",

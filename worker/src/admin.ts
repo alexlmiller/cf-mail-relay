@@ -1,6 +1,21 @@
 import { hmacSha256Hex } from "./hmac";
 import type { Env } from "./index";
 
+export interface AppSettings {
+  smtp_host: string | null;
+  smtp_port: 587;
+  smtp_security: "STARTTLS";
+}
+
+export interface SmtpSecretResult {
+  id: string;
+  username: string;
+  secret: string;
+  smtp_host: string | null;
+  smtp_port: 587;
+  smtp_security: "STARTTLS";
+}
+
 export async function dashboard(env: Env): Promise<Record<string, unknown>> {
   const since = Math.floor(Date.now() / 1000) - 24 * 60 * 60;
   const [sendStats, authStats, lastError, counts, systemHealth] = await Promise.all([
@@ -52,6 +67,26 @@ export async function dashboard(env: Env): Promise<Record<string, unknown>> {
     },
     system_health: systemHealth,
   };
+}
+
+export async function getAppSettings(env: Env): Promise<AppSettings> {
+  const smtpHost = await stringSetting(env, "smtp_host");
+  return {
+    smtp_host: smtpHost,
+    smtp_port: 587,
+    smtp_security: "STARTTLS",
+  };
+}
+
+export async function updateAppSettings(env: Env, body: Record<string, unknown>): Promise<AppSettings> {
+  if (!("smtp_host" in body)) {
+    throw new Error("no_fields_to_update");
+  }
+  const smtpHost = optionalHostname(body.smtp_host);
+  await env.D1_MAIN.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('smtp_host', ?, ?)")
+    .bind(JSON.stringify(smtpHost), nowSeconds())
+    .run();
+  return getAppSettings(env);
 }
 
 export interface HealthProbe {
@@ -396,7 +431,7 @@ export async function listSmtpCredentials(env: Env): Promise<unknown[]> {
   return result.results ?? [];
 }
 
-export async function createSmtpCredential(env: Env, body: Record<string, unknown>): Promise<{ id: string; username: string; secret: string }> {
+export async function createSmtpCredential(env: Env, body: Record<string, unknown>): Promise<SmtpSecretResult> {
   const id = prefixedId("cred");
   const username = requireString(body.username, "username").trim().toLowerCase();
   const secret = randomSecret();
@@ -415,7 +450,7 @@ export async function createSmtpCredential(env: Env, body: Record<string, unknow
     )
     .run();
   await bumpPolicyVersion(env);
-  return { id, username, secret };
+  return withSmtpSettings(env, { id, username, secret });
 }
 
 export async function revokeSmtpCredential(env: Env, id: string): Promise<void> {
@@ -423,7 +458,7 @@ export async function revokeSmtpCredential(env: Env, id: string): Promise<void> 
   await bumpPolicyVersion(env);
 }
 
-export async function rollSmtpCredential(env: Env, id: string): Promise<{ id: string; username: string; secret: string }> {
+export async function rollSmtpCredential(env: Env, id: string): Promise<SmtpSecretResult> {
   const existing = await env.D1_MAIN.prepare("SELECT id, username FROM smtp_credentials WHERE id = ? AND revoked_at IS NULL")
     .bind(id)
     .first<{ id: string; username: string }>();
@@ -435,7 +470,7 @@ export async function rollSmtpCredential(env: Env, id: string): Promise<{ id: st
     .bind(await hmacSha256Hex(env.CREDENTIAL_PEPPER, secret), id)
     .run();
   await bumpPolicyVersion(env);
-  return { id: existing.id, username: existing.username, secret };
+  return withSmtpSettings(env, { id: existing.id, username: existing.username, secret });
 }
 
 export async function listApiKeys(env: Env): Promise<unknown[]> {
@@ -729,6 +764,24 @@ async function bumpPolicyVersion(env: Env): Promise<void> {
     .run();
 }
 
+async function withSmtpSettings(env: Env, result: { id: string; username: string; secret: string }): Promise<SmtpSecretResult> {
+  const settings = await getAppSettings(env);
+  return { ...result, ...settings };
+}
+
+async function stringSetting(env: Env, key: string): Promise<string | null> {
+  const row = await env.D1_MAIN.prepare("SELECT value_json FROM settings WHERE key = ?").bind(key).first<{ value_json: string }>();
+  if (row === null) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(row.value_json) as unknown;
+    return typeof parsed === "string" && parsed.trim().length > 0 ? parsed.trim() : null;
+  } catch {
+    return row.value_json.trim().length > 0 ? row.value_json.trim() : null;
+  }
+}
+
 function allowedSenderIdsJson(value: unknown): string | null {
   if (value === null || value === undefined) {
     return null;
@@ -748,6 +801,26 @@ function requireString(value: unknown, field: string): string {
 
 function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function optionalHostname(value: unknown): string | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new Error("invalid_smtp_host");
+  }
+  const normalized = value.trim().toLowerCase().replace(/^smtp:\/\//iu, "").replace(/\/+$/u, "");
+  if (
+    normalized.length === 0 ||
+    normalized.length > 253 ||
+    normalized.includes(":") ||
+    !/^[a-z0-9.-]+$/u.test(normalized) ||
+    normalized.split(".").some((label) => label.length === 0 || label.length > 63 || label.startsWith("-") || label.endsWith("-"))
+  ) {
+    throw new Error("invalid_smtp_host");
+  }
+  return normalized;
 }
 
 function requireBoolean(value: unknown, field: string): boolean {

@@ -151,9 +151,18 @@ export interface DashboardData {
   system_health: HealthProbe[];
 }
 
+export interface AppSettings {
+  smtp_host: string | null;
+  smtp_port: 587;
+  smtp_security: "STARTTLS";
+}
+
 export interface CreateSecretResult {
   id: string;
   username?: string;
   key_prefix?: string;
   secret: string;
+  smtp_host?: string | null;
+  smtp_port?: 587;
+  smtp_security?: "STARTTLS";
 }

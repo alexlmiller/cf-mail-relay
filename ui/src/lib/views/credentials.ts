@@ -8,38 +8,59 @@ import { pill } from "../status";
 import { buildTable } from "../table";
 import { navigate, parse, replaceQuery } from "../router";
 import { toast } from "../toast";
-import type { CreateSecretResult, Sender, SmtpCredential, User } from "../types";
+import { smtpSecretMeta, smtpSecretWarning } from "../smtp";
+import { buildApiKeysCard, openNewApiKey } from "./api-keys";
+import type { ApiKey, CreateSecretResult, Sender, SmtpCredential, User } from "../types";
+
+interface CredentialsPageData {
+  credentials: SmtpCredential[];
+  apiKeys: ApiKey[];
+  users: User[];
+  senders: Sender[];
+}
 
 export async function renderCredentials(root: HTMLElement) {
   setChildren(
     root,
     head(),
-    h("div", { id: "credentials-table" }, h("div", { class: "card" }, h("div", { class: "card-body" }, h("div", { class: "skeleton" })))),
+    h(
+      "div",
+      { id: "credentials-body", class: "stack", style: "gap: 24px" },
+      h("div", { class: "card" }, h("div", { class: "card-body" }, h("div", { class: "skeleton" }))),
+      h("div", { class: "card" }, h("div", { class: "card-body" }, h("div", { class: "skeleton" }))),
+    ),
   );
 
-  let credentials: SmtpCredential[] = [];
-  let users: User[] = [];
-  let senders: Sender[] = [];
+  let data: CredentialsPageData;
   try {
-    [credentials, users, senders] = await Promise.all([
+    const [credentials, apiKeys, users, senders] = await Promise.all([
       api.listSmtpCredentials(),
+      api.listApiKeys(),
       api.listUsers(),
       api.listSenders(),
     ]);
+    data = { credentials, apiKeys, users, senders };
   } catch (error) {
-    const target = root.querySelector<HTMLElement>("#credentials-table");
+    const target = root.querySelector<HTMLElement>("#credentials-body");
     if (target) {
       const message = error instanceof Error ? error.message : "Could not load credentials.";
       setChildren(target, h("div", { class: "banner bad" }, icon("warn", 14), message));
     }
     return;
   }
-  paint(root, credentials, users, senders);
 
+  paint(root, data);
+
+  // Honor deep-link query params: ?new=smtp opens the SMTP modal; ?new=api
+  // opens the API-key modal; legacy ?new=1 defaults to SMTP.
   const query = parse().query;
-  if (query.get("new") === "1") {
+  const newParam = query.get("new");
+  if (newParam === "smtp" || newParam === "1") {
     replaceQuery({ new: undefined });
-    openNewCredential(users, senders, () => renderCredentials(root), { userId: query.get("user") });
+    openNewCredential(data.users, data.senders, () => renderCredentials(root), { userId: query.get("user") });
+  } else if (newParam === "api") {
+    replaceQuery({ new: undefined });
+    openNewApiKey(data.users, data.senders, () => renderCredentials(root), { userId: query.get("user") });
   }
 }
 
@@ -57,36 +78,43 @@ function head(): HTMLElement {
         h("span", { class: "sep" }, "/"),
         h("span", null, "credentials"),
       ),
-      h("h1", null, "SMTP credentials"),
+      h("h1", null, "Credentials"),
       h(
         "div",
         { class: "soft", style: "margin-top: 6px; font-size: 13px; max-width: 64ch" },
-        "Each credential belongs to one user and inherits that user's allowed senders. Use the username + secret in any SMTP client.",
+        "Secrets your users authenticate with — SMTP passwords for mail clients, bearer tokens for the HTTP API. Both inherit the owning user's allowed senders.",
       ),
     ),
-    h(
-      "div",
-      { class: "actions" },
-      h(
-        "button",
-        {
-          type: "button",
-          class: "btn primary",
-          "on:click": async () => {
-            const [users, senders] = await Promise.all([api.listUsers(), api.listSenders()]);
-            openNewCredential(users, senders, () => navigate("/credentials"));
-          },
-        },
-        icon("plus", 13),
-        "New credential",
-      ),
-    ),
+    h("div", { class: "actions" }),
   );
 }
 
-function paint(root: HTMLElement, credentials: SmtpCredential[], users: User[], senders: Sender[]) {
-  const target = root.querySelector<HTMLElement>("#credentials-table");
+function paint(root: HTMLElement, data: CredentialsPageData) {
+  const target = root.querySelector<HTMLElement>("#credentials-body");
   if (!target) return;
+  const onReload = () => renderCredentials(root);
+  setChildren(
+    target,
+    buildSmtpCredentialsCard(data, onReload),
+    buildApiKeysCard({ keys: data.apiKeys, users: data.users, senders: data.senders }, onReload),
+  );
+}
+
+export interface SmtpCredentialsCardData {
+  credentials: SmtpCredential[];
+  users: User[];
+  senders: Sender[];
+}
+
+/**
+ * Renders the SMTP credentials section as a labelled card. Composed by the
+ * combined Credentials page alongside the API keys card.
+ */
+export function buildSmtpCredentialsCard(
+  data: SmtpCredentialsCardData,
+  onReload: () => Promise<void> | void,
+): HTMLElement {
+  const { credentials, users, senders } = data;
   const built = buildTable<SmtpCredential>({
     columns: [
       {
@@ -158,7 +186,7 @@ function paint(root: HTMLElement, credentials: SmtpCredential[], users: User[], 
                     title: "Rename this credential",
                     "on:click": (event: Event) => {
                       event.stopPropagation();
-                      openRenameCredential(row, () => renderCredentials(root));
+                      openRenameCredential(row, () => onReload());
                     },
                   },
                   "Edit",
@@ -174,7 +202,7 @@ function paint(root: HTMLElement, credentials: SmtpCredential[], users: User[], 
                       if (!confirm(`Roll ${row.username}? The old password will stop working immediately; the new one needs to be pasted into Gmail.`)) return;
                       try {
                         const result = await api.rollSmtpCredential(row.id);
-                        revealCredential(result, () => renderCredentials(root));
+                        revealCredential(result, () => onReload());
                       } catch (error) {
                         toast(describeError(error, "Could not roll"), "err");
                       }
@@ -193,7 +221,7 @@ function paint(root: HTMLElement, credentials: SmtpCredential[], users: User[], 
                       try {
                         await api.revokeSmtpCredential(row.id);
                         toast(`${row.username} revoked`);
-                        await renderCredentials(root);
+                        await onReload();
                       } catch (error) {
                         toast(describeError(error, "Could not revoke"), "err");
                       }
@@ -217,13 +245,42 @@ function paint(root: HTMLElement, credentials: SmtpCredential[], users: User[], 
       {
         type: "button",
         class: "btn primary",
-        "on:click": () => openNewCredential(users, senders, () => renderCredentials(root)),
+        "on:click": () => openNewCredential(users, senders, () => onReload()),
       },
       icon("plus", 12),
-      "New credential",
+      "New SMTP credential",
     ) as Child,
   });
-  setChildren(target, built.root);
+  return h(
+    "section",
+    { class: "section" },
+    h(
+      "div",
+      { class: "section-head" },
+      h(
+        "h2",
+        null,
+        "SMTP credentials",
+        h("span", { class: "soft", style: "margin-left: 8px; font-weight: 400; font-size: 13px" }, `· ${credentials.length}`),
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          class: "btn primary sm",
+          "on:click": () => openNewCredential(users, senders, () => onReload()),
+        },
+        icon("plus", 12),
+        "New SMTP credential",
+      ),
+    ),
+    h(
+      "div",
+      { class: "soft", style: "font-size: 12.5px; max-width: 64ch" },
+      "Username + password for any SMTP client (Gmail, Postfix, Rails, etc.). Inherits the owning user's allowed senders.",
+    ),
+    built.root,
+  );
 }
 
 function avatar(email: string): HTMLElement {
@@ -406,11 +463,9 @@ export function openRenameCredential(credential: SmtpCredential, onSaved: () => 
 export function revealCredential(result: CreateSecretResult, onDone: () => void) {
   const body = secretRevealBody({
     title: "SMTP credential",
-    meta: [
-      { label: "Username", value: result.username ?? "", mono: true },
-    ],
+    meta: smtpSecretMeta(result),
     secret: result.secret,
-    warning: "Save this SMTP password now. We cannot show it again.",
+    warning: smtpSecretWarning(result),
   });
   openModal({
     title: "Credential created",

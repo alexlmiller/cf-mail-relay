@@ -113,12 +113,12 @@ export function shots(): Shot[] {
       },
     },
 
-    // 8 — API Keys list
+    // 8 — Credentials page (combined SMTP + API keys sections)
     {
-      name: "08-api-keys",
+      name: "08-credentials",
       fixtures: adminFixtures(),
-      route: "/api-keys",
-      waitFor: "table tbody tr, .table tbody tr",
+      route: "/credentials",
+      waitFor: ".section",
     },
 
     // 9 — Sender self-service /me view
@@ -159,6 +159,30 @@ export function shots(): Shot[] {
       fixtures: adminFixtures(),
       route: "/domains",
       waitFor: "table tbody tr, .table tbody tr",
+    },
+
+    // 21 — Settings page (SMTP + domains overview)
+    {
+      name: "21-settings",
+      fixtures: adminFixtures(),
+      route: "/settings",
+      waitFor: ".card",
+    },
+    {
+      name: "21-mobile-settings",
+      fixtures: adminFixtures(),
+      route: "/settings",
+      viewport: { width: 390, height: 844 },
+      waitFor: ".card",
+    },
+
+    // 22 — Mobile credentials (combined page)
+    {
+      name: "22-mobile-credentials",
+      fixtures: adminFixtures(),
+      route: "/credentials",
+      viewport: { width: 390, height: 844 },
+      waitFor: ".section",
     },
 
     // ──────────── Mobile variants (iPhone 14/15) ────────────

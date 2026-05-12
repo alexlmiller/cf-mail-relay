@@ -9,6 +9,7 @@ import {
   createSmtpCredential,
   createUser,
   dashboard,
+  getAppSettings,
   listApiKeys,
   listAuthFailures,
   listDomains,
@@ -24,6 +25,7 @@ import {
   revokeSmtpCredential,
   rollApiKey,
   rollSmtpCredential,
+  updateAppSettings,
   updateApiKey,
   updateDomain,
   updateSender,
@@ -42,6 +44,7 @@ import {
   selfRollSmtpCredential,
   selfSendEvents,
   selfSenders,
+  selfSettings,
   selfSmtpCredentials,
 } from "./self";
 import {
@@ -95,7 +98,7 @@ export interface Env {
 const app = new Hono<{ Bindings: Env }>();
 const workerVersion = "0.1.0-ms7";
 const gitSha = "ms7";
-const requiredSchemaVersionDefault = "3";
+const requiredSchemaVersionDefault = "4";
 const maxRelayBodyBytes = 6 * 1024 * 1024;
 
 app.get("/healthz", async (c) => {
@@ -398,6 +401,8 @@ app.get("/admin/api/login", async (c) => {
 });
 
 app.get("/admin/api/dashboard", async (c) => adminJson(c, () => dashboard(c.env)));
+app.get("/admin/api/settings", async (c) => adminJson(c, () => getAppSettings(c.env)));
+app.patch("/admin/api/settings", async (c) => adminJson(c, async () => updateAppSettings(c.env, await readJsonObject(c.req.raw))));
 app.get("/admin/api/users", async (c) => adminJson(c, () => listUsers(c.env)));
 app.post("/admin/api/users", async (c) => adminJson(c, async () => createUser(c.env, await readJsonObject(c.req.raw)), 201));
 app.get("/admin/api/domains", async (c) => adminJson(c, () => listDomains(c.env)));
@@ -487,6 +492,7 @@ app.get("/self/api/login", async (c) => {
 });
 
 app.get("/self/api/profile", async (c) => selfJson(c, (userId) => selfProfile(c.env, userId)));
+app.get("/self/api/settings", async (c) => selfJson(c, () => selfSettings(c.env)));
 app.get("/self/api/senders", async (c) => selfJson(c, (userId) => selfSenders(c.env, userId)));
 app.get("/self/api/smtp-credentials", async (c) => selfJson(c, (userId) => selfSmtpCredentials(c.env, userId)));
 app.post("/self/api/smtp-credentials", async (c) =>

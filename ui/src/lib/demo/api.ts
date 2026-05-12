@@ -1,7 +1,7 @@
 import type { SelfProfile, SelfSender } from "../api-self";
-import type { ApiKey, AuthFailure, DashboardData, Domain, SendEvent, Sender, Session, SmtpCredential, User } from "../types";
+import type { ApiKey, AppSettings, AuthFailure, DashboardData, Domain, SendEvent, Sender, Session, SmtpCredential, User } from "../types";
 
-const STORAGE_KEY = "cf-mail-relay-demo-state-v2";
+const STORAGE_KEY = "cf-mail-relay-demo-state-v3";
 const NOW = Math.floor(Date.now() / 1000);
 const MIN = 60;
 const HOUR = 60 * MIN;
@@ -15,6 +15,7 @@ interface DemoState {
   apiKeys: ApiKey[];
   events: SendEvent[];
   authFailures: AuthFailure[];
+  settings: AppSettings;
 }
 
 interface JsonEnvelope<T> {
@@ -54,6 +55,8 @@ export function installDemoApi(): void {
 function handleDemoRequest(state: DemoState, method: string, path: string, body: Record<string, unknown>): { state: DemoState; payload: unknown } {
   if (method === "GET" && (path === "/admin/api/session" || path === "/self/api/session")) return ok(state, adminSession(state));
   if (method === "GET" && path === "/admin/api/dashboard") return ok(state, dashboard(state));
+  if (method === "GET" && (path === "/admin/api/settings" || path === "/self/api/settings")) return ok(state, state.settings);
+  if (method === "PATCH" && path === "/admin/api/settings") return patchSettings(state, body);
   if (method === "GET" && path === "/admin/api/users") return ok(state, state.users);
   if (method === "GET" && path === "/admin/api/domains") return ok(state, state.domains);
   if (method === "GET" && path === "/admin/api/senders") return ok(state, state.senders);
@@ -196,7 +199,7 @@ function createCredential(state: DemoState, body: Record<string, unknown>) {
     last_used_at: null,
     revoked_at: null,
   };
-  return ok({ ...state, credentials: [credential, ...state.credentials] }, { id, username, secret: demoSecret("smtp") });
+  return ok({ ...state, credentials: [credential, ...state.credentials] }, { id, username, secret: demoSecret("smtp"), ...state.settings });
 }
 
 function revokeCredential(state: DemoState, id: string) {
@@ -206,7 +209,12 @@ function revokeCredential(state: DemoState, id: string) {
 function rollCredential(state: DemoState, id: string) {
   const credential = state.credentials.find((candidate) => candidate.id === id);
   if (!credential) throw new Error("credential_not_found");
-  return ok(state, { id, username: credential.username, secret: demoSecret("smtp") });
+  return ok(state, { id, username: credential.username, secret: demoSecret("smtp"), ...state.settings });
+}
+
+function patchSettings(state: DemoState, body: Record<string, unknown>) {
+  const smtpHost = typeof body.smtp_host === "string" && body.smtp_host.trim().length > 0 ? body.smtp_host.trim().toLowerCase() : null;
+  return ok({ ...state, settings: { ...state.settings, smtp_host: smtpHost } }, { ...state.settings, smtp_host: smtpHost });
 }
 
 function patchCredential(state: DemoState, id: string, body: Record<string, unknown>) {
@@ -289,7 +297,7 @@ function defaultState(): DemoState {
   const senders = demoSenders(users, domains);
   const credentials = demoCredentials(users, senders);
   const apiKeys = demoApiKeys(users, senders);
-  return { users, domains, senders, credentials, apiKeys, events: demoEvents(users, domains, credentials, apiKeys), authFailures: demoAuthFailures() };
+  return { users, domains, senders, credentials, apiKeys, events: demoEvents(users, domains, credentials, apiKeys), authFailures: demoAuthFailures(), settings: { smtp_host: "smtp.acme.example", smtp_port: 587, smtp_security: "STARTTLS" } };
 }
 
 function demoUsers(): User[] {

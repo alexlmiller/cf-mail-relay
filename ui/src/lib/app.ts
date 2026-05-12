@@ -20,9 +20,10 @@ import { renderDomains, openNewDomain } from "./views/domains";
 import { renderDomainDetail } from "./views/domain-detail";
 import { renderSenders, openNewSender } from "./views/senders";
 import { renderCredentials, openNewCredential } from "./views/credentials";
-import { renderApiKeys, openNewApiKey } from "./views/api-keys";
+import { openNewApiKey } from "./views/api-keys";
 import { renderUsers, openCreateUserSimple } from "./views/users";
 import { renderUserDetail } from "./views/user-detail";
+import { renderSettings } from "./views/settings";
 import { renderMe, openCreateCredential as openSelfCredential, openCreateApiKey as openSelfApiKey } from "./views/me";
 import type { Session } from "./types";
 
@@ -35,11 +36,10 @@ interface NavItem {
 const ADMIN_NAV: NavItem[] = [
   { label: "Dashboard", route: "/", match: (n) => n === "dashboard" },
   { label: "Events", route: "/events", match: (n) => n === "events" },
-  { label: "Domains", route: "/domains", match: (n) => n === "domains" || n === "domain-detail" },
   { label: "Senders", route: "/senders", match: (n) => n === "senders" },
-  { label: "SMTP Credentials", route: "/credentials", match: (n) => n === "credentials" },
-  { label: "API Keys", route: "/api-keys", match: (n) => n === "api-keys" },
+  { label: "Credentials", route: "/credentials", match: (n) => n === "credentials" || n === "api-keys" },
   { label: "Users", route: "/users", match: (n) => n === "users" || n === "user-detail" },
+  { label: "Settings", route: "/settings", match: (n) => n === "settings" || n === "domains" || n === "domain-detail" },
 ];
 
 let session: Session | null = null;
@@ -270,10 +270,10 @@ function armGotoSequence() {
     const adminMap: Record<string, string> = {
       d: "/",
       e: "/events",
-      o: "/domains",
+      o: "/settings",
       s: "/senders",
       c: "/credentials",
-      k: "/api-keys",
+      k: "/credentials",
       u: "/users",
       m: "/me",
     };
@@ -436,7 +436,8 @@ function handleRouteChange(route: ReturnType<typeof parse>) {
       void renderCredentials(routeRoot);
       break;
     case "api-keys":
-      void renderApiKeys(routeRoot);
+      // Legacy route — both surfaces now live on /credentials.
+      navigate("/credentials");
       break;
     case "users":
       void renderUsers(routeRoot);
@@ -447,6 +448,9 @@ function handleRouteChange(route: ReturnType<typeof parse>) {
       break;
     case "me":
       void renderMe(routeRoot);
+      break;
+    case "settings":
+      void renderSettings(routeRoot);
       break;
     default:
       paintNotFound();
