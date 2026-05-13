@@ -29,6 +29,11 @@
     "demo",
     "shared"
   ],
+  "pnpm": {
+    "overrides": {
+      "yaml": "^2.9.0"
+    }
+  },
   "devDependencies": {
     "playwright": "^1.60.0",
     "tsx": "^4.21.0"
