@@ -43,13 +43,30 @@ describe("setup parseArgs", () => {
 });
 
 describe("setup main", () => {
-  it("returns a dry-run plan without requiring a token", async () => {
-    const result = await main(["--account-id", "acc_123", "--domain", "example.com", "--dry-run"], {});
+  it("returns a plan-only output when no token is set", async () => {
+    const result = await main([
+      "--account-id", "acc_123",
+      "--admin-url", "https://mail.example.com",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+    ], {});
 
     assert.equal(result.ok, true);
-    assert.equal(result.dry_run, true);
+    assert.equal(result.plan_only, true);
+    assert.match(result.note, /CLOUDFLARE_API_TOKEN is not set/);
     assert.equal(result.plan.domains[0].domain, "example.com");
     assert.ok(result.plan.commands.some((command) => command.includes("wrangler d1 create")));
+  });
+
+  it("requires --admin-url and --allow-email even without --apply", async () => {
+    await assert.rejects(
+      main(["--account-id", "acc_123", "--domain", "example.com"], {}),
+      /--admin-url is required/,
+    );
+    await assert.rejects(
+      main(["--account-id", "acc_123", "--admin-url", "https://mail.example.com", "--domain", "example.com"], {}),
+      /--allow-email is required/,
+    );
   });
 
   it("passes preflight checks when Cloudflare resources are visible", async () => {
@@ -86,14 +103,12 @@ describe("setup main", () => {
     };
 
     const result = await main([
-      "--account-id",
-      "acc_123",
-      "--domain",
-      "example.com",
-      "--d1-database-id",
-      "d1_123",
-      "--kv-namespace-id",
-      "kv_123",
+      "--account-id", "acc_123",
+      "--admin-url", "https://mail.example.com",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+      "--d1-database-id", "d1_123",
+      "--kv-namespace-id", "kv_123",
     ], { CLOUDFLARE_API_TOKEN: "token" }, fetchImpl);
 
     assert.equal(result.ok, true);
@@ -118,7 +133,12 @@ describe("setup main", () => {
       return json({ success: false }, 404);
     };
 
-    const result = await main(["--account-id", "acc_123", "--domain", "example.com"], { CLOUDFLARE_API_TOKEN: "token" }, fetchImpl);
+    const result = await main([
+      "--account-id", "acc_123",
+      "--admin-url", "https://mail.example.com",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+    ], { CLOUDFLARE_API_TOKEN: "token" }, fetchImpl);
 
     assert.equal(result.ok, false);
     assert.equal(result.checks.find((check) => check.name === "worker_secrets").status, "fail");

@@ -30,21 +30,26 @@ export async function main(argv, env, depsOrFetch = {}) {
   if (!options.accountId) {
     throw new Error(`--account-id or CLOUDFLARE_ACCOUNT_ID is required.\n\n${usage()}`);
   }
-  if (options.apply && !options.adminUrl) {
-    throw new Error(`--apply requires --admin-url (e.g. https://mail.example.com).\n\n${usage()}`);
+  if (!options.adminUrl) {
+    throw new Error(`--admin-url is required (e.g. https://mail.example.com).\n\n${usage()}`);
   }
-  if (options.apply && !options.allowEmails.length) {
-    throw new Error(`--apply requires at least one --allow-email so Access policies are created.`);
+  if (!options.allowEmails.length) {
+    throw new Error(`--allow-email is required (at least one); the Access policy is scoped to these addresses.\n\n${usage()}`);
   }
 
   const plan = buildPlan(options);
-  if (options.dryRun) {
-    return { ok: true, checked_at: new Date().toISOString(), dry_run: true, plan };
-  }
-
   const token = env[options.tokenEnv];
+
+  // Plan-only fallback: with no token we can still print the plan + manual
+  // commands. Useful for first-pass review before creating a token.
   if (!token) {
-    throw new Error(`${options.tokenEnv} must contain a Cloudflare API token, or pass --dry-run for a plan only.`);
+    return {
+      ok: true,
+      checked_at: new Date().toISOString(),
+      plan_only: true,
+      note: `${options.tokenEnv} is not set; live preflight skipped. Plan-only output.`,
+      plan,
+    };
   }
 
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
@@ -454,7 +459,6 @@ export function parseArgs(argv, env = process.env) {
     d1DatabaseId: "",
     d1DatabaseName: "cf-mail-relay",
     domains: [],
-    dryRun: false,
     force: false,
     help: false,
     kvNamespaceId: "",
@@ -490,7 +494,6 @@ export function parseArgs(argv, env = process.env) {
         options.d1DatabaseId = readValue(argv, index, arg); index += 1; break;
       case "--d1-database-name": options.d1DatabaseName = readValue(argv, index, arg); index += 1; break;
       case "--domain": options.domains.push(normalizeDomain(readValue(argv, index, arg))); index += 1; break;
-      case "--dry-run": options.dryRun = true; break;
       case "--force": options.force = true; break;
       case "--kv-namespace-id":
       case "--kv-id":
@@ -777,16 +780,28 @@ function runCommand(command, args, options = {}) {
 
 function usage() {
   return `Usage:
-  pnpm run setup --account-id <id> --domain <domain> --admin-url https://mail.example.com [--dry-run]
-  pnpm run setup --apply --admin-url https://mail.example.com --allow-email you@example.com --domain example.com
+  pnpm run setup --account-id <id> --admin-url https://mail.example.com \\
+                 --allow-email you@example.com --domain example.com
+  pnpm run setup --apply --account-id <id> --admin-url ... --allow-email ... --domain ...
 
-Required:
-  --account-id              Cloudflare account ID, or CLOUDFLARE_ACCOUNT_ID.
-  --admin-url               URL where the admin UI + API will live (e.g. https://mail.example.com).
+Modes:
+  (no flag)                 Live preflight: validates the token, account, zone,
+                            and resources; prints the plan and check results.
+                            If no token is set (CLOUDFLARE_API_TOKEN unset),
+                            falls back to a plan-only output.
+  --apply                   Create resources, deploy the worker, bootstrap
+                            the admin, write RUNBOOK.md. Requires a token.
+
+Required (both modes):
+  --account-id              Cloudflare account ID (or CLOUDFLARE_ACCOUNT_ID).
+  --admin-url               URL where the admin UI + API will live
+                            (e.g. https://mail.example.com).
+  --allow-email <email>     Email(s) allowed by the Access policy. Repeat for
+                            more than one. The first becomes the bootstrapped
+                            admin during --apply.
   --domain                  Sending domain (repeat for multiple).
 
-Apply flags (--apply):
-  --allow-email <email>     Required at least once for the Access policy.
+Apply flags:
   --allow-platform-hostnames
                              Allow pages.dev/workers.dev admin URLs. Custom
                              domains are strongly preferred.
@@ -808,6 +823,5 @@ Apply flags (--apply):
 
 Common:
   --token-env <name>        Env var holding the CF API token (default CLOUDFLARE_API_TOKEN).
-  --dry-run                 Print plan only; no API calls (no token required).
 `;
 }
