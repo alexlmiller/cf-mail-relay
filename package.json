@@ -4,9 +4,9 @@
   "private": true,
   "description": "SMTP submission relay backed by Cloudflare Email Sending.",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@9.0.0",
+  "packageManager": "pnpm@9.15.9",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.22.2"
   },
   "scripts": {
     "build": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' --filter='./demo' build",
@@ -29,6 +29,11 @@
     "demo",
     "shared"
   ],
+  "pnpm": {
+    "overrides": {
+      "yaml": "^2.9.0"
+    }
+  },
   "devDependencies": {
     "playwright": "^1.60.0",
     "tsx": "^4.21.0"
