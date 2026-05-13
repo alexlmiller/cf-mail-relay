@@ -20,6 +20,7 @@ jobs:
         id: release
         with:
           release-type: simple
+          target-branch: main
           # Unified semver across relay, Worker, and UI.
 
   docker-push-relay:
