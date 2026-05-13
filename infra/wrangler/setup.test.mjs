@@ -339,6 +339,7 @@ routes = [
         writeFileImpl: () => {},
         existsImpl: () => false,
         accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+        progressImpl: () => {},
         fetchImpl,
       }),
       /Bootstrap admin failed/,
@@ -406,6 +407,7 @@ routes = [
       writeFileImpl: (path, body) => { writes.set(path, body); },
       existsImpl: (path) => exists.has(path),
       accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+      progressImpl: () => {},
       fetchImpl,
     });
 
@@ -484,6 +486,7 @@ routes = [
         writeFileImpl: () => {},
         existsImpl: () => false,
         accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+        progressImpl: () => {},
         fetchImpl,
       }),
       /BOOTSTRAP_SETUP_TOKEN is still present/,
@@ -547,6 +550,7 @@ routes = [
       writeFileImpl: () => {},
       existsImpl: (path) => path === "/repo/worker/wrangler.toml",
       accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+      progressImpl: () => {},
       fetchImpl,
     });
 
@@ -555,6 +559,61 @@ routes = [
     assert.ok(stepNames.includes("bootstrap_admin"), `expected bootstrap_admin step on retry; got ${stepNames.join(", ")}`);
     assert.ok(execCalls.some((call) => call.includes("secret put BOOTSTRAP_SETUP_TOKEN")));
     assert.ok(execCalls.some((call) => call.includes("secret delete BOOTSTRAP_SETUP_TOKEN")));
+  });
+
+  it("runApply emits progress lines via the injected progressImpl", async () => {
+    const progressLines = [];
+    const fetchImpl = async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
+      if (path === "/client/v4/accounts/acc/d1/database" && init.method === "POST") return json({ success: true, result: { uuid: "d1_new" } });
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && init.method === "POST") return json({ success: true, result: { id: "kv_new" } });
+      if (path === "/bootstrap/admin") return json({ ok: true, user_id: "usr_admin" });
+      throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
+    };
+
+    const options = parseArgs([
+      "--account-id", "acc",
+      "--admin-url", "https://mail.milf.red",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+      "--apply",
+    ], {});
+    options.workerDir = "/repo/worker";
+    options.repoRoot = "/repo";
+    options.wranglerExamplePath = "/repo/worker/wrangler.toml.example";
+    options.wranglerPath = "/repo/worker/wrangler.toml";
+    options.runbookPath = "/repo/RUNBOOK.md";
+
+    await runApply({
+      options,
+      env: { CLOUDFLARE_API_TOKEN: "token" },
+      client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
+      execImpl: async (_command, args) => {
+        if (args.join(" ") === "exec wrangler secret list --format json") return JSON.stringify([{ name: "CF_API_TOKEN" }]);
+        if (args.join(" ").includes("d1 execute") && args.join(" ").includes("FROM users")) {
+          return JSON.stringify([{ results: [{ n: 0 }] }]);
+        }
+        return undefined;
+      },
+      readFileImpl: () => "",
+      writeFileImpl: () => {},
+      existsImpl: () => false,
+      accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+      fetchImpl,
+      progressImpl: (message) => progressLines.push(message),
+    });
+
+    assert.ok(progressLines.some((line) => line.includes("Ensuring D1 database")), `D1 progress missing: ${progressLines.join("|")}`);
+    assert.ok(progressLines.some((line) => line.includes("Ensuring KV namespace")));
+    assert.ok(progressLines.some((line) => line.includes("Cloudflare Access app")));
+    assert.ok(progressLines.some((line) => line.includes("Applying D1 migrations")));
+    assert.ok(progressLines.some((line) => line.includes("Pushing")));
+    assert.ok(progressLines.some((line) => line.includes("Building admin UI")));
+    assert.ok(progressLines.some((line) => line.includes("Deploying worker")));
+    assert.ok(progressLines.some((line) => line.includes("Bootstrapping admin")));
+    assert.ok(progressLines.some((line) => line.includes("RUNBOOK")));
   });
 
   it("runApply skips bootstrap when users table is not empty (idempotent reruns)", async () => {
@@ -602,6 +661,7 @@ routes = [
       writeFileImpl: () => {},
       existsImpl: (path) => path === "/repo/worker/wrangler.toml",
       accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+      progressImpl: () => {},
       fetchImpl,
     });
 

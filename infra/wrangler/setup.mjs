@@ -99,14 +99,17 @@ export async function main(argv, env, depsOrFetch = {}) {
 
 export async function runApply(ctx) {
   const { options, env, client, execImpl, readFileImpl, writeFileImpl, existsImpl, accessAppImpl, fetchImpl } = ctx;
+  const progress = ctx.progressImpl ?? defaultProgress;
   const steps = [];
 
   // 1. Resource creation (skip-if-exists). Honors --d1-id / --kv-id flags from caller.
+  progress(`Ensuring D1 database ${options.d1DatabaseName}`);
   const d1 = options.d1DatabaseId
     ? { id: options.d1DatabaseId, name: options.d1DatabaseName, source: "provided" }
     : await createOrFindD1(client, options.accountId, options.d1DatabaseName);
   steps.push({ step: "d1", source: d1.source, id: d1.id, name: d1.name });
 
+  progress(`Ensuring KV namespace ${options.kvNamespaceTitle}`);
   const kv = options.kvNamespaceId
     ? { id: options.kvNamespaceId, title: options.kvNamespaceTitle, source: "provided" }
     : await createOrFindKv(client, options.accountId, options.kvNamespaceTitle);
@@ -114,6 +117,7 @@ export async function runApply(ctx) {
 
   // 2. Access app via access-app.mjs (programmatic call, so the destinations
   //    contract stays in one place).
+  progress(`Ensuring Cloudflare Access app on ${options.adminUrl}`);
   const accessRun = accessAppImpl ?? (await import("./access-app.mjs")).run;
   const accessArgs = [
     "--account-id", options.accountId,
@@ -134,10 +138,12 @@ export async function runApply(ctx) {
     ? generateSecrets()
     : null;
   if (secrets !== null) {
+    progress(`Generated ${Object.keys(secrets).length} worker secrets in memory`);
     steps.push({ step: "secrets_generated", names: Object.keys(secrets) });
   }
 
   // 4. Write worker/wrangler.toml from the example template.
+  progress(`Writing ${options.wranglerPath}`);
   const wranglerToml = renderWranglerToml({
     template: readFileImpl(options.wranglerExamplePath),
     accountId: options.accountId,
@@ -159,7 +165,9 @@ export async function runApply(ctx) {
 
   // 5. Apply D1 migrations.
   if (!options.skipMigrations) {
+    progress(`Applying D1 migrations to ${d1.name}`);
     await runWrangler(execImpl, options.workerDir, ["d1", "migrations", "apply", d1.name, "--remote"]);
+    progress(`Setting smtp_host=${options.relayHost} in D1 settings`);
     await runWrangler(execImpl, options.workerDir, [
       "d1",
       "execute",
@@ -178,6 +186,7 @@ export async function runApply(ctx) {
   //    Sending Edit only). The runbook documents the manual step.
   //    Opt-in: --push-cf-api-token reuses the setup token (with a warning).
   if (secrets !== null) {
+    progress(`Pushing ${Object.keys(secrets).length} worker secrets via wrangler`);
     for (const [name, value] of Object.entries(secrets)) {
       await runWrangler(execImpl, options.workerDir, ["secret", "put", name], value);
     }
@@ -195,7 +204,9 @@ export async function runApply(ctx) {
 
   // 7. Build UI (outputs into worker/public/) and deploy worker.
   if (!options.skipBuildDeploy) {
+    progress("Building admin UI bundle");
     await execImpl("pnpm", ["--filter", "@cf-mail-relay/ui", "build"], { cwd: options.repoRoot });
+    progress(`Deploying worker to ${options.adminUrl}`);
     await runWrangler(execImpl, options.workerDir, ["deploy"]);
     steps.push({ step: "deployed", admin_url: options.adminUrl });
   }
@@ -207,11 +218,14 @@ export async function runApply(ctx) {
   //    off "secrets were just generated", which silently skipped bootstrap on
   //    every retry and left the relay deployed with no admin user.
   if (!options.skipBootstrap) {
+    progress("Checking whether users table is empty");
     const usersEmpty = await isUsersTableEmpty(execImpl, options.workerDir, d1.name);
     if (!usersEmpty) {
+      progress("Bootstrap skipped: users table is not empty");
       steps.push({ step: "bootstrap_admin", skipped: true, reason: "users_table_not_empty" });
     } else {
       const adminEmail = options.allowEmails[0];
+      progress(`Bootstrapping admin ${adminEmail}`);
       const bootstrapToken = base64url(32);
       await runWrangler(execImpl, options.workerDir, ["secret", "put", "BOOTSTRAP_SETUP_TOKEN"], bootstrapToken);
       let bootstrapResponse;
@@ -246,6 +260,7 @@ export async function runApply(ctx) {
         );
       }
       steps.push({ step: "bootstrap_admin", email: adminEmail });
+      progress("Deleting BOOTSTRAP_SETUP_TOKEN");
       await runWrangler(execImpl, options.workerDir, ["secret", "delete", "BOOTSTRAP_SETUP_TOKEN"], "y\n");
       await verifyWranglerSecretDeleted(execImpl, options.workerDir, "BOOTSTRAP_SETUP_TOKEN");
       steps.push({ step: "bootstrap_token_cleared" });
@@ -254,6 +269,7 @@ export async function runApply(ctx) {
 
   // 9. Emit per-adopter RUNBOOK.md so the operator has a single source of
   //    truth with every value (DNS records, relay env, admin URL, IDs).
+  progress(`Writing ${options.runbookPath}`);
   const runbook = renderRunbook({
     adminUrl: options.adminUrl,
     accountId: options.accountId,
@@ -277,6 +293,10 @@ export async function runApply(ctx) {
 
 function runWrangler(execImpl, cwd, args, stdin) {
   return execImpl("pnpm", ["exec", "wrangler", ...args], stdin === undefined ? { cwd } : { cwd, stdin });
+}
+
+function defaultProgress(message) {
+  process.stderr.write(`==> ${message}\n`);
 }
 
 async function verifyWranglerSecretDeleted(execImpl, cwd, name) {
