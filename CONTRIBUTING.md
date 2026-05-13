@@ -31,6 +31,16 @@ derives versions and changelogs from commit prefixes.
 - `test:` tests only
 - `ci:` CI/build only
 
+## Branches and Releases
+
+`dev` is the default development branch. `main` is the protected release branch.
+Release PRs and tags are created from `main` only; the release workflow sets
+`release-please` `target-branch: main` explicitly.
+
+When syncing `dev` into `main` for a release, prefer rebase merge for a
+single-commit sync PR so the branches stay aligned. If a sync PR is squash
+merged, realign `dev` to `main` before continuing development.
+
 ## Worktrees
 
 Use worktrees under `.worktrees/` for substantive work:

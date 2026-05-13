@@ -50,6 +50,9 @@ This is a release-ready SMTP-to-Cloudflare-Email-Sending bridge:
 ## Working Rules
 
 - Use worktrees for substantive edits: `.worktrees/<feature>`.
+- `dev` is the default development branch; `main` is the protected release
+  branch. Release-please must target `main`, and release PRs/tags come from
+  `main` only.
 - Keep release-facing docs small. Prefer updating `README.md` or
   `docs/architecture.md` over adding a new doc.
 - Use Conventional Commits.

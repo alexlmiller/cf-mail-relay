@@ -223,8 +223,8 @@ summary keeps only counts and categorical reason/status codes.
 
 Quotas:
 
-- Relay: connection rate per remote IP, auth attempts per username, exponential
-  auth-failure lockout.
+- Relay: connection rate per remote IP, auth attempts per username+remote pair
+  with a remote-IP aggregate bucket, exponential auth-failure lockout.
 - Worker: per-sender minute and daily global/domain/sender/credential caps in
   D1 reservation rows.
 

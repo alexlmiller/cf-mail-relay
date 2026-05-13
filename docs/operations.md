@@ -89,8 +89,10 @@ The Worker rejects messages where:
 - Multiple `Message-ID:` headers → `duplicate_message_id_header` (400).
 - The MIME bytes are not UTF-8 → `mime_not_utf8_json_safe` (422).
 
-Outbound, the Worker strips `Bcc:`, `Received:`, `X-Received:`, and
-`X-Gm-message-state:` headers before calling Cloudflare's `send_raw`.
+Outbound, the Worker strips `Bcc:` plus capture/authentication trace headers
+before calling Cloudflare's `send_raw`: `Received:`, `X-Received:`,
+`X-Gm-message-state:`, `Authentication-Results:`, `Received-SPF:`,
+`DKIM-Signature:`, `ARC-*`, and `X-Originating-IP:`.
 
 ## Bootstrap audit signal
 
