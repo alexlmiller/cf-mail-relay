@@ -58,6 +58,24 @@ describe("setup main", () => {
     assert.ok(result.plan.commands.some((command) => command.includes("wrangler d1 create")));
   });
 
+  it("plan commands have no <PLACEHOLDER> stubs — real values from CLI args are substituted", async () => {
+    const result = await main([
+      "--account-id", "acc_123",
+      "--admin-url", "https://mail.example.com",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+    ], {});
+
+    for (const command of result.plan.commands) {
+      assert.doesNotMatch(command, /<D1_DATABASE_NAME>/, `placeholder leaked: ${command}`);
+      assert.doesNotMatch(command, /<admin@example\.com>/, `placeholder leaked: ${command}`);
+      assert.doesNotMatch(command, /<domain>/, `placeholder leaked: ${command}`);
+    }
+    assert.ok(result.plan.commands.some((command) => command.includes("d1 migrations apply cf-mail-relay --remote")));
+    assert.ok(result.plan.commands.some((command) => command.includes("--allow-email alex@example.com")));
+    assert.ok(result.plan.commands.some((command) => command.includes("doctor:local -- --domain example.com")));
+  });
+
   it("requires --admin-url and --allow-email even without --apply", async () => {
     await assert.rejects(
       main(["--account-id", "acc_123", "--domain", "example.com"], {}),

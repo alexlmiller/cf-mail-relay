@@ -584,15 +584,21 @@ function buildPlan(options) {
       `Write RUNBOOK.md`,
     ],
     // Verbatim commands an operator can run if they prefer the manual flow.
+    // All <PLACEHOLDER> strings are substituted with real values from the
+    // CLI args — copy-pasteable as-is.
     commands: [
       `pnpm --dir worker exec wrangler d1 create ${options.d1DatabaseName}`,
       `pnpm --dir worker exec wrangler kv namespace create ${options.kvNamespaceTitle}`,
-      "pnpm --dir worker exec wrangler d1 migrations apply <D1_DATABASE_NAME> --remote",
+      `pnpm --dir worker exec wrangler d1 migrations apply ${options.d1DatabaseName} --remote`,
       ...requiredSecrets.map((secret) => `pnpm --dir worker exec wrangler secret put ${secret}`),
-      "pnpm access:setup --allow-email <admin@example.com> --apply-config worker/wrangler.toml",
+      `pnpm access:setup --allow-email ${options.allowEmails[0]} --apply-config worker/wrangler.toml`,
       "pnpm --filter @cf-mail-relay/ui build",
       "pnpm --dir worker exec wrangler deploy",
-      "pnpm doctor:local -- --domain <domain>",
+      // Bootstrap is ephemeral: push, POST, delete.
+      "pnpm --dir worker exec wrangler secret put BOOTSTRAP_SETUP_TOKEN",
+      `curl -fsS ${options.adminUrl}/bootstrap/admin -H "Authorization: Bearer <bootstrap-token>" -H "content-type: application/json" --data '{"email":"${options.allowEmails[0]}"}'`,
+      "pnpm --dir worker exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN",
+      `pnpm doctor:local -- --domain ${options.domains[0]}`,
     ],
   };
 }
