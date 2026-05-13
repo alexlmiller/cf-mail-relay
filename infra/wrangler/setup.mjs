@@ -267,6 +267,42 @@ export async function runApply(ctx) {
     }
   }
 
+  // 8.5 Register each --domain in D1 so the admin UI shows it on first login.
+  //     The script already verified Email Sending status during preflight; do
+  //     the lookup again here to capture the freshest zone_id and status, then
+  //     UPSERT. `enabled` is left alone on conflict so admin-driven disables
+  //     stick across reruns.
+  const registeredDomains = [];
+  for (const domain of options.domains) {
+    progress(`Looking up Cloudflare data for ${domain}`);
+    const lookup = await lookupCloudflareDomain(client, domain);
+    progress(`Registering ${domain} in D1 (zone=${lookup.zoneId}, status=${lookup.status})`);
+    const domainId = `dom_${randomBytes(16).toString("hex")}`;
+    await runWrangler(execImpl, options.workerDir, [
+      "d1",
+      "execute",
+      d1.name,
+      "--remote",
+      "--command",
+      `INSERT INTO domains (id, domain, cloudflare_zone_id, status, enabled, created_at, updated_at) ` +
+        `VALUES (${sqlStringLiteral(domainId)}, ${sqlStringLiteral(domain)}, ${sqlStringLiteral(lookup.zoneId)}, ${sqlStringLiteral(lookup.status)}, 1, unixepoch(), unixepoch()) ` +
+        `ON CONFLICT(domain) DO UPDATE SET cloudflare_zone_id = excluded.cloudflare_zone_id, status = excluded.status, updated_at = unixepoch();`,
+    ]);
+    registeredDomains.push({ domain, zone_id: lookup.zoneId, status: lookup.status });
+  }
+  if (registeredDomains.length > 0) {
+    // Bump policy_version so any cached credentials miss on next read.
+    await runWrangler(execImpl, options.workerDir, [
+      "d1",
+      "execute",
+      d1.name,
+      "--remote",
+      "--command",
+      `INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('policy_version', ${sqlStringLiteral(JSON.stringify(String(Math.floor(Date.now() / 1000))))}, unixepoch())`,
+    ]);
+    steps.push({ step: "domains_registered", domains: registeredDomains });
+  }
+
   // 9. Emit per-adopter RUNBOOK.md so the operator has a single source of
   //    truth with every value (DNS records, relay env, admin URL, IDs).
   progress(`Writing ${options.runbookPath}`);
@@ -365,6 +401,19 @@ export async function createOrFindD1(client, accountId, name) {
   const id = created.body?.result?.uuid ?? created.body?.result?.id;
   if (typeof id !== "string") throw new Error(`D1 create response missing id`);
   return { id, name, source: "created" };
+}
+
+export async function lookupCloudflareDomain(client, domain) {
+  const zoneResponse = await client.get(`/zones?name=${encodeURIComponent(domain)}`);
+  const zones = Array.isArray(zoneResponse.body?.result) ? zoneResponse.body.result : [];
+  const zone = zones.find((candidate) => typeof candidate?.id === "string");
+  if (!zone) {
+    throw new Error(`Cloudflare zone not found for ${domain}. Verify the domain is on Cloudflare DNS and the token has Zone:Read.`);
+  }
+  const sendingResponse = await client.get(`/zones/${encodeURIComponent(zone.id)}/email/sending/subdomains`);
+  const subdomains = Array.isArray(sendingResponse.body?.result) ? sendingResponse.body.result : [];
+  const match = subdomains.find((subdomain) => normalizeDomain(subdomain?.name ?? "") === domain);
+  return { zoneId: zone.id, status: match?.enabled === true ? "verified" : "pending" };
 }
 
 export async function createOrFindKv(client, accountId, title) {

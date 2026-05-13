@@ -364,6 +364,12 @@ routes = [
       if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && init.method === "POST") {
         return json({ success: true, result: { id: "kv_new" } });
       }
+      if (path === "/client/v4/zones") {
+        return json({ success: true, result: [{ id: "zone_xyz", name: "example.com" }] });
+      }
+      if (path === "/client/v4/zones/zone_xyz/email/sending/subdomains") {
+        return json({ success: true, result: [{ enabled: true, name: "example.com" }] });
+      }
       if (path === "/bootstrap/admin") {
         return json({ ok: true, user_id: "usr_admin" });
       }
@@ -442,6 +448,15 @@ routes = [
     // among the generated-secrets batch (it's pushed only inside bootstrap).
     const generatedSecretPuts = execCalls.filter((call) => /secret put (CREDENTIAL_PEPPER|METADATA_PEPPER|RELAY_HMAC_SECRET_CURRENT|BOOTSTRAP_SETUP_TOKEN)$/.test(call));
     assert.equal(generatedSecretPuts.length, 4, "expected 3 generated-secret puts plus 1 bootstrap-token put");
+    // Domains registered: setup INSERTs each --domain into D1 with zone_id + status.
+    assert.ok(stepNames.includes("domains_registered"));
+    const domainsStep = result.steps.find((step) => step.step === "domains_registered");
+    assert.deepEqual(domainsStep.domains, [{ domain: "example.com", zone_id: "zone_xyz", status: "verified" }]);
+    const domainInsert = execCalls.find((call) => /d1 execute .* INSERT INTO domains/.test(call));
+    assert.ok(domainInsert, `expected domains INSERT; calls = ${execCalls.join(" | ")}`);
+    assert.match(domainInsert, /ON CONFLICT\(domain\) DO UPDATE SET/);
+    // policy_version was bumped after domain registration.
+    assert.ok(execCalls.some((call) => /d1 execute .*'policy_version'/.test(call)));
   });
 
   it("fails apply if the bootstrap token remains after deletion", async () => {
@@ -451,6 +466,8 @@ routes = [
       if (path === "/client/v4/accounts/acc/d1/database" && init.method === "POST") return json({ success: true, result: { uuid: "d1_new" } });
       if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
       if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && init.method === "POST") return json({ success: true, result: { id: "kv_new" } });
+      if (path === "/client/v4/zones") return json({ success: true, result: [{ id: "zone_xyz", name: "example.com" }] });
+      if (path === "/client/v4/zones/zone_xyz/email/sending/subdomains") return json({ success: true, result: [{ enabled: true, name: "example.com" }] });
       if (path === "/bootstrap/admin") return json({ ok: true, user_id: "usr_admin" });
       throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
     };
@@ -514,6 +531,12 @@ routes = [
       if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") {
         return json({ success: true, result: [{ id: "kv_existing", title: "cf-mail-relay-hot" }] });
       }
+      if (path === "/client/v4/zones") {
+        return json({ success: true, result: [{ id: "zone_xyz", name: "example.com" }] });
+      }
+      if (path === "/client/v4/zones/zone_xyz/email/sending/subdomains") {
+        return json({ success: true, result: [{ enabled: true, name: "example.com" }] });
+      }
       if (path === "/bootstrap/admin") {
         return json({ ok: true, user_id: "usr_admin" });
       }
@@ -569,6 +592,8 @@ routes = [
       if (path === "/client/v4/accounts/acc/d1/database" && init.method === "POST") return json({ success: true, result: { uuid: "d1_new" } });
       if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
       if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && init.method === "POST") return json({ success: true, result: { id: "kv_new" } });
+      if (path === "/client/v4/zones") return json({ success: true, result: [{ id: "zone_xyz", name: "example.com" }] });
+      if (path === "/client/v4/zones/zone_xyz/email/sending/subdomains") return json({ success: true, result: [{ enabled: true, name: "example.com" }] });
       if (path === "/bootstrap/admin") return json({ ok: true, user_id: "usr_admin" });
       throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
     };
@@ -625,6 +650,12 @@ routes = [
       }
       if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") {
         return json({ success: true, result: [{ id: "kv_existing", title: "cf-mail-relay-hot" }] });
+      }
+      if (path === "/client/v4/zones") {
+        return json({ success: true, result: [{ id: "zone_xyz", name: "example.com" }] });
+      }
+      if (path === "/client/v4/zones/zone_xyz/email/sending/subdomains") {
+        return json({ success: true, result: [{ enabled: true, name: "example.com" }] });
       }
       if (path === "/bootstrap/admin") {
         throw new Error("bootstrap POST should not be made when users table is not empty");
