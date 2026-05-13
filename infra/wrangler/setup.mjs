@@ -13,9 +13,10 @@ const requiredSecrets = [
   "METADATA_PEPPER",
   "RELAY_HMAC_SECRET_CURRENT",
 ];
-// BOOTSTRAP_SETUP_TOKEN is intentionally not in `requiredSecrets`: it is
-// generated, pushed, used, and deleted inside the bootstrap step. After
-// bootstrap, its absence is the correct steady state.
+// BOOTSTRAP_SETUP_TOKEN is intentionally not in `requiredSecrets`: the setup
+// wizard bootstraps the first admin directly through D1 so it does not depend
+// on reaching the freshly deployed admin URL from the installer machine. The
+// /bootstrap/admin endpoint remains available for manual setup and recovery.
 
 export async function main(argv, env, depsOrFetch = {}) {
   // Backward compat: tests pass a bare fetchImpl as the third arg.
@@ -43,6 +44,9 @@ export async function main(argv, env, depsOrFetch = {}) {
   // Plan-only fallback: with no token we can still print the plan + manual
   // commands. Useful for first-pass review before creating a token.
   if (!token) {
+    if (options.apply) {
+      throw new Error(`${options.tokenEnv} must contain a Cloudflare API token before running --apply.`);
+    }
     return {
       ok: true,
       checked_at: new Date().toISOString(),
@@ -225,45 +229,9 @@ export async function runApply(ctx) {
       steps.push({ step: "bootstrap_admin", skipped: true, reason: "users_table_not_empty" });
     } else {
       const adminEmail = options.allowEmails[0];
-      progress(`Bootstrapping admin ${adminEmail}`);
-      const bootstrapToken = base64url(32);
-      await runWrangler(execImpl, options.workerDir, ["secret", "put", "BOOTSTRAP_SETUP_TOKEN"], bootstrapToken);
-      let bootstrapResponse;
-      try {
-        bootstrapResponse = await fetchImpl(`${options.adminUrl}/bootstrap/admin`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${bootstrapToken}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ email: adminEmail }),
-        });
-      } catch (error) {
-        throw new Error(
-          `Bootstrap admin POST failed: ${error instanceof Error ? error.message : String(error)}\n` +
-          `The worker is deployed but bootstrap could not reach ${options.adminUrl}.\n` +
-          `BOOTSTRAP_SETUP_TOKEN is still active. Either retry from a network that can reach the admin URL,\n` +
-          `or insert the admin row directly via D1:\n` +
-          `  pnpm --dir worker exec wrangler d1 execute ${d1.name} --remote --command \\\n` +
-          `    "INSERT INTO users (id, email, role, created_at, updated_at) VALUES ('usr_' || lower(hex(randomblob(16))), '${adminEmail}', 'admin', unixepoch(), unixepoch())"\n` +
-          `Then delete the bootstrap secret:\n` +
-          `  pnpm --dir worker exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN`,
-        );
-      }
-      if (!bootstrapResponse.ok) {
-        const bodyText = await bootstrapResponse.text().catch(() => "");
-        throw new Error(
-          `Bootstrap admin failed: HTTP ${bootstrapResponse.status} ${bodyText}\n` +
-          `The relay is deployed but no admin user was created.\n` +
-          `BOOTSTRAP_SETUP_TOKEN is still active — delete it once you've manually bootstrapped:\n` +
-          `  pnpm --dir worker exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN`,
-        );
-      }
-      steps.push({ step: "bootstrap_admin", email: adminEmail });
-      progress("Deleting BOOTSTRAP_SETUP_TOKEN");
-      await runWrangler(execImpl, options.workerDir, ["secret", "delete", "BOOTSTRAP_SETUP_TOKEN"], "y\n");
-      await verifyWranglerSecretDeleted(execImpl, options.workerDir, "BOOTSTRAP_SETUP_TOKEN");
-      steps.push({ step: "bootstrap_token_cleared" });
+      progress(`Bootstrapping admin ${adminEmail} directly in D1`);
+      const userId = await bootstrapAdminInD1(execImpl, options.workerDir, d1.name, adminEmail);
+      steps.push({ step: "bootstrap_admin", email: adminEmail, user_id: userId, method: "d1" });
     }
   }
 
@@ -335,14 +303,6 @@ function defaultProgress(message) {
   process.stderr.write(`==> ${message}\n`);
 }
 
-async function verifyWranglerSecretDeleted(execImpl, cwd, name) {
-  const output = await execImpl("pnpm", ["exec", "wrangler", "secret", "list", "--format", "json"], { cwd, captureStdout: true });
-  const names = parseWranglerSecretNames(String(output ?? ""));
-  if (names.includes(name)) {
-    throw new Error(`${name} is still present after deletion. Delete it manually: pnpm --dir worker exec wrangler secret delete ${name}`);
-  }
-}
-
 async function isUsersTableEmpty(execImpl, cwd, databaseName) {
   const output = await execImpl(
     "pnpm",
@@ -371,18 +331,28 @@ export function parseUsersCount(output) {
   throw new Error("Could not read users count from D1: no `n` column in any result row.");
 }
 
-function parseWranglerSecretNames(output) {
-  const parsed = parseJsonOrText(output);
-  if (!Array.isArray(parsed)) {
-    throw new Error("Could not verify Worker secrets: `wrangler secret list --format json` did not return a JSON array.");
-  }
-  return parsed
-    .map((item) => {
-      if (typeof item === "string") return item;
-      if (typeof item === "object" && item !== null && typeof item.name === "string") return item.name;
-      return null;
-    })
-    .filter((name) => name !== null);
+async function bootstrapAdminInD1(execImpl, cwd, databaseName, email) {
+  const now = Math.floor(Date.now() / 1000);
+  const userId = `usr_${randomBytes(16).toString("hex")}`;
+  await runWrangler(execImpl, cwd, [
+    "d1",
+    "execute",
+    databaseName,
+    "--remote",
+    "--command",
+    `INSERT INTO users (id, email, display_name, access_subject, role, disabled_at, created_at, updated_at) ` +
+      `VALUES (${sqlStringLiteral(userId)}, ${sqlStringLiteral(email.toLowerCase())}, NULL, NULL, 'admin', NULL, ${now}, ${now})`,
+  ]);
+  await runWrangler(execImpl, cwd, [
+    "d1",
+    "execute",
+    databaseName,
+    "--remote",
+    "--command",
+    `INSERT OR REPLACE INTO settings (key, value_json, updated_at) ` +
+      `VALUES ('bootstrap_completed_at', ${sqlStringLiteral(JSON.stringify(now))}, ${now})`,
+  ]);
+  return userId;
 }
 
 // ───────────────────────── Resource helpers ─────────────────────────
@@ -404,16 +374,35 @@ export async function createOrFindD1(client, accountId, name) {
 }
 
 export async function lookupCloudflareDomain(client, domain) {
-  const zoneResponse = await client.get(`/zones?name=${encodeURIComponent(domain)}`);
-  const zones = Array.isArray(zoneResponse.body?.result) ? zoneResponse.body.result : [];
-  const zone = zones.find((candidate) => typeof candidate?.id === "string");
+  const zone = await lookupCloudflareZone(client, domain);
   if (!zone) {
     throw new Error(`Cloudflare zone not found for ${domain}. Verify the domain is on Cloudflare DNS and the token has Zone:Read.`);
   }
   const sendingResponse = await client.get(`/zones/${encodeURIComponent(zone.id)}/email/sending/subdomains`);
+  if (!sendingResponse.ok) {
+    throw new Error(`Cloudflare Email Sending lookup failed for ${domain}: HTTP ${sendingResponse.status}. Onboard the domain and verify the runtime token has Email Sending access.`);
+  }
   const subdomains = Array.isArray(sendingResponse.body?.result) ? sendingResponse.body.result : [];
   const match = subdomains.find((subdomain) => normalizeDomain(subdomain?.name ?? "") === domain);
-  return { zoneId: zone.id, status: match?.enabled === true ? "verified" : "pending" };
+  if (match?.enabled !== true) {
+    throw new Error(`Cloudflare Email Sending is not enabled for ${domain}. Onboard the sending domain before running --apply.`);
+  }
+  return { zoneId: zone.id, status: "verified" };
+}
+
+async function lookupCloudflareZone(client, domain) {
+  for (const candidate of zoneCandidates(domain)) {
+    const zoneResponse = await client.get(`/zones?name=${encodeURIComponent(candidate)}&per_page=1`);
+    if (!zoneResponse.ok) {
+      throw new Error(`Cloudflare zone lookup failed for ${domain}: HTTP ${zoneResponse.status}. Verify the token has Zone:Read.`);
+    }
+    const zones = Array.isArray(zoneResponse.body?.result) ? zoneResponse.body.result : [];
+    const zone = zones.find((entry) => typeof entry?.id === "string");
+    if (zone !== undefined) {
+      return zone;
+    }
+  }
+  return null;
 }
 
 export async function createOrFindKv(client, accountId, title) {
@@ -643,31 +632,28 @@ function buildPlan(options) {
       `Create or reuse D1 database (${options.d1DatabaseName})`,
       `Create or reuse KV namespace (${options.kvNamespaceTitle})`,
       `Create or reuse Cloudflare Access app on ${options.adminUrl}`,
-      `Generate 4 worker secrets`,
+      `Generate 3 worker secrets`,
       `Write worker/wrangler.toml`,
       `Apply D1 migrations`,
       `Push secrets via wrangler`,
       `Build UI into worker/public/`,
       `Deploy worker`,
-      `POST /bootstrap/admin and delete BOOTSTRAP_SETUP_TOKEN`,
+      `Create first admin directly in D1 when users table is empty`,
+      `Register sending domains in D1`,
       `Write RUNBOOK.md`,
     ],
-    // Verbatim commands an operator can run if they prefer the manual flow.
-    // All <PLACEHOLDER> strings are substituted with real values from the
-    // CLI args — copy-pasteable as-is.
+    // Representative commands for a manual setup. Most users should run
+    // `pnpm run setup --apply` instead; the wizard fills config, pushes
+    // generated secrets, bootstraps D1, and writes RUNBOOK.md.
     commands: [
       `pnpm --dir worker exec wrangler d1 create ${options.d1DatabaseName}`,
       `pnpm --dir worker exec wrangler kv namespace create ${options.kvNamespaceTitle}`,
       `pnpm --dir worker exec wrangler d1 migrations apply ${options.d1DatabaseName} --remote`,
       ...requiredSecrets.map((secret) => `pnpm --dir worker exec wrangler secret put ${secret}`),
-      `pnpm access:setup --allow-email ${options.allowEmails[0]} --apply-config worker/wrangler.toml`,
+      `pnpm access:setup --account-id ${options.accountId} --pages-url ${options.adminUrl} --allow-email ${options.allowEmails[0]} --apply-config worker/wrangler.toml`,
       "pnpm --filter @cf-mail-relay/ui build",
       "pnpm --dir worker exec wrangler deploy",
-      // Bootstrap is ephemeral: push, POST, delete.
-      "pnpm --dir worker exec wrangler secret put BOOTSTRAP_SETUP_TOKEN",
-      `curl -fsS ${options.adminUrl}/bootstrap/admin -H "Authorization: Bearer <bootstrap-token>" -H "content-type: application/json" --data '{"email":"${options.allowEmails[0]}"}'`,
-      "pnpm --dir worker exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN",
-      `pnpm doctor:local -- --domain ${options.domains[0]}`,
+      `pnpm doctor:local -- --domain ${options.domains[0]} --worker-url ${options.adminUrl}`,
     ],
   };
 }
@@ -737,16 +723,20 @@ async function checkWorkerSecrets(client, accountId, scriptName) {
 }
 
 async function checkDomain(client, accountId, domain) {
-  const zoneResponse = await client.get(`/zones?name=${encodeURIComponent(domain)}`);
   const checks = [];
-  let zoneId = "";
-  if (zoneResponse.ok && Array.isArray(zoneResponse.body?.result) && zoneResponse.body.result.length > 0) {
-    zoneId = zoneResponse.body.result[0].id;
-    checks.push(passCheck(`domain:${domain}:zone`, "Cloudflare zone is accessible.", { zone_id: zoneId }));
-  } else {
-    checks.push(failCheck(`domain:${domain}:zone`, "Cloudflare zone was not found or is inaccessible.", zoneResponse.body));
+  let zone;
+  try {
+    zone = await lookupCloudflareZone(client, domain);
+  } catch (error) {
+    checks.push(failCheck(`domain:${domain}:zone`, error instanceof Error ? error.message : "Cloudflare zone lookup failed."));
     return checks;
   }
+  if (zone === null) {
+    checks.push(failCheck(`domain:${domain}:zone`, "Cloudflare zone was not found or is inaccessible."));
+    return checks;
+  }
+  const zoneId = zone.id;
+  checks.push(passCheck(`domain:${domain}:zone`, "Cloudflare zone is accessible.", { zone_id: zoneId, zone_name: zone.name }));
   const sendingResponse = await client.get(`/zones/${encodeURIComponent(zoneId)}/email/sending/subdomains`);
   if (!sendingResponse.ok) {
     checks.push(failCheck(`domain:${domain}:email_sending`, `Email Sending lookup failed with HTTP ${sendingResponse.status}.`, sendingResponse.body));
@@ -789,6 +779,15 @@ function readValue(argv, index, optionName) {
 
 function normalizeDomain(raw) {
   return String(raw).trim().replace(/\.$/u, "").toLowerCase();
+}
+
+function zoneCandidates(domain) {
+  const labels = domain.split(".");
+  const candidates = [];
+  for (let index = 0; index <= labels.length - 2; index += 1) {
+    candidates.push(labels.slice(index).join("."));
+  }
+  return candidates;
 }
 
 function normalizeHostname(raw) {
@@ -866,7 +865,6 @@ Modes:
                             falls back to a plan-only output.
   --apply                   Create resources, deploy the worker, bootstrap
                             the admin, write RUNBOOK.md. Requires a token.
-
 Required (both modes):
   --account-id              Cloudflare account ID (or CLOUDFLARE_ACCOUNT_ID).
   --admin-url               URL where the admin UI + API will live
@@ -894,7 +892,7 @@ Apply flags:
   --force                   Overwrite existing worker/wrangler.toml.
   --skip-migrations         Skip 'wrangler d1 migrations apply'.
   --skip-build-deploy       Skip UI build + worker deploy.
-  --skip-bootstrap          Skip the /bootstrap/admin call.
+  --skip-bootstrap          Skip first-admin D1 bootstrap.
 
 Common:
   --token-env <name>        Env var holding the CF API token (default CLOUDFLARE_API_TOKEN).

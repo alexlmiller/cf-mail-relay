@@ -96,12 +96,10 @@ one-click toggles; do them up-front to avoid setup tripping on partial state.
     `pnpm run setup --apply` — Compute → Email Service → Email Sending →
     Onboard Domain in the Cloudflare dashboard. Setup verifies this; it does
     not enable it for you.
-  - Must not already have an apex MX record pointing elsewhere (e.g.,
-    pre-existing Email Routing, Google Workspace, etc.). Email Sending
-    publishes records under `cf-bounce.<domain>` and is compatible with most
-    apex MX configurations, but conflicting Email Routing on the same domain
-    can prevent onboarding. If `Onboard Domain` refuses your domain, that's
-    why.
+  - Can usually keep existing apex MX records for inbound mail. Email Sending
+    publishes outbound bounce/auth records under `cf-bounce.<domain>` and does
+    not normally require moving inbound mail. If the Cloudflare onboarding UI
+    reports a DNS conflict, follow that specific error before rerunning setup.
 
 You can find your Cloudflare account ID in the dashboard URL
 (`https://dash.cloudflare.com/<account-id>`) or by running `wrangler whoami`
@@ -221,8 +219,10 @@ Access-gated self-service path and redirects back to the UI after Access auth.
 
 Manual setup is still possible: copy `worker/wrangler.toml.example`, create D1
 and KV, apply all migrations before deploying, set secrets with `wrangler secret
-put`, build `ui/` into `worker/public/`, deploy the Worker, then bootstrap the
-first admin with `POST /bootstrap/admin`.
+put`, build `ui/` into `worker/public/`, deploy the Worker, then either insert
+the first admin row directly in D1 or use the recovery-only `POST
+/bootstrap/admin` endpoint with a temporary `BOOTSTRAP_SETUP_TOKEN` secret.
+Delete `BOOTSTRAP_SETUP_TOKEN` immediately after manual bootstrap.
 
 ## DNS
 
@@ -335,7 +335,9 @@ Operational notes:
 - Rotate leaked SMTP credentials or API keys from the admin UI.
 - D1 is the source of truth. KV is cache only.
 - D1 Time Travel can restore production databases, but restore is destructive.
-- After first bootstrap, delete `BOOTSTRAP_SETUP_TOKEN` from Worker secrets.
+- The setup wizard bootstraps the first admin directly in D1 and does not create
+  `BOOTSTRAP_SETUP_TOKEN`. If you use the manual `/bootstrap/admin` recovery
+  flow, delete `BOOTSTRAP_SETUP_TOKEN` immediately after bootstrap.
 - The Worker includes a daily Cron cleanup for expired replay, idempotency,
   auth-failure, and quota rows. Keep the `[triggers]` section from
   `worker/wrangler.toml.example`.
