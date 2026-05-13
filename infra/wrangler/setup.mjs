@@ -12,8 +12,10 @@ const requiredSecrets = [
   "CREDENTIAL_PEPPER",
   "METADATA_PEPPER",
   "RELAY_HMAC_SECRET_CURRENT",
-  "BOOTSTRAP_SETUP_TOKEN",
 ];
+// BOOTSTRAP_SETUP_TOKEN is intentionally not in `requiredSecrets`: it is
+// generated, pushed, used, and deleted inside the bootstrap step. After
+// bootstrap, its absence is the correct steady state.
 
 export async function main(argv, env, depsOrFetch = {}) {
   // Backward compat: tests pass a bare fetchImpl as the third arg.
@@ -193,33 +195,56 @@ export async function runApply(ctx) {
     steps.push({ step: "deployed", admin_url: options.adminUrl });
   }
 
-  // 8. Bootstrap the first admin and delete the bootstrap token. If the
-  //    bootstrap fails the whole wizard fails — leaving an unbootstrapped
-  //    relay with a live BOOTSTRAP_SETUP_TOKEN is a worse state to be in
-  //    than partial setup with a clear error.
-  if (secrets !== null && !options.skipBootstrap) {
-    const adminEmail = options.allowEmails[0];
-    const bootstrapResponse = await fetchImpl(`${options.adminUrl}/bootstrap/admin`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${secrets.BOOTSTRAP_SETUP_TOKEN}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ email: adminEmail }),
-    });
-    if (!bootstrapResponse.ok) {
-      const bodyText = await bootstrapResponse.text().catch(() => "");
-      throw new Error(
-        `Bootstrap admin failed: HTTP ${bootstrapResponse.status} ${bodyText}\n` +
-        `The relay is deployed but no admin user was created.\n` +
-        `BOOTSTRAP_SETUP_TOKEN is still active — delete it once you've manually bootstrapped:\n` +
-        `  pnpm --dir worker exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN`,
-      );
+  // 8. Bootstrap the first admin if no admin row exists yet. This is gated
+  //    on the actual D1 state, not on whether secrets were just regenerated.
+  //    A retried --apply that previously failed at deploy must still bootstrap
+  //    on the next attempt — earlier versions of this script keyed bootstrap
+  //    off "secrets were just generated", which silently skipped bootstrap on
+  //    every retry and left the relay deployed with no admin user.
+  if (!options.skipBootstrap) {
+    const usersEmpty = await isUsersTableEmpty(execImpl, options.workerDir, d1.name);
+    if (!usersEmpty) {
+      steps.push({ step: "bootstrap_admin", skipped: true, reason: "users_table_not_empty" });
+    } else {
+      const adminEmail = options.allowEmails[0];
+      const bootstrapToken = base64url(32);
+      await runWrangler(execImpl, options.workerDir, ["secret", "put", "BOOTSTRAP_SETUP_TOKEN"], bootstrapToken);
+      let bootstrapResponse;
+      try {
+        bootstrapResponse = await fetchImpl(`${options.adminUrl}/bootstrap/admin`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${bootstrapToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ email: adminEmail }),
+        });
+      } catch (error) {
+        throw new Error(
+          `Bootstrap admin POST failed: ${error instanceof Error ? error.message : String(error)}\n` +
+          `The worker is deployed but bootstrap could not reach ${options.adminUrl}.\n` +
+          `BOOTSTRAP_SETUP_TOKEN is still active. Either retry from a network that can reach the admin URL,\n` +
+          `or insert the admin row directly via D1:\n` +
+          `  pnpm --dir worker exec wrangler d1 execute ${d1.name} --remote --command \\\n` +
+          `    "INSERT INTO users (id, email, role, created_at, updated_at) VALUES ('usr_' || lower(hex(randomblob(16))), '${adminEmail}', 'admin', unixepoch(), unixepoch())"\n` +
+          `Then delete the bootstrap secret:\n` +
+          `  pnpm --dir worker exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN`,
+        );
+      }
+      if (!bootstrapResponse.ok) {
+        const bodyText = await bootstrapResponse.text().catch(() => "");
+        throw new Error(
+          `Bootstrap admin failed: HTTP ${bootstrapResponse.status} ${bodyText}\n` +
+          `The relay is deployed but no admin user was created.\n` +
+          `BOOTSTRAP_SETUP_TOKEN is still active — delete it once you've manually bootstrapped:\n` +
+          `  pnpm --dir worker exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN`,
+        );
+      }
+      steps.push({ step: "bootstrap_admin", email: adminEmail });
+      await runWrangler(execImpl, options.workerDir, ["secret", "delete", "BOOTSTRAP_SETUP_TOKEN"], "y\n");
+      await verifyWranglerSecretDeleted(execImpl, options.workerDir, "BOOTSTRAP_SETUP_TOKEN");
+      steps.push({ step: "bootstrap_token_cleared" });
     }
-    steps.push({ step: "bootstrap_admin", email: adminEmail });
-    await runWrangler(execImpl, options.workerDir, ["secret", "delete", "BOOTSTRAP_SETUP_TOKEN"], "y\n");
-    await verifyWranglerSecretDeleted(execImpl, options.workerDir, "BOOTSTRAP_SETUP_TOKEN");
-    steps.push({ step: "bootstrap_token_cleared" });
   }
 
   // 9. Emit per-adopter RUNBOOK.md so the operator has a single source of
@@ -255,6 +280,34 @@ async function verifyWranglerSecretDeleted(execImpl, cwd, name) {
   if (names.includes(name)) {
     throw new Error(`${name} is still present after deletion. Delete it manually: pnpm --dir worker exec wrangler secret delete ${name}`);
   }
+}
+
+async function isUsersTableEmpty(execImpl, cwd, databaseName) {
+  const output = await execImpl(
+    "pnpm",
+    ["exec", "wrangler", "d1", "execute", databaseName, "--remote", "--json", "--command", "SELECT count(*) AS n FROM users"],
+    { cwd, captureStdout: true },
+  );
+  return parseUsersCount(String(output ?? "")) === 0;
+}
+
+export function parseUsersCount(output) {
+  const parsed = parseJsonOrText(output);
+  if (!Array.isArray(parsed)) {
+    throw new Error("Could not read users count from D1: `wrangler d1 execute --json` did not return a JSON array.");
+  }
+  for (const entry of parsed) {
+    const rows = entry?.results;
+    if (Array.isArray(rows)) {
+      for (const row of rows) {
+        const value = row?.n;
+        if (typeof value === "number" && Number.isFinite(value)) {
+          return value;
+        }
+      }
+    }
+  }
+  throw new Error("Could not read users count from D1: no `n` column in any result row.");
 }
 
 function parseWranglerSecretNames(output) {
@@ -310,7 +363,6 @@ export function generateSecrets() {
     CREDENTIAL_PEPPER: base64url(32),
     METADATA_PEPPER: base64url(32),
     RELAY_HMAC_SECRET_CURRENT: base64url(32),
-    BOOTSTRAP_SETUP_TOKEN: base64url(32),
   };
 }
 
