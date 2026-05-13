@@ -50,8 +50,10 @@ service if you prefer one container that does both.
 
 ## Notes on the SMTP port and DNS
 
-- Bind the relay to a public IP on `tcp/587`. The hostname (`smtp.<your-zone>`)
-  must be **DNS-only** in Cloudflare (no orange cloud — Cloudflare's HTTP
-  proxy doesn't proxy SMTP).
+- Bind the relay on `tcp/587` somewhere your SMTP clients can reach. It only
+  needs a public IP when public clients such as Gmail need to connect; private
+  application relays can listen on an internal network.
+- The hostname (`smtp.<your-zone>`) must be **DNS-only** in Cloudflare (no
+  orange cloud — Cloudflare's HTTP proxy doesn't proxy SMTP).
 - ACME challenges only need port 80 for HTTP-01 (Caddy default). DNS-01 (lego)
   bypasses this and works behind NAT.

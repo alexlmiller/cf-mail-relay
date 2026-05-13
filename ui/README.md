@@ -16,8 +16,9 @@ file (security headers including the CSP) is copied during build.
 
 ## Surfaces
 
-- `/` — dashboard, domains, allowed senders, SMTP credentials, users, API
-  keys, send events, and auth failures. All admin actions on `/admin/api/*`.
+- `/` — dashboard, events, senders, credentials, users, and settings. Domains
+  are managed from Settings, and SMTP credentials/API keys are grouped on the
+  Credentials page. All admin actions call `/admin/api/*`.
 - `/#/me` — same-origin self-service for any signed-in user (admins + sender
   role). Calls `/self/api/*`.
 

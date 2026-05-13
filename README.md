@@ -92,7 +92,7 @@ Cloudflare resources are changed.
   or on an internal network. This can be existing infrastructure or a small VM
   such as a GCP free-tier eligible `e2-micro` instance. Check the provider's
   current free-tier region and egress limits.
-- Local `pnpm`, `wrangler`, and `docker`.
+- Local Node.js 22, `pnpm`, `wrangler`, and `docker`.
 
 ## Setup
 

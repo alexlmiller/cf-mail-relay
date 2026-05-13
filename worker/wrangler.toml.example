@@ -1,4 +1,4 @@
-# Copy to wrangler.toml and fill in the IDs that `pnpm setup` prints
+# Copy to wrangler.toml and fill in the IDs that `pnpm run setup` prints
 # (or that you get from `wrangler d1 create` / `wrangler kv namespace create`).
 #
 # wrangler.toml is gitignored.

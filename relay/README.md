@@ -20,7 +20,7 @@ HTTPS.
 | `RELAY_MAX_BYTES` | Max MIME bytes at DATA | `4718592` |
 | `RELAY_MAX_RECIPIENTS` | Max recipients | `50` |
 | `RELAY_CONN_PER_MIN` | Connections per remote IP per minute | `60` |
-| `RELAY_AUTH_PER_MIN` | AUTH attempts per username per minute | `20` |
+| `RELAY_AUTH_PER_MIN` | AUTH attempts per username+remote pair per minute; remote IPs also get a 5x aggregate bucket | `20` |
 | `RELAY_AUTH_LOCKOUT_BASE_SECONDS` | Auth lockout base after failures | `30` |
 
 `RELAY_WORKER_URL` must use `https://`. For local-only development, set

@@ -6,7 +6,7 @@
 # the relay mounts that read-only and points its TLS paths at them.
 #
 # For most adopters, copy this file to your relay host, fill in the .env file,
-# and `docker compose up -d`. The wizard (pnpm setup --apply) emits a copy
+# and `docker compose up -d`. The wizard (`pnpm run setup --apply`) emits a copy
 # with every value pre-filled.
 
 services:
