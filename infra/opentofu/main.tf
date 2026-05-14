@@ -21,8 +21,10 @@
 terraform {
   required_providers {
     cloudflare = {
-      source  = "cloudflare/cloudflare"
-      version = "~> 4.0"
+      source = "cloudflare/cloudflare"
+      // Stay on the final Cloudflare provider 4.x line until the module is
+      // migrated from deprecated Access resources to the 5.x Zero Trust names.
+      version = "~> 4.52"
     }
   }
 }
