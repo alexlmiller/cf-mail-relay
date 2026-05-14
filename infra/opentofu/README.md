@@ -54,8 +54,9 @@ app's ID isn't required.
 
 CI runs `tofu fmt -check`, `tofu init -backend=false -lockfile=readonly`, and
 `tofu validate` for this directory. The provider lockfile is committed with
-darwin/arm64, linux/amd64, and linux/arm64 checksums so local development and
-GitHub Actions resolve the same Cloudflare provider package.
+darwin/arm64, darwin/amd64, linux/amd64, linux/arm64, and windows/amd64
+checksums so local development and GitHub Actions resolve the same Cloudflare
+provider package.
 
 After Phase 2, `tofu plan` should show **no drift** — the wizard reuses
 the existing Access app rather than re-creating it. If it shows drift,
