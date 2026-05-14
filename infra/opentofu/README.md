@@ -27,7 +27,7 @@ What this module **deliberately does not** create:
 ```sh
 # Phase 1 — declarative infra
 cd infra/opentofu
-tofu init
+tofu init -lockfile=readonly
 tofu apply \
   -var "account_id=fa774a1ed55e467890d48394f4409bdd" \
   -var "admin_url=https://mail.example.com" \
@@ -51,6 +51,12 @@ update rather than creating a duplicate. Passing the OpenTofu-managed Access
 app's ID isn't required.
 
 ## Drift detection
+
+CI runs `tofu fmt -check`, `tofu init -backend=false -lockfile=readonly`, and
+`tofu validate` for this directory. The provider lockfile is committed with
+darwin/arm64, darwin/amd64, linux/amd64, linux/arm64, and windows/amd64
+checksums so local development and GitHub Actions resolve the same Cloudflare
+provider package.
 
 After Phase 2, `tofu plan` should show **no drift** — the wizard reuses
 the existing Access app rather than re-creating it. If it shows drift,

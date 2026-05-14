@@ -36,6 +36,9 @@ wrangler.toml
 wrangler.spike.toml
 !wrangler.spike.toml.example
 
+# OpenTofu
+**/.terraform/
+
 # Go
 relay/relay
 relay/bin/
