@@ -77,11 +77,14 @@ The CF API token the OpenTofu provider uses needs:
 
 The token the wizard uses (`CLOUDFLARE_API_TOKEN`) needs the same scopes
 plus **Account · Email Sending · Edit**, **Account · Account Settings · Read**,
-**Account · Access: Organizations · Read**, **Account · Workers Scripts ·
-Edit**, **Account · Workers Tail · Read**, **Zone · Zone · Read**, **Zone ·
-DNS · Edit**, and **Zone · Zone DNS Settings · Edit**. You can use one token
-for both if it has all the scopes; the wizard never writes the token into
-tfstate.
+**Account · Billing · Read**, **Account · Access: Organizations · Read**,
+**Account · Workers Scripts · Edit**, **Account · Workers Routes · Read**,
+**Account · Workers Routes · Edit**, **Account · Workers Tail · Read**,
+**Zone · Zone · Read**, **Zone · DNS · Edit**, and **Zone · Zone DNS Settings ·
+Edit**. `wrangler deploy` manages the Worker route from `worker/wrangler.toml`,
+so the setup token needs Workers Routes permissions even if OpenTofu owns D1,
+KV, and Access. You can use one token for both if it has all the scopes; the
+wizard never writes the token into tfstate.
 
 ## Alternatives
 

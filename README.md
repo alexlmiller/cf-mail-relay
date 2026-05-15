@@ -76,16 +76,19 @@ Cloudflare resources are changed.
 
 ## Requirements
 
-- Cloudflare account with Workers Paid. This is currently $5/month and is a
-  good fit for this project: it unlocks the Worker capabilities needed for
+- Cloudflare account with Workers Paid enabled. This is currently $5/month and
+  is a good fit for this project: it unlocks the Worker capabilities needed for
   Email Sending while keeping the rest of the stack on Cloudflare's managed
   infrastructure.
+- Zero Trust enabled on the account. The admin UI uses Cloudflare Access, and
+  new Cloudflare accounts may need to enable Zero Trust before Access apps can
+  be created.
 - A Cloudflare-managed zone for the admin host (e.g. `mail.example.com` on a
   zone you own). Does not have to be the same as your sending domain — many
   adopters use a dedicated zone like `mail.<their-domain>` purely for the
   relay's control plane.
 - Each sending domain must use Cloudflare DNS and have Cloudflare Email Sending
-  enabled and verified.
+  enabled and verified in the Cloudflare dashboard before setup can complete.
 - A Docker host reachable on TCP `587` from the clients or services that will
   submit mail. It only needs to be public if public clients such as Gmail need
   to connect to it; for private applications, it can live behind your firewall
@@ -100,7 +103,6 @@ Install dependencies:
 
 ```sh
 pnpm install
-wrangler login
 ```
 
 Print the setup plan. Repeat `--domain` for every sending domain:
@@ -116,6 +118,16 @@ pnpm run setup \
 Use `pnpm run setup`, not bare `pnpm setup`; pnpm reserves the bare command for
 its own shell setup helper.
 
+Create a Cloudflare API token and export it before running live preflight or
+apply:
+
+```sh
+export CLOUDFLARE_API_TOKEN=...
+pnpm exec wrangler whoami
+```
+
+You do not need `wrangler login`; the setup flow uses the API token.
+
 Run a live preflight without mutating Cloudflare:
 
 ```sh
@@ -127,18 +139,35 @@ pnpm run setup \
 
 The setup token should have these Cloudflare permissions:
 
-- Account: Email Sending Write
-- Account: Account Settings Read
-- Account: Workers Scripts Write
-- Account: Workers KV Storage Write
-- Account: D1 Write
-- Account: Access: Organizations Read
-- Account: Access: Apps Write
-- Account: Access: Policies Write
-- Account: Workers Tail Read
-- Zone: Zone Read
-- Zone: DNS Write
-- Zone: Zone DNS Settings Write
+- Account -> Account Settings -> Read
+- Account -> Billing -> Read
+- Account -> D1 -> Edit
+- Account -> Email Sending -> Edit
+- Account -> Workers KV Storage -> Edit
+- Account -> Workers Routes -> Read
+- Account -> Workers Routes -> Edit
+- Account -> Workers Scripts -> Edit
+- Account -> Workers Tail -> Read
+- Account -> Access: Organizations -> Read
+- Account -> Access: Apps -> Edit
+- Account -> Access: Policies -> Edit
+- Zone -> Zone -> Read
+- Zone -> DNS -> Edit
+- Zone -> Zone DNS Settings -> Edit
+
+Cloudflare calls write permissions "Edit" in the token UI. Older docs or error
+messages may say "Write"; choose "Edit" in the dashboard.
+
+If setup fails on a fresh Cloudflare account:
+
+- Access organization or `access_not_enabled` errors usually mean Zero Trust
+  has not been enabled yet.
+- Workers Paid warnings usually mean the account has not subscribed to Workers
+  Paid. Email Sending requires this.
+- Email Sending failures usually mean the domain has not been onboarded under
+  Cloudflare Email Sending yet.
+- `401` or `403` from deploy or route steps usually means the setup token is
+  missing one of the Workers Scripts, Workers Routes, Zone, or DNS permissions.
 
 Create the Cloudflare resources, apply migrations, deploy the Worker, bootstrap
 the first admin, and write `RUNBOOK.md`:
