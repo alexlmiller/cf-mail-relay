@@ -3,12 +3,16 @@ name: CI — worker
 on:
   push:
     paths:
+      - "infra/setup/**"
+      - "infra/wrangler/**"
       - "worker/**"
       - "shared/**"
       - ".github/workflows/ci-worker.yml"
       - "pnpm-lock.yaml"
   pull_request:
     paths:
+      - "infra/setup/**"
+      - "infra/wrangler/**"
       - "worker/**"
       - "shared/**"
       - ".github/workflows/ci-worker.yml"
@@ -28,6 +32,7 @@ jobs:
           node-version: "22.22.3"
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
+      - run: node --test infra/wrangler/*.test.mjs infra/setup/*.test.mjs
       - run: pnpm --filter worker typecheck
       - run: pnpm --filter worker test
       - run: pnpm --filter ui build
