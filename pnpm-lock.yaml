@@ -24,8 +24,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
       astro:
-        specifier: ^6.3.3
-        version: 6.3.3(rollup@4.60.3)(tsx@4.22.1)(yaml@2.9.0)
+        specifier: ^6.3.6
+        version: 6.3.6(rollup@4.60.3)(tsx@4.22.1)(yaml@2.9.0)
     devDependencies:
       '@astrojs/check':
         specifier: ^0.9.9
@@ -59,8 +59,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
       astro:
-        specifier: ^6.3.3
-        version: 6.3.3(rollup@4.60.3)(tsx@4.22.1)(yaml@2.9.0)
+        specifier: ^6.3.6
+        version: 6.3.6(rollup@4.60.3)(tsx@4.22.1)(yaml@2.9.0)
     devDependencies:
       '@astrojs/check':
         specifier: ^0.9.9
@@ -1011,8 +1011,8 @@ packages:
     resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
     engines: {node: '>=12'}
 
-  astro@6.3.3:
-    resolution: {integrity: sha512-wvLIZQYbBZt6U8gyflBW4SLBypaqdwLZUH93rT3oT53cmQ0bTGubvMAGjqBRoheOYzYcTJZtW6czztzbu4kQ5g==}
+  astro@6.3.6:
+    resolution: {integrity: sha512-lM30gGI/iASK9Z1WQVnBBYzxVwDv8slkXbJOF7FNJdZQeBrFETpsQvYoLRupM/adt2ObP5hkYAWEeCjofoqlRw==}
     engines: {node: '>=22.12.0', npm: '>=9.6.5', pnpm: '>=7.1.0'}
     hasBin: true
 
@@ -1141,8 +1141,8 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  devalue@5.8.0:
-    resolution: {integrity: sha512-2zA9pFEsnp7vWBZbXF5JAgAq0fsUIt/1XPbRiAmRV3lp/2C3upzH+sADiyy66aFCihoLEsrQHxNM5w1gIDfsBg==}
+  devalue@5.8.1:
+    resolution: {integrity: sha512-4CXDYRBGqN+57wVJkuXBYmpAVUSg3L6JAQa/DFqm238G73E1wuyc/JhGQJzN7vUf/CMphYau2zXbfWzDR5aTEw==}
 
   devlop@1.1.0:
     resolution: {integrity: sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==}
@@ -2953,7 +2953,7 @@ snapshots:
 
   assertion-error@2.0.1: {}
 
-  astro@6.3.3(rollup@4.60.3)(tsx@4.22.1)(yaml@2.9.0):
+  astro@6.3.6(rollup@4.60.3)(tsx@4.22.1)(yaml@2.9.0):
     dependencies:
       '@astrojs/compiler': 4.0.0
       '@astrojs/internal-helpers': 0.9.1
@@ -2969,7 +2969,7 @@ snapshots:
       clsx: 2.1.1
       common-ancestor-path: 2.0.0
       cookie: 1.1.1
-      devalue: 5.8.0
+      devalue: 5.8.1
       diff: 8.0.4
       dset: 3.1.4
       es-module-lexer: 2.1.0
@@ -3144,7 +3144,7 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  devalue@5.8.0: {}
+  devalue@5.8.1: {}
 
   devlop@1.1.0:
     dependencies:
