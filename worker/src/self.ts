@@ -1,6 +1,6 @@
 // Self-service endpoints for any authenticated user (admin or sender).
-// Every query is scoped by user_id from the session — the client cannot
-// supply user_id on creates, and reads/revokes refuse to cross user lines.
+// Mutations are scoped by user_id from the session. Sender reads include both
+// user-specific grants and any-user grants where user_id is NULL.
 
 import { hmacSha256Hex } from "./hmac";
 import type { Env } from "./index";
@@ -29,7 +29,7 @@ export async function selfProfile(env: Env, userId: string): Promise<SelfProfile
   if (user === null) return null;
 
   const counts = await Promise.all([
-    env.D1_MAIN.prepare("SELECT COUNT(*) AS n FROM allowlisted_senders WHERE user_id = ? AND enabled = 1").bind(userId).first<{ n: number }>(),
+    env.D1_MAIN.prepare("SELECT COUNT(*) AS n FROM allowlisted_senders WHERE (user_id = ? OR user_id IS NULL) AND enabled = 1").bind(userId).first<{ n: number }>(),
     env.D1_MAIN.prepare("SELECT COUNT(*) AS n FROM smtp_credentials WHERE user_id = ? AND revoked_at IS NULL").bind(userId).first<{ n: number }>(),
     env.D1_MAIN.prepare("SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ? AND revoked_at IS NULL").bind(userId).first<{ n: number }>(),
   ]);
@@ -46,10 +46,10 @@ export async function selfProfile(env: Env, userId: string): Promise<SelfProfile
 
 export async function selfSenders(env: Env, userId: string): Promise<unknown[]> {
   const result = await env.D1_MAIN.prepare(
-    `SELECT s.id, s.domain_id, d.domain, s.email, s.enabled, s.created_at, s.updated_at
+    `SELECT s.id, s.domain_id, d.domain, s.email, s.user_id, s.enabled, s.created_at, s.updated_at
        FROM allowlisted_senders s
        JOIN domains d ON d.id = s.domain_id
-      WHERE s.user_id = ?
+      WHERE (s.user_id = ? OR s.user_id IS NULL)
       ORDER BY s.created_at DESC`,
   )
     .bind(userId)

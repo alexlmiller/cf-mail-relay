@@ -328,6 +328,7 @@ export function openNewCredential(users: User[], senders: Sender[], onCreated: (
   }
 
   const sendersByUser = new Map<string, Sender[]>();
+  const globalSenders = senders.filter((sender) => !sender.user_id);
   for (const sender of senders) {
     if (!sender.user_id) continue;
     const list = sendersByUser.get(sender.user_id) ?? [];
@@ -394,7 +395,7 @@ export function openNewCredential(users: User[], senders: Sender[], onCreated: (
   // Granted-senders preview — re-renders on user change.
   const preview = h("div", { class: "stack", style: "gap: 6px" });
   function renderPreview(userId: string) {
-    const list = sendersByUser.get(userId) ?? [];
+    const list = [...globalSenders, ...(sendersByUser.get(userId) ?? [])];
     setChildren(
       preview,
       h("div", { class: "uppercase soft" }, "This credential will be allowed to send as"),
@@ -414,7 +415,11 @@ export function openNewCredential(users: User[], senders: Sender[], onCreated: (
               "Grant sender →",
             ),
           )
-        : h("div", { class: "row", style: "flex-wrap: wrap; gap: 6px" }, ...list.map((s) => h("span", { class: "pill-static mono" }, s.email))),
+        : h(
+            "div",
+            { class: "row", style: "flex-wrap: wrap; gap: 6px" },
+            ...list.map((s) => h("span", { class: "pill-static mono" }, s.user_id ? s.email : `${s.email} · any user`)),
+          ),
     );
   }
   renderPreview(initialUserId);

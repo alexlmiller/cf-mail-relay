@@ -44,7 +44,7 @@ export async function renderUserDetail(root: HTMLElement, id: string) {
     }
     data = {
       user,
-      senders: allSenders.filter((s) => s.user_id === id),
+      senders: allSenders.filter((s) => s.user_id === id || s.user_id === null),
       credentials: credentials.filter((c) => c.user_id === id),
       apiKeys: apiKeys.filter((k) => k.user_id === id),
       allDomains: domains,
@@ -292,7 +292,7 @@ function sendersCard(data: DetailData, root: HTMLElement): HTMLElement {
         h(
           "div",
           { class: "empty-sub" },
-          "This user can't send any mail until you grant them at least one sender. Without senders, credentials and API keys are useless.",
+          "This user can't send any mail until you grant them a sender or create an any-user sender grant.",
         ),
         h(
           "div",
@@ -340,6 +340,7 @@ function senderRow(sender: Sender, userId: string, root: HTMLElement): HTMLEleme
         "span",
         { class: "primary" },
         h("span", { class: "id", style: "color: var(--text)" }, sender.email),
+        sender.user_id === null ? h("span", { class: "pill-static" }, "any user") : false,
         enabled ? pill("enabled", "ok") : pill("disabled", "muted"),
       ),
       h("span", { class: "secondary" }, sender.domain),

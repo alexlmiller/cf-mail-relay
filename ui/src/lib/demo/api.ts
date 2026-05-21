@@ -412,7 +412,7 @@ function selfProfile(state: DemoState): SelfProfile {
   return {
     ...user,
     counts: {
-      senders: state.senders.filter((sender) => sender.user_id === user.id).length,
+      senders: state.senders.filter((sender) => sender.user_id === user.id || sender.user_id === null).length,
       smtp_credentials: state.credentials.filter((credential) => credential.user_id === user.id && credential.revoked_at === null).length,
       api_keys: state.apiKeys.filter((key) => key.user_id === user.id && key.revoked_at === null).length,
     },
@@ -421,11 +421,12 @@ function selfProfile(state: DemoState): SelfProfile {
 
 function selfSenders(state: DemoState): SelfSender[] {
   const user = adminUser(state);
-  return state.senders.filter((sender) => sender.user_id === user.id).map((sender) => ({
+  return state.senders.filter((sender) => sender.user_id === user.id || sender.user_id === null).map((sender) => ({
     id: sender.id,
     domain_id: sender.domain_id,
     domain: sender.domain,
     email: sender.email,
+    user_id: sender.user_id,
     enabled: sender.enabled,
     created_at: sender.created_at,
     updated_at: sender.updated_at,

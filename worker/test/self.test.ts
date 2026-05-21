@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   selfCreateApiKey,
   selfCreateSmtpCredential,
+  selfProfile,
   selfRevokeApiKey,
   selfRevokeSmtpCredential,
   selfRollApiKey,
@@ -105,8 +106,8 @@ describe("self-service endpoints", () => {
     const { db, queries } = makeD1({
       rows: {
         senders: [
-          { id: "snd_a", domain: "example.com", email: "alex@example.com", enabled: 1 },
-          { id: "snd_b", domain: "example.com", email: "*@example.com", enabled: 1 },
+          { id: "snd_a", domain: "example.com", email: "alex@example.com", user_id: "usr_self", enabled: 1 },
+          { id: "snd_b", domain: "example.com", email: "*@example.com", user_id: null, enabled: 1 },
         ],
       },
     });
@@ -114,7 +115,23 @@ describe("self-service endpoints", () => {
     expect(senders).toHaveLength(2);
     const sendersQuery = queries.find((q) => q.sql.includes("FROM allowlisted_senders"));
     expect(sendersQuery?.params).toContain("usr_self");
-    expect(sendersQuery?.sql).toMatch(/WHERE s\.user_id = \?/);
+    expect(sendersQuery?.sql).toMatch(/s\.user_id = \? OR s\.user_id IS NULL/);
+  });
+
+  it("counts any-user senders in the self profile", async () => {
+    const { db, queries } = makeD1({
+      rows: {
+        users: [{ id: "usr_self", email: "alex@example.com", display_name: null, access_subject: "sub", role: "sender", created_at: 123 }],
+        senders: [{ n: 2 }],
+        credentials: [{ n: 1 }],
+        api_keys: [{ n: 1 }],
+      },
+    });
+    const profile = await selfProfile(makeEnv(db), "usr_self");
+    expect(profile?.counts.senders).toBe(2);
+    const sendersQuery = queries.find((q) => q.sql.includes("FROM allowlisted_senders"));
+    expect(sendersQuery?.params).toContain("usr_self");
+    expect(sendersQuery?.sql).toMatch(/user_id = \? OR user_id IS NULL/);
   });
 
   it("scopes credential list to the calling user", async () => {

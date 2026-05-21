@@ -1,4 +1,5 @@
-// Typed client for /self/api/*. Every endpoint scopes to the calling user.
+// Typed client for /self/api/*. Mutations scope to the calling user; sender
+// reads also include any-user grants.
 
 import { ApiError } from "./api";
 import type { ApiKey, AppSettings, CreateSecretResult, SendEvent, Session, SmtpCredential, User } from "./types";
@@ -16,6 +17,7 @@ export interface SelfSender {
   domain_id: string;
   domain: string;
   email: string;
+  user_id: string | null;
   enabled: number;
   created_at: number;
   updated_at: number;
