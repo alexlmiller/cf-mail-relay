@@ -12,7 +12,7 @@ and adopter setup is in the project `README.md`.
 | `CF_API_TOKEN` | Worker secret | When the token is rotated in the Cloudflare dashboard | None — single shot |
 | `CREDENTIAL_PEPPER` | Worker secret | Avoid — rotating invalidates every stored SMTP credential and API key hash | None |
 | `METADATA_PEPPER` | Worker secret | Avoid — rotating breaks audit-log hash continuity | None |
-| `BOOTSTRAP_SETUP_TOKEN` | Worker secret | Delete it after the first admin is bootstrapped | N/A |
+| `BOOTSTRAP_SETUP_TOKEN` | Worker secret | Manual recovery bootstrap only; the setup wizard does not create it. Delete it immediately after use. | N/A |
 
 ### Rotate the relay → Worker HMAC secret
 

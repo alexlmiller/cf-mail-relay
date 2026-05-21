@@ -76,26 +76,43 @@ Cloudflare resources are changed.
 
 ## Requirements
 
-- Cloudflare account with Workers Paid enabled. This is currently $5/month and
-  is a good fit for this project: it unlocks the Worker capabilities needed for
-  Email Sending while keeping the rest of the stack on Cloudflare's managed
-  infrastructure.
-- Zero Trust enabled on the account. The admin UI uses Cloudflare Access, and
-  new Cloudflare accounts may need to enable Zero Trust before Access apps can
-  be created.
-- A Cloudflare-managed zone for the admin host (e.g. `mail.example.com` on a
-  zone you own). Does not have to be the same as your sending domain — many
-  adopters use a dedicated zone like `mail.<their-domain>` purely for the
-  relay's control plane.
-- Each sending domain must use Cloudflare DNS and have Cloudflare Email Sending
-  enabled and verified in the Cloudflare dashboard before setup can complete.
+### Cloudflare account
+
+Before running setup, enable each of these in your Cloudflare account. Most are
+one-click toggles; do them up-front to avoid setup tripping on partial state.
+
+- **Workers Paid subscription** ($5/month). Required for Email Sending.
+- **Zero Trust enabled**. The admin UI uses Cloudflare Access, and new
+  Cloudflare accounts may need to enable Zero Trust before Access apps can be
+  created.
+- **A Cloudflare-managed zone for the admin host** (e.g. `mail.example.com` on
+  a zone you own). Does not have to be the same zone as your sending domain:
+  `mail.example.com` and a sending domain `example.org` on a different zone is
+  fine. Many adopters use a dedicated zone like `mail.<their-domain>` purely
+  for the relay's control plane.
+- **Each sending domain**:
+  - Must use Cloudflare DNS.
+  - Must have Cloudflare Email Sending enabled and verified in the Cloudflare
+    dashboard before setup can complete. Setup verifies this; it does not
+    enable it for you.
+  - Can usually keep existing apex MX records for inbound mail. Email Sending
+    publishes outbound bounce/auth records under `cf-bounce.<domain>` and does
+    not normally require moving inbound mail. If the Cloudflare onboarding UI
+    reports a DNS conflict, follow that specific error before rerunning setup.
+
+You can find your Cloudflare account ID in the dashboard URL
+(`https://dash.cloudflare.com/<account-id>`) or by running `wrangler whoami`
+once you have set a token.
+
+### Local environment
+
+- Local Node.js 22, `pnpm`, `wrangler`, and `docker`.
 - A Docker host reachable on TCP `587` from the clients or services that will
   submit mail. It only needs to be public if public clients such as Gmail need
   to connect to it; for private applications, it can live behind your firewall
   or on an internal network. This can be existing infrastructure or a small VM
   such as a GCP free-tier eligible `e2-micro` instance. Check the provider's
   current free-tier region and egress limits.
-- Local Node.js 22, `pnpm`, `wrangler`, and `docker`.
 
 ## Setup
 
@@ -104,19 +121,6 @@ Install dependencies:
 ```sh
 pnpm install
 ```
-
-Print the setup plan. Repeat `--domain` for every sending domain:
-
-```sh
-pnpm run setup \
-  --account-id <cloudflare-account-id> \
-  --admin-url https://mail.example.com \
-  --domain example.com \
-  --dry-run
-```
-
-Use `pnpm run setup`, not bare `pnpm setup`; pnpm reserves the bare command for
-its own shell setup helper.
 
 Create a Cloudflare API token and export it before running live preflight or
 apply:
@@ -128,16 +132,11 @@ pnpm exec wrangler whoami
 
 You do not need `wrangler login`; the setup flow uses the API token.
 
-Run a live preflight without mutating Cloudflare:
+### Cloudflare API token permissions
 
-```sh
-pnpm run setup \
-  --account-id <cloudflare-account-id> \
-  --admin-url https://mail.example.com \
-  --domain example.com
-```
-
-The setup token should have these Cloudflare permissions:
+Cloudflare calls write permissions "Edit" in the token UI. Older docs or error
+messages may say "Write"; choose "Edit" in the dashboard. The setup token
+should have:
 
 - Account -> Account Settings -> Read
 - Account -> Billing -> Read
@@ -151,12 +150,30 @@ The setup token should have these Cloudflare permissions:
 - Account -> Access: Organizations -> Read
 - Account -> Access: Apps -> Edit
 - Account -> Access: Policies -> Edit
+- User -> User Details -> Read
 - Zone -> Zone -> Read
 - Zone -> DNS -> Edit
 - Zone -> Zone DNS Settings -> Edit
 
-Cloudflare calls write permissions "Edit" in the token UI. Older docs or error
-messages may say "Write"; choose "Edit" in the dashboard.
+Apply the zone permissions to the zone(s) hosting your admin URL and sending
+domains.
+
+### Preflight and apply
+
+Run a preflight check. Setup validates the token, account, and zone, then
+prints a plan without mutating Cloudflare. If `CLOUDFLARE_API_TOKEN` is not set,
+it falls back to plan-only output. Repeat `--domain` for every sending domain:
+
+```sh
+pnpm run setup \
+  --account-id <cloudflare-account-id> \
+  --admin-url https://mail.example.com \
+  --allow-email <admin@example.com> \
+  --domain example.com
+```
+
+Use `pnpm run setup`, not bare `pnpm setup`; pnpm reserves the bare command for
+its own shell setup helper.
 
 If setup fails on a fresh Cloudflare account:
 
@@ -181,11 +198,12 @@ pnpm run setup --apply \
   --smtp-host smtp.example.com
 ```
 
-For each `--domain`, setup and the admin UI look up the Cloudflare zone and
-Email Sending status through the Cloudflare API. You should not need to copy
-zone IDs by hand. `--smtp-host` is the SMTP relay hostname shown in credential
-setup details; omit it to use `smtp.<first-domain>`. You can change it later
-from **Settings**.
+For each `--domain`, `--apply` looks up the Cloudflare zone and Email Sending
+status before deploying, then registers the domain in D1 so it shows up on
+first login. You should not need to copy zone IDs by hand or add the domain
+again through the UI. `--smtp-host` is the SMTP relay hostname shown in
+credential setup details; omit it to use `smtp.<first-domain>`. You can change
+it later from **Settings**.
 
 The wizard intentionally does **not** push its broad setup API token as the
 Worker runtime `CF_API_TOKEN`. After `--apply`, create a least-privilege
@@ -211,8 +229,10 @@ Access-gated self-service path and redirects back to the UI after Access auth.
 
 Manual setup is still possible: copy `worker/wrangler.toml.example`, create D1
 and KV, apply all migrations before deploying, set secrets with `wrangler secret
-put`, build `ui/` into `worker/public/`, deploy the Worker, then bootstrap the
-first admin with `POST /bootstrap/admin`.
+put`, build `ui/` into `worker/public/`, deploy the Worker, then either insert
+the first admin row directly in D1 or use the recovery-only `POST
+/bootstrap/admin` endpoint with a temporary `BOOTSTRAP_SETUP_TOKEN` secret.
+Delete `BOOTSTRAP_SETUP_TOKEN` immediately after manual bootstrap.
 
 ## DNS
 
@@ -326,7 +346,9 @@ Operational notes:
 - Rotate leaked SMTP credentials or API keys from the admin UI.
 - D1 is the source of truth. KV is cache only.
 - D1 Time Travel can restore production databases, but restore is destructive.
-- After first bootstrap, delete `BOOTSTRAP_SETUP_TOKEN` from Worker secrets.
+- The setup wizard bootstraps the first admin directly in D1 and does not create
+  `BOOTSTRAP_SETUP_TOKEN`. If you use the manual `/bootstrap/admin` recovery
+  flow, delete `BOOTSTRAP_SETUP_TOKEN` immediately after bootstrap.
 - The Worker includes a daily Cron cleanup for expired replay, idempotency,
   auth-failure, and quota rows. Keep the `[triggers]` section from
   `worker/wrangler.toml.example`.
