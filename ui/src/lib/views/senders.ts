@@ -65,7 +65,7 @@ function head(): HTMLElement {
         h("span", { class: "mono" }, "alex@example.com"),
         ") or a wildcard (",
         h("span", { class: "mono" }, "*@example.com"),
-        "). Each entry can be tied to a user — that user's credentials and API keys inherit it.",
+        "). Each entry can be tied to a user or left available to any user so every user's credentials and API keys inherit it.",
       ),
     ),
     h(

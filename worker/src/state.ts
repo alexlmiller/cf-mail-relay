@@ -524,7 +524,7 @@ async function allowedSendersForCredential(env: Env, credential: CredentialRow):
     `SELECT s.id, s.email
        FROM allowlisted_senders s
        JOIN domains d ON d.id = s.domain_id
-      WHERE s.user_id = ?
+      WHERE (s.user_id = ? OR s.user_id IS NULL)
         AND s.enabled = 1
         AND d.enabled = 1
         AND d.status = 'verified'`,
@@ -559,7 +559,7 @@ async function allowedSendersForApiKey(env: Env, key: ApiKeyRow): Promise<string
     `SELECT s.id, s.email
        FROM allowlisted_senders s
        JOIN domains d ON d.id = s.domain_id
-      WHERE s.user_id = ?
+      WHERE (s.user_id = ? OR s.user_id IS NULL)
         AND s.enabled = 1
         AND d.enabled = 1
         AND d.status = 'verified'`,

@@ -185,6 +185,7 @@ function sendersCard(senders: SelfSender[]): HTMLElement {
           h("span", { class: "id", style: "color: var(--text); font-size: 13.5px" }, sender.email),
           h("span", { class: "soft", style: "font-size: 12px" }, "·"),
           h("span", { class: "soft", style: "font-size: 12px" }, sender.domain),
+          sender.user_id === null ? h("span", { class: "pill-static" }, "any user") : false,
         ),
         sender.enabled ? pill("enabled", "ok") : pill("disabled", "muted"),
       ),

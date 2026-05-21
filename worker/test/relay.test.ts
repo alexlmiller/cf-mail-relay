@@ -47,7 +47,7 @@ function makeD1(): D1Database & { state: FakeD1State } {
     revoked_at: null,
     user_disabled_at: null,
   };
-  const sender = { id: "sender_1", email: "gmail@alexmiller.net" };
+  const sender = { id: "sender_1", email: "gmail@alexmiller.net", user_id: null };
 
   const makeStatement = (sql: string) => {
     let args: unknown[] = [];
@@ -111,7 +111,10 @@ function makeD1(): D1Database & { state: FakeD1State } {
 
   const makeAll = async (sql: string) => {
     if (sql.includes("FROM allowlisted_senders")) {
-      return { results: [sender] };
+      if (sql.includes("s.id IN")) {
+        return { results: [sender] };
+      }
+      return { results: sql.includes("s.user_id IS NULL") ? [sender] : [] };
     }
     return { results: [] };
   };
@@ -303,7 +306,7 @@ describe("relay endpoints", () => {
     await expect(response.json()).resolves.toMatchObject({ ok: true, version: "0.1.0-ms7", schema_version: "3" });
   });
 
-  it("authenticates SMTP credentials with HMAC-protected /relay/auth", async () => {
+  it("authenticates SMTP credentials with domain-wide senders inherited through /relay/auth", async () => {
     const body = new TextEncoder().encode(JSON.stringify({ username: "gmail", password: "secret" }));
     const response = await app.request(
       "/relay/auth",

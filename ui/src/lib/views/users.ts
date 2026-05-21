@@ -112,7 +112,8 @@ function paint(root: HTMLElement, snapshot: Snapshot) {
   const target = root.querySelector<HTMLElement>("#users-table");
   if (!target) return;
 
-  const sendersByUser = countBy(snapshot.senders, (s) => s.user_id ?? "");
+  const anyUserSenderCount = snapshot.senders.filter((s) => s.user_id === null).length;
+  const sendersByUser = countBy(snapshot.senders.filter((s) => s.user_id !== null), (s) => s.user_id ?? "");
   const credsByUser = countBy(snapshot.credentials.filter((c) => c.revoked_at === null), (c) => c.user_id);
   const keysByUser = countBy(snapshot.apiKeys.filter((k) => k.revoked_at === null), (k) => k.user_id);
 
@@ -154,8 +155,8 @@ function paint(root: HTMLElement, snapshot: Snapshot) {
         key: "senders",
         label: "Senders",
         right: true,
-        render: (row) => h("span", { class: "num" }, String(sendersByUser.get(row.id) ?? 0)),
-        sort: (row) => sendersByUser.get(row.id) ?? 0,
+        render: (row) => h("span", { class: "num" }, String((sendersByUser.get(row.id) ?? 0) + anyUserSenderCount)),
+        sort: (row) => (sendersByUser.get(row.id) ?? 0) + anyUserSenderCount,
         width: 100,
       },
       {
