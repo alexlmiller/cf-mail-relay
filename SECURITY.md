@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-Security fixes are published for the latest stable release. Before `1.0.0`,
-report issues against `main` or the current release candidate.
+Security fixes are published for the latest stable release. The currently
+supported release line is `1.x`.
 
 ## Reporting a vulnerability
 

@@ -16,8 +16,9 @@ imperatively if you don't want IaC.
 What this module **deliberately does not** create:
 
 - The Worker script itself. Deploy it via `wrangler deploy`.
-- Worker secrets (peppers, HMAC, bootstrap token). Always set via
-  `wrangler secret put`. Secrets in tfstate is a footgun.
+- Worker secrets (peppers, relay HMAC, runtime Cloudflare API token, and any
+  optional recovery bootstrap token). Always set via `wrangler secret put`.
+  Secrets in tfstate is a footgun.
 - Worker custom-domain DNS. The wizard's `wrangler deploy` step + the `routes`
   block in `worker/wrangler.toml` handle this. You can manage records
   separately with `cloudflare_record` if you prefer.

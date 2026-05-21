@@ -44,7 +44,6 @@ See `wrangler.toml.example`. Required bindings include:
 - `CREDENTIAL_PEPPER`
 - `METADATA_PEPPER`
 - `RELAY_HMAC_SECRET_CURRENT`
-- `BOOTSTRAP_SETUP_TOKEN`
 - `ACCESS_TEAM_DOMAIN`
 - `ACCESS_AUDIENCE`
 - `REQUIRED_D1_SCHEMA_VERSION`
@@ -52,6 +51,10 @@ See `wrangler.toml.example`. Required bindings include:
 `CF_API_TOKEN` should be scoped to Account Email Sending Edit plus Zone Read for
 the sending zones. The send path uses Email Sending; domain create/refresh uses
 Zone Read to discover the Cloudflare zone and Email Sending status.
+
+`BOOTSTRAP_SETUP_TOKEN` is optional and only used for the manual recovery
+`POST /bootstrap/admin` flow. The normal setup wizard bootstraps the first
+admin directly in D1 and does not create that secret.
 
 ## Local Development
 

@@ -64,4 +64,4 @@ id = "REPLACE_WITH_KV_NAMESPACE_ID"
 #   METADATA_PEPPER
 #   RELAY_HMAC_SECRET_CURRENT
 #   RELAY_HMAC_SECRET_PREVIOUS  (optional, during rotation)
-#   BOOTSTRAP_SETUP_TOKEN       (one-time)
+#   BOOTSTRAP_SETUP_TOKEN       (optional, manual recovery bootstrap only)
