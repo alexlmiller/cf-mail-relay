@@ -54,3 +54,8 @@ jobs:
           REGISTRY_IMAGE: ghcr.io/${{ github.repository }}/relay
           VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag }}
         run: docker buildx bake --push --var REGISTRY_IMAGE="$REGISTRY_IMAGE" --var VERSION="$VERSION"
+      - name: tag latest
+        env:
+          REGISTRY_IMAGE: ghcr.io/${{ github.repository }}/relay
+          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag }}
+        run: docker buildx imagetools create -t "$REGISTRY_IMAGE:latest" "$REGISTRY_IMAGE:$VERSION"
