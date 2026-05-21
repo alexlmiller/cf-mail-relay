@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { CloudflareApiClient, createOrFindD1, createOrFindKv, generateSecrets, main, parseArgs, renderRunbook, renderWranglerToml, runApply } from "./setup.mjs";
+import { CloudflareApiClient, createOrFindD1, createOrFindKv, generateSecrets, lookupCloudflareDomain, main, parseArgs, parseUsersCount, renderRunbook, renderWranglerToml, runApply } from "./setup.mjs";
 
 describe("setup parseArgs", () => {
   it("parses repeatable domains and core options", () => {
@@ -40,16 +40,71 @@ describe("setup parseArgs", () => {
   it("rejects unknown options", () => {
     assert.throws(() => parseArgs(["--wat"], {}), /Unknown option/);
   });
+
+  it("does not accept the removed --dry-run mode", () => {
+    assert.throws(() => parseArgs(["--dry-run"], {}), /Unknown option: --dry-run/);
+  });
 });
 
 describe("setup main", () => {
-  it("returns a dry-run plan without requiring a token", async () => {
-    const result = await main(["--account-id", "acc_123", "--domain", "example.com", "--dry-run"], {});
+  it("returns a plan-only output when no token is set", async () => {
+    const result = await main([
+      "--account-id", "acc_123",
+      "--admin-url", "https://mail.example.com",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+    ], {});
 
     assert.equal(result.ok, true);
-    assert.equal(result.dry_run, true);
+    assert.equal(result.plan_only, true);
+    assert.match(result.note, /CLOUDFLARE_API_TOKEN is not set/);
     assert.equal(result.plan.domains[0].domain, "example.com");
     assert.ok(result.plan.commands.some((command) => command.includes("wrangler d1 create")));
+  });
+
+  it("--apply requires a Cloudflare API token", async () => {
+    await assert.rejects(
+      main([
+        "--account-id", "acc_123",
+        "--admin-url", "https://mail.example.com",
+        "--allow-email", "alex@example.com",
+        "--domain", "example.com",
+        "--apply",
+      ], {}),
+      /CLOUDFLARE_API_TOKEN must contain a Cloudflare API token before running --apply/,
+    );
+  });
+
+  it("plan commands have no <PLACEHOLDER> stubs — real values from CLI args are substituted", async () => {
+    const result = await main([
+      "--account-id", "acc_123",
+      "--admin-url", "https://mail.example.com",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+    ], {});
+
+    for (const command of result.plan.commands) {
+      assert.doesNotMatch(command, /<D1_DATABASE_NAME>/, `placeholder leaked: ${command}`);
+      assert.doesNotMatch(command, /<admin@example\.com>/, `placeholder leaked: ${command}`);
+      assert.doesNotMatch(command, /<domain>/, `placeholder leaked: ${command}`);
+    }
+    assert.ok(result.plan.commands.some((command) => command.includes("d1 migrations apply cf-mail-relay --remote")));
+    assert.ok(result.plan.commands.some((command) => command.includes("--account-id acc_123")));
+    assert.ok(result.plan.commands.some((command) => command.includes("--pages-url https://mail.example.com")));
+    assert.ok(result.plan.commands.some((command) => command.includes("--allow-email alex@example.com")));
+    assert.ok(result.plan.commands.some((command) => command.includes("doctor:local -- --domain example.com --worker-url https://mail.example.com")));
+    assert.ok(!result.plan.commands.some((command) => command.includes("BOOTSTRAP_SETUP_TOKEN")));
+  });
+
+  it("requires --admin-url and --allow-email even without --apply", async () => {
+    await assert.rejects(
+      main(["--account-id", "acc_123", "--domain", "example.com"], {}),
+      /--admin-url is required/,
+    );
+    await assert.rejects(
+      main(["--account-id", "acc_123", "--admin-url", "https://mail.example.com", "--domain", "example.com"], {}),
+      /--allow-email is required/,
+    );
   });
 
   it("passes preflight checks when Cloudflare resources are visible", async () => {
@@ -86,14 +141,12 @@ describe("setup main", () => {
     };
 
     const result = await main([
-      "--account-id",
-      "acc_123",
-      "--domain",
-      "example.com",
-      "--d1-database-id",
-      "d1_123",
-      "--kv-namespace-id",
-      "kv_123",
+      "--account-id", "acc_123",
+      "--admin-url", "https://mail.example.com",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+      "--d1-database-id", "d1_123",
+      "--kv-namespace-id", "kv_123",
     ], { CLOUDFLARE_API_TOKEN: "token" }, fetchImpl);
 
     assert.equal(result.ok, true);
@@ -118,7 +171,12 @@ describe("setup main", () => {
       return json({ success: false }, 404);
     };
 
-    const result = await main(["--account-id", "acc_123", "--domain", "example.com"], { CLOUDFLARE_API_TOKEN: "token" }, fetchImpl);
+    const result = await main([
+      "--account-id", "acc_123",
+      "--admin-url", "https://mail.example.com",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+    ], { CLOUDFLARE_API_TOKEN: "token" }, fetchImpl);
 
     assert.equal(result.ok, false);
     assert.equal(result.checks.find((check) => check.name === "worker_secrets").status, "fail");
@@ -181,16 +239,75 @@ describe("setup apply helpers", () => {
     assert.equal(result.source, "existing");
   });
 
-  it("generateSecrets returns 4 distinct base64url 32-byte secrets", () => {
+  it("lookupCloudflareDomain requires enabled Email Sending", async () => {
+    const fetchImpl = async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/client/v4/zones" && parsed.searchParams.get("name") === "example.com") {
+        return json({ success: true, result: [{ id: "zone_123", name: "example.com" }] });
+      }
+      if (parsed.pathname === "/client/v4/zones/zone_123/email/sending/subdomains") {
+        return json({ success: true, result: [{ enabled: true, name: "example.com" }] });
+      }
+      return json({ success: false }, 404);
+    };
+    const client = new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl);
+    assert.deepEqual(await lookupCloudflareDomain(client, "example.com"), { zoneId: "zone_123", status: "verified" });
+  });
+
+  it("lookupCloudflareDomain rejects domains that are not onboarded for Email Sending", async () => {
+    const fetchImpl = async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/client/v4/zones" && parsed.searchParams.get("name") === "example.com") {
+        return json({ success: true, result: [{ id: "zone_123", name: "example.com" }] });
+      }
+      if (parsed.pathname === "/client/v4/zones/zone_123/email/sending/subdomains") {
+        return json({ success: true, result: [{ enabled: false, name: "example.com" }] });
+      }
+      return json({ success: false }, 404);
+    };
+    const client = new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl);
+    await assert.rejects(
+      lookupCloudflareDomain(client, "example.com"),
+      /Email Sending is not enabled/,
+    );
+  });
+
+  it("lookupCloudflareDomain falls back from sending subdomain to parent zone", async () => {
+    const zoneLookups = [];
+    const fetchImpl = async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/client/v4/zones") {
+        zoneLookups.push(parsed.searchParams.get("name"));
+        if (parsed.searchParams.get("name") === "news.example.com") {
+          return json({ success: true, result: [] });
+        }
+        if (parsed.searchParams.get("name") === "example.com") {
+          return json({ success: true, result: [{ id: "zone_parent", name: "example.com" }] });
+        }
+      }
+      if (parsed.pathname === "/client/v4/zones/zone_parent/email/sending/subdomains") {
+        return json({ success: true, result: [{ enabled: true, name: "news.example.com" }] });
+      }
+      return json({ success: false }, 404);
+    };
+    const client = new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl);
+
+    assert.deepEqual(await lookupCloudflareDomain(client, "news.example.com"), { zoneId: "zone_parent", status: "verified" });
+    assert.deepEqual(zoneLookups, ["news.example.com", "example.com"]);
+  });
+
+  it("generateSecrets returns 3 distinct base64url 32-byte secrets", () => {
     const secrets = generateSecrets();
     const names = Object.keys(secrets);
-    assert.deepEqual(names.sort(), ["BOOTSTRAP_SETUP_TOKEN", "CREDENTIAL_PEPPER", "METADATA_PEPPER", "RELAY_HMAC_SECRET_CURRENT"]);
+    // BOOTSTRAP_SETUP_TOKEN is intentionally absent: normal setup bootstraps
+    // the first admin directly in D1.
+    assert.deepEqual(names.sort(), ["CREDENTIAL_PEPPER", "METADATA_PEPPER", "RELAY_HMAC_SECRET_CURRENT"]);
     for (const name of names) {
       assert.equal(secrets[name].length, 43);
       assert.match(secrets[name], /^[A-Za-z0-9_-]+$/);
     }
     // No collisions.
-    assert.equal(new Set(Object.values(secrets)).size, 4);
+    assert.equal(new Set(Object.values(secrets)).size, 3);
   });
 
   it("renderWranglerToml substitutes placeholders + mail.example.com route", () => {
@@ -250,56 +367,6 @@ routes = [
     assert.match(runbook, /relay: `mailer\.example\.com`/);
   });
 
-  it("throws when bootstrap admin returns non-2xx (don't leave a half-bootstrapped relay)", async () => {
-    const fetchImpl = async (url, init = {}) => {
-      const path = new URL(url).pathname;
-      if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") {
-        return json({ success: true, result: [] });
-      }
-      if (path === "/client/v4/accounts/acc/d1/database" && init.method === "POST") {
-        return json({ success: true, result: { uuid: "d1_new" } });
-      }
-      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") {
-        return json({ success: true, result: [] });
-      }
-      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && init.method === "POST") {
-        return json({ success: true, result: { id: "kv_new" } });
-      }
-      if (path === "/bootstrap/admin") {
-        return json({ ok: false, error: "bootstrap_already_completed" }, 409);
-      }
-      throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
-    };
-
-    const options = parseArgs([
-      "--account-id", "acc",
-      "--admin-url", "https://mail.milf.red",
-      "--allow-email", "alex@example.com",
-      "--domain", "example.com",
-      "--apply",
-    ], {});
-    options.workerDir = "/repo/worker";
-    options.repoRoot = "/repo";
-    options.wranglerExamplePath = "/repo/worker/wrangler.toml.example";
-    options.wranglerPath = "/repo/worker/wrangler.toml";
-    options.runbookPath = "/repo/RUNBOOK.md";
-
-    await assert.rejects(
-      runApply({
-        options,
-        env: { CLOUDFLARE_API_TOKEN: "token" },
-        client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
-        execImpl: async () => {},
-        readFileImpl: () => "",
-        writeFileImpl: () => {},
-        existsImpl: () => false,
-        accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
-        fetchImpl,
-      }),
-      /Bootstrap admin failed/,
-    );
-  });
-
   it("runApply orchestrates create-or-reuse, secret push, deploy, bootstrap", async () => {
     const execCalls = [];
     const writes = new Map();
@@ -318,8 +385,14 @@ routes = [
       if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && init.method === "POST") {
         return json({ success: true, result: { id: "kv_new" } });
       }
+      if (path === "/client/v4/zones") {
+        return json({ success: true, result: [{ id: "zone_xyz", name: "example.com" }] });
+      }
+      if (path === "/client/v4/zones/zone_xyz/email/sending/subdomains") {
+        return json({ success: true, result: [{ enabled: true, name: "example.com" }] });
+      }
       if (path === "/bootstrap/admin") {
-        return json({ ok: true, user_id: "usr_admin" });
+        throw new Error("setup wizard should not POST /bootstrap/admin");
       }
       throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
     };
@@ -343,7 +416,9 @@ routes = [
       client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
       execImpl: async (command, args) => {
         execCalls.push(`${command} ${args.join(" ")}`);
-        if (args.join(" ") === "exec wrangler secret list --format json") return JSON.stringify([{ name: "CF_API_TOKEN" }]);
+        if (args.join(" ").includes("d1 execute") && args.join(" ").includes("FROM users")) {
+          return JSON.stringify([{ results: [{ n: 0 }] }]);
+        }
         return undefined;
       },
       readFileImpl: () => `account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
@@ -358,6 +433,7 @@ routes = [
       writeFileImpl: (path, body) => { writes.set(path, body); },
       existsImpl: (path) => exists.has(path),
       accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+      progressImpl: () => {},
       fetchImpl,
     });
 
@@ -370,6 +446,9 @@ routes = [
     assert.ok(stepNames.includes("deployed"));
     assert.ok(stepNames.includes("bootstrap_admin"));
     assert.ok(stepNames.includes("runbook_written"));
+    const bootstrapStep = result.steps.find((step) => step.step === "bootstrap_admin");
+    assert.equal(bootstrapStep.method, "d1");
+    assert.match(bootstrapStep.user_id, /^usr_[a-f0-9]{32}$/u);
 
     // Wrangler toml was written with substituted values.
     const toml = writes.get("/repo/worker/wrangler.toml");
@@ -384,18 +463,102 @@ routes = [
     assert.doesNotMatch(settingsCommand, /\\"smtp\.example\.com\\"/);
     assert.ok(execCalls.some((call) => call.includes("secret put RELAY_HMAC_SECRET_CURRENT")));
     assert.ok(execCalls.some((call) => call.includes("wrangler deploy")));
-    assert.ok(execCalls.some((call) => call.includes("secret delete BOOTSTRAP_SETUP_TOKEN")));
-    assert.ok(execCalls.some((call) => call.includes("secret list --format json")));
+    // Setup bootstraps the first admin directly in D1 and never creates the
+    // manual-recovery BOOTSTRAP_SETUP_TOKEN during normal wizard runs.
+    assert.ok(execCalls.some((call) => call.includes("INSERT INTO users")));
+    assert.ok(execCalls.some((call) => call.includes("alex@example.com")));
+    assert.ok(!execCalls.some((call) => call.includes("secret put BOOTSTRAP_SETUP_TOKEN")));
+    assert.ok(!execCalls.some((call) => call.includes("secret delete BOOTSTRAP_SETUP_TOKEN")));
+    assert.ok(!execCalls.some((call) => call.includes("secret list --format json")));
+    const generatedSecretPuts = execCalls.filter((call) => /secret put (CREDENTIAL_PEPPER|METADATA_PEPPER|RELAY_HMAC_SECRET_CURRENT|BOOTSTRAP_SETUP_TOKEN)$/.test(call));
+    assert.equal(generatedSecretPuts.length, 3, "expected only the 3 steady-state generated-secret puts");
+    // Domains registered: setup INSERTs each --domain into D1 with zone_id + status.
+    assert.ok(stepNames.includes("domains_registered"));
+    const domainsStep = result.steps.find((step) => step.step === "domains_registered");
+    assert.deepEqual(domainsStep.domains, [{ domain: "example.com", zone_id: "zone_xyz", status: "verified" }]);
+    const domainInsert = execCalls.find((call) => /d1 execute .* INSERT INTO domains/.test(call));
+    assert.ok(domainInsert, `expected domains INSERT; calls = ${execCalls.join(" | ")}`);
+    assert.match(domainInsert, /ON CONFLICT\(domain\) DO UPDATE SET/);
+    // policy_version was bumped after domain registration.
+    assert.ok(execCalls.some((call) => /d1 execute .*'policy_version'/.test(call)));
   });
 
-  it("fails apply if the bootstrap token remains after deletion", async () => {
+  it("runApply validates sending domains before mutating resources", async () => {
+    const execCalls = [];
+    let accessCalled = false;
+    const fetchImpl = async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/client/v4/zones" && parsed.searchParams.get("name") === "example.com") {
+        return json({ success: true, result: [{ id: "zone_xyz", name: "example.com" }] });
+      }
+      if (parsed.pathname === "/client/v4/zones/zone_xyz/email/sending/subdomains") {
+        return json({ success: true, result: [{ enabled: false, name: "example.com" }] });
+      }
+      throw new Error(`unexpected lookup after domain validation should have failed: ${url}`);
+    };
+
+    const options = parseArgs([
+      "--account-id", "acc",
+      "--admin-url", "https://mail.milf.red",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+      "--apply",
+    ], {});
+
+    await assert.rejects(
+      runApply({
+        options,
+        env: { CLOUDFLARE_API_TOKEN: "token" },
+        client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
+        execImpl: async (command, args) => {
+          execCalls.push(`${command} ${args.join(" ")}`);
+        },
+        readFileImpl: () => "",
+        writeFileImpl: () => {},
+        existsImpl: () => false,
+        accessAppImpl: async () => {
+          accessCalled = true;
+          return { app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" };
+        },
+        progressImpl: () => {},
+        fetchImpl,
+      }),
+      /Email Sending is not enabled/,
+    );
+    assert.equal(accessCalled, false);
+    assert.deepEqual(execCalls, []);
+  });
+
+  it("parseUsersCount reads the count column from wrangler d1 execute --json", () => {
+    assert.equal(parseUsersCount(JSON.stringify([{ results: [{ n: 0 }] }])), 0);
+    assert.equal(parseUsersCount(JSON.stringify([{ results: [{ n: 7 }] }])), 7);
+    assert.throws(() => parseUsersCount("not json"), /Could not read users count/);
+    assert.throws(() => parseUsersCount(JSON.stringify([{ results: [{}] }])), /no `n` column/);
+  });
+
+  it("runApply runs bootstrap on retry when users table is empty and wrangler.toml already exists", async () => {
+    // Regression test for the silent-skip bug: an earlier --apply created
+    // worker/wrangler.toml but failed before bootstrap (e.g., missing Workers
+    // Routes permission at deploy). On retry, the script must still attempt
+    // bootstrap rather than treating the existing toml as "already done".
+    const execCalls = [];
     const fetchImpl = async (url, init = {}) => {
       const path = new URL(url).pathname;
-      if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
-      if (path === "/client/v4/accounts/acc/d1/database" && init.method === "POST") return json({ success: true, result: { uuid: "d1_new" } });
-      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
-      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && init.method === "POST") return json({ success: true, result: { id: "kv_new" } });
-      if (path === "/bootstrap/admin") return json({ ok: true, user_id: "usr_admin" });
+      if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") {
+        return json({ success: true, result: [{ name: "cf-mail-relay", uuid: "d1_existing" }] });
+      }
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") {
+        return json({ success: true, result: [{ id: "kv_existing", title: "cf-mail-relay-hot" }] });
+      }
+      if (path === "/client/v4/zones") {
+        return json({ success: true, result: [{ id: "zone_xyz", name: "example.com" }] });
+      }
+      if (path === "/client/v4/zones/zone_xyz/email/sending/subdomains") {
+        return json({ success: true, result: [{ enabled: true, name: "example.com" }] });
+      }
+      if (path === "/bootstrap/admin") {
+        throw new Error("setup wizard should not POST /bootstrap/admin");
+      }
       throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
     };
 
@@ -412,24 +575,151 @@ routes = [
     options.wranglerPath = "/repo/worker/wrangler.toml";
     options.runbookPath = "/repo/RUNBOOK.md";
 
-    await assert.rejects(
-      runApply({
-        options,
-        env: { CLOUDFLARE_API_TOKEN: "token" },
-        client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
-        execImpl: async (_command, args) => {
-          if (args.join(" ") === "exec wrangler secret list --format json") {
-            return JSON.stringify([{ name: "BOOTSTRAP_SETUP_TOKEN" }]);
-          }
-          return undefined;
-        },
-        readFileImpl: () => "",
-        writeFileImpl: () => {},
-        existsImpl: () => false,
-        accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
-        fetchImpl,
-      }),
-      /BOOTSTRAP_SETUP_TOKEN is still present/,
-    );
+    const result = await runApply({
+      options,
+      env: { CLOUDFLARE_API_TOKEN: "token" },
+      client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
+      execImpl: async (command, args) => {
+        execCalls.push(`${command} ${args.join(" ")}`);
+        if (args.join(" ").includes("d1 execute") && args.join(" ").includes("FROM users")) {
+          return JSON.stringify([{ results: [{ n: 0 }] }]);
+        }
+        return undefined;
+      },
+      readFileImpl: () => "",
+      // Existing wrangler.toml — the previous --apply attempt created it.
+      writeFileImpl: () => {},
+      existsImpl: (path) => path === "/repo/worker/wrangler.toml",
+      accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+      progressImpl: () => {},
+      fetchImpl,
+    });
+
+    assert.equal(result.ok, true);
+    const stepNames = result.steps.map((step) => step.step);
+    assert.ok(stepNames.includes("bootstrap_admin"), `expected bootstrap_admin step on retry; got ${stepNames.join(", ")}`);
+    assert.ok(execCalls.some((call) => call.includes("INSERT INTO users")));
+    assert.ok(!execCalls.some((call) => call.includes("BOOTSTRAP_SETUP_TOKEN")));
+  });
+
+  it("runApply emits progress lines via the injected progressImpl", async () => {
+    const progressLines = [];
+    const fetchImpl = async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
+      if (path === "/client/v4/accounts/acc/d1/database" && init.method === "POST") return json({ success: true, result: { uuid: "d1_new" } });
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && init.method === "POST") return json({ success: true, result: { id: "kv_new" } });
+      if (path === "/client/v4/zones") return json({ success: true, result: [{ id: "zone_xyz", name: "example.com" }] });
+      if (path === "/client/v4/zones/zone_xyz/email/sending/subdomains") return json({ success: true, result: [{ enabled: true, name: "example.com" }] });
+      if (path === "/bootstrap/admin") throw new Error("setup wizard should not POST /bootstrap/admin");
+      throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
+    };
+
+    const options = parseArgs([
+      "--account-id", "acc",
+      "--admin-url", "https://mail.milf.red",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+      "--apply",
+    ], {});
+    options.workerDir = "/repo/worker";
+    options.repoRoot = "/repo";
+    options.wranglerExamplePath = "/repo/worker/wrangler.toml.example";
+    options.wranglerPath = "/repo/worker/wrangler.toml";
+    options.runbookPath = "/repo/RUNBOOK.md";
+
+    await runApply({
+      options,
+      env: { CLOUDFLARE_API_TOKEN: "token" },
+      client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
+      execImpl: async (_command, args) => {
+        if (args.join(" ").includes("d1 execute") && args.join(" ").includes("FROM users")) {
+          return JSON.stringify([{ results: [{ n: 0 }] }]);
+        }
+        return undefined;
+      },
+      readFileImpl: () => "",
+      writeFileImpl: () => {},
+      existsImpl: () => false,
+      accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+      fetchImpl,
+      progressImpl: (message) => progressLines.push(message),
+    });
+
+    assert.ok(progressLines.some((line) => line.includes("Validating Cloudflare Email Sending")));
+    assert.ok(progressLines.some((line) => line.includes("Ensuring D1 database")), `D1 progress missing: ${progressLines.join("|")}`);
+    assert.ok(progressLines.some((line) => line.includes("Ensuring KV namespace")));
+    assert.ok(progressLines.some((line) => line.includes("Cloudflare Access app")));
+    assert.ok(progressLines.some((line) => line.includes("Applying D1 migrations")));
+    assert.ok(progressLines.some((line) => line.includes("Pushing")));
+    assert.ok(progressLines.some((line) => line.includes("Building admin UI")));
+    assert.ok(progressLines.some((line) => line.includes("Deploying worker")));
+    assert.ok(progressLines.some((line) => line.includes("Bootstrapping admin")));
+    assert.ok(progressLines.some((line) => line.includes("RUNBOOK")));
+  });
+
+  it("runApply skips bootstrap when users table is not empty (idempotent reruns)", async () => {
+    const execCalls = [];
+    const fetchImpl = async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") {
+        return json({ success: true, result: [{ name: "cf-mail-relay", uuid: "d1_existing" }] });
+      }
+      if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") {
+        return json({ success: true, result: [{ id: "kv_existing", title: "cf-mail-relay-hot" }] });
+      }
+      if (path === "/client/v4/zones") {
+        return json({ success: true, result: [{ id: "zone_xyz", name: "example.com" }] });
+      }
+      if (path === "/client/v4/zones/zone_xyz/email/sending/subdomains") {
+        return json({ success: true, result: [{ enabled: true, name: "example.com" }] });
+      }
+      if (path === "/bootstrap/admin") {
+        throw new Error("bootstrap POST should not be made when users table is not empty");
+      }
+      throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
+    };
+
+    const options = parseArgs([
+      "--account-id", "acc",
+      "--admin-url", "https://mail.milf.red",
+      "--allow-email", "alex@example.com",
+      "--domain", "example.com",
+      "--apply",
+    ], {});
+    options.workerDir = "/repo/worker";
+    options.repoRoot = "/repo";
+    options.wranglerExamplePath = "/repo/worker/wrangler.toml.example";
+    options.wranglerPath = "/repo/worker/wrangler.toml";
+    options.runbookPath = "/repo/RUNBOOK.md";
+
+    const result = await runApply({
+      options,
+      env: { CLOUDFLARE_API_TOKEN: "token" },
+      client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
+      execImpl: async (command, args) => {
+        execCalls.push(`${command} ${args.join(" ")}`);
+        if (args.join(" ").includes("d1 execute") && args.join(" ").includes("FROM users")) {
+          return JSON.stringify([{ results: [{ n: 1 }] }]);
+        }
+        return undefined;
+      },
+      readFileImpl: () => "",
+      writeFileImpl: () => {},
+      existsImpl: (path) => path === "/repo/worker/wrangler.toml",
+      accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
+      progressImpl: () => {},
+      fetchImpl,
+    });
+
+    assert.equal(result.ok, true);
+    const bootstrapStep = result.steps.find((step) => step.step === "bootstrap_admin");
+    assert.ok(bootstrapStep);
+    assert.equal(bootstrapStep.skipped, true);
+    assert.equal(bootstrapStep.reason, "users_table_not_empty");
+    assert.ok(!execCalls.some((call) => call.includes("INSERT INTO users")));
+    assert.ok(!execCalls.some((call) => call.includes("secret put BOOTSTRAP_SETUP_TOKEN")));
+    assert.ok(!execCalls.some((call) => call.includes("secret delete BOOTSTRAP_SETUP_TOKEN")));
   });
 });
