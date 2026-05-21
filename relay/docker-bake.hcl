@@ -16,5 +16,6 @@ target "relay" {
   platforms = ["linux/amd64", "linux/arm64"]
   tags = [
     "${REGISTRY_IMAGE}:${VERSION}",
+    "${REGISTRY_IMAGE}:latest",
   ]
 }
