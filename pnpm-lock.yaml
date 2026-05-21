@@ -15,7 +15,7 @@ importers:
         specifier: ^1.60.0
         version: 1.60.0
       tsx:
-        specifier: ^4.22.0
+        specifier: ^4.22.1
         version: 4.22.1
 
   demo:
@@ -31,13 +31,13 @@ importers:
         specifier: ^0.9.9
         version: 0.9.9(prettier@3.8.3)(typescript@5.9.3)
       '@cloudflare/workers-types':
-        specifier: ^4.20260515.1
+        specifier: ^4.20260518.1
         version: 4.20260518.1
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
       wrangler:
-        specifier: ^4.91.0
+        specifier: ^4.92.0
         version: 4.92.0(@cloudflare/workers-types@4.20260518.1)
 
   shared:
@@ -75,14 +75,14 @@ importers:
         specifier: workspace:*
         version: link:../shared
       hono:
-        specifier: ^4.12.18
-        version: 4.12.18
+        specifier: ^4.12.19
+        version: 4.12.21
       zod:
         specifier: ^3.25.76
         version: 3.25.76
     devDependencies:
       '@cloudflare/workers-types':
-        specifier: ^4.20260515.1
+        specifier: ^4.20260518.1
         version: 4.20260518.1
       typescript:
         specifier: ^5.9.3
@@ -91,7 +91,7 @@ importers:
         specifier: ^4.1.6
         version: 4.1.6(vite@7.3.3(tsx@4.22.1)(yaml@2.9.0))
       wrangler:
-        specifier: ^4.91.0
+        specifier: ^4.92.0
         version: 4.92.0(@cloudflare/workers-types@4.20260518.1)
 
 packages:
@@ -1311,8 +1311,8 @@ packages:
   hastscript@9.0.1:
     resolution: {integrity: sha512-g7df9rMFX/SPi34tyGCyUBREQoKkapwdY/T04Qn9TDWfHhAYt4/I0gMVirzK5wEzeUqIjEB+LXC/ypb7Aqno5w==}
 
-  hono@4.12.18:
-    resolution: {integrity: sha512-RWzP96k/yv0PQfyXnWjs6zot20TqfpfsNXhOnev8d1InAxubW93L11/oNUc3tQqn2G0bSdAOBpX+2uDFHV7kdQ==}
+  hono@4.12.21:
+    resolution: {integrity: sha512-uV63apnb0kyPtAUwoWgaGh9HyIFcv8lgmzPZSiTBQAFOFGIzka5EZ1dZocmGnn0XdX0+XTqJ6Tqv7selMuGLRQ==}
     engines: {node: '>=16.9.0'}
 
   html-escaper@3.0.3:
@@ -3402,7 +3402,7 @@ snapshots:
       property-information: 7.1.0
       space-separated-tokens: 2.0.2
 
-  hono@4.12.18: {}
+  hono@4.12.21: {}
 
   html-escaper@3.0.3: {}
 
