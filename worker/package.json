@@ -15,9 +15,9 @@
     "@cf-mail-relay/shared": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260518.1",
+    "@cloudflare/workers-types": "^4.20260521.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.6",
-    "wrangler": "^4.92.0"
+    "wrangler": "^4.93.1"
   }
 }
