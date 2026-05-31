@@ -10,14 +10,14 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "hono": "^4.12.19",
+    "hono": "^4.12.23",
     "zod": "^3.25.76",
     "@cf-mail-relay/shared": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260521.1",
+    "@cloudflare/workers-types": "^4.20260528.1",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.6",
-    "wrangler": "^4.93.1"
+    "vitest": "^4.1.7",
+    "wrangler": "^4.95.0"
   }
 }
