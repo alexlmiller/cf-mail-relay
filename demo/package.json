@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@cf-mail-relay/shared": "workspace:*",
-    "astro": "^6.4.1"
+    "astro": "^7.0.0"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.9",
