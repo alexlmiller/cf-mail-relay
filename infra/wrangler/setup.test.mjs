@@ -3,7 +3,51 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CloudflareApiClient, createOrFindD1, createOrFindKv, generateSecrets, lookupCloudflareDomain, main, parseArgs, parseUsersCount, renderRunbook, renderWranglerToml, runApply, writeFileWithMode, writeRecoveryJournalAtomic } from "./setup.mjs";
+import { DatabaseSync } from "node:sqlite";
+import { CloudflareApiClient, createOrFindD1, createOrFindKv, generateSecrets, lookupCloudflareDomain, main, parseArgs, parseUsersCount, policyVersionBumpSql, renderRunbook, renderWranglerToml, runApply, writeFileWithMode, writeRecoveryJournalAtomic } from "./setup.mjs";
+
+describe("setup policy_version generation", () => {
+  it("preserves first-bootstrap behavior and advances on same-second reruns", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL)");
+
+      const sql = policyVersionBumpSql(100);
+      db.exec(sql);
+      assert.deepEqual(
+        { ...db.prepare("SELECT value_json, updated_at FROM settings WHERE key = 'policy_version'").get() },
+        { value_json: JSON.stringify("100"), updated_at: 100 },
+      );
+
+      db.exec(sql);
+      assert.equal(
+        db.prepare("SELECT value_json FROM settings WHERE key = 'policy_version'").get().value_json,
+        JSON.stringify("101"),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("never regresses legacy raw-number or JSON-string generations", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL)");
+      const writeVersion = db.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('policy_version', ?, 0)");
+      const readVersion = db.prepare("SELECT value_json FROM settings WHERE key = 'policy_version'");
+
+      writeVersion.run("250");
+      db.exec(policyVersionBumpSql(100));
+      assert.equal(readVersion.get().value_json, JSON.stringify("251"));
+
+      writeVersion.run(JSON.stringify("300"));
+      db.exec(policyVersionBumpSql(100));
+      assert.equal(readVersion.get().value_json, JSON.stringify("301"));
+    } finally {
+      db.close();
+    }
+  });
+});
 
 describe("setup parseArgs", () => {
   it("parses repeatable domains and core options", () => {
@@ -968,7 +1012,7 @@ routes = [
     assert.ok(domainInsert, `expected domains INSERT; calls = ${execCalls.join(" | ")}`);
     assert.match(domainInsert, /ON CONFLICT\(domain\) DO UPDATE SET/);
     // policy_version was bumped after domain registration.
-    assert.ok(execCalls.some((call) => /d1 execute .*'policy_version'/.test(call)));
+    assert.ok(execCalls.some((call) => call.includes("d1 execute") && call.includes("'policy_version'")));
   });
 
   it("runApply validates sending domains before mutating resources", async () => {
