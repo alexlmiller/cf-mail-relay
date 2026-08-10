@@ -112,32 +112,6 @@ func main() {
 	}
 }
 
-func checkSMTPBanner(listenAddr string, timeout time.Duration) error {
-	address, err := localHealthcheckAddress(listenAddr)
-	if err != nil {
-		return err
-	}
-	deadline := time.Now().Add(timeout)
-	conn, err := (&net.Dialer{Deadline: deadline}).Dial("tcp", address)
-	if err != nil {
-		return fmt.Errorf("connect to %s: %w", address, err)
-	}
-	defer conn.Close()
-	if err := conn.SetDeadline(deadline); err != nil {
-		return fmt.Errorf("set deadline: %w", err)
-	}
-
-	banner, err := bufio.NewReader(io.LimitReader(conn, 512)).ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("read SMTP banner: %w", err)
-	}
-	if !strings.HasPrefix(banner, "220 ") && !strings.HasPrefix(banner, "220-") {
-		return fmt.Errorf("unexpected SMTP banner %q", strings.TrimSpace(banner))
-	}
-	_, _ = io.WriteString(conn, "QUIT\r\n")
-	return nil
-}
-
 func checkSMTPStartTLS(listenAddr, certFile, keyFile, domain string, timeout time.Duration) error {
 	return checkSMTPStartTLSWithTrust(listenAddr, certFile, keyFile, domain, timeout, nil, nil)
 }

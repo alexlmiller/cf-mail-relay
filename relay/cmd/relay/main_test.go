@@ -437,7 +437,7 @@ func TestLocalHealthcheckAddress(t *testing.T) {
 	}
 }
 
-func TestCheckSMTPBanner(t *testing.T) {
+func TestCheckSMTPStartTLSRejectsInvalidBanner(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -452,12 +452,13 @@ func TestCheckSMTPBanner(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		_, writeErr := conn.Write([]byte("220 relay.test ESMTP ready\r\n"))
+		_, writeErr := conn.Write([]byte("554 relay.test unavailable\r\n"))
 		done <- writeErr
 	}()
 
-	if err := checkSMTPBanner(listener.Addr().String(), time.Second); err != nil {
-		t.Fatalf("checkSMTPBanner() error = %v", err)
+	err = checkSMTPStartTLS(listener.Addr().String(), "", "", "relay.test", time.Second)
+	if err == nil || !strings.Contains(err.Error(), "unexpected SMTP banner") {
+		t.Fatalf("checkSMTPStartTLS() error = %v, want invalid banner failure", err)
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("SMTP fixture error = %v", err)
