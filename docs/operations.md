@@ -61,8 +61,8 @@ actions; both are also available as POST endpoints:
   re-fetch credentials from D1 on the next request. Use after editing a user
   or domain row directly in D1 if you want changes to propagate immediately.
 - `POST /admin/api/ops/flush-caches` — bulk deletes `cred:`, `apikey:`,
-  `domain:`, `sender:`, `idem:`, `tombstone:cred:`, `tombstone:apikey:` KV
-  entries. Use sparingly; rebuilds cost one D1 round-trip per cache miss.
+  `idem:`, and `access:jwks:` KV entries. Use sparingly; rebuilds cost one D1
+  round-trip per cache miss.
 
 ## Idempotency semantics
 
