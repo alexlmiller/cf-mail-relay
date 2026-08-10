@@ -11,7 +11,7 @@
   "scripts": {
     "build": "pnpm -r --filter='./worker' --filter='./ui' --filter='./demo' build",
     "typecheck": "pnpm -r --filter='./worker' --filter='./ui' --filter='./demo' typecheck",
-    "test": "pnpm --filter @cf-mail-relay/worker test && pnpm --filter @cf-mail-relay/demo typecheck && node --test infra/wrangler/*.test.mjs infra/setup/*.test.mjs",
+    "test": "pnpm --filter @cf-mail-relay/worker test && pnpm --filter @cf-mail-relay/demo typecheck && node --test infra/wrangler/*.test.mjs infra/setup/*.test.mjs infra/docker/*.test.mjs",
     "demo:build": "pnpm --filter @cf-mail-relay/demo build",
     "demo:deploy": "pnpm --dir worker exec wrangler deploy --config ../demo/wrangler.toml",
     "setup": "node infra/wrangler/setup.mjs",
