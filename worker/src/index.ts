@@ -101,7 +101,7 @@ export interface Env {
 const app = new Hono<{ Bindings: Env }>();
 const workerVersion = "0.1.0-ms7";
 const gitSha = "ms7";
-const requiredSchemaVersionDefault = "5";
+const requiredSchemaVersionDefault = "6";
 const maxRelayBodyBytes = 6 * 1024 * 1024;
 const maxRelayAuthBodyBytes = 16 * 1024;
 const maxSendJsonBodyBytes = Math.ceil((maxRelayBodyBytes * 4) / 3) + 64 * 1024;
