@@ -68,8 +68,8 @@ import {
   computeSmtpIdempotencyKey,
   extractHeader,
   extractHeaders,
+  markIdempotentRequestInFlight,
   policyVersionFromD1,
-  refreshIdempotentRequestLease,
   recordBootstrapFailure,
   recordSendEvent,
   releaseIdempotentRequest,
@@ -306,6 +306,10 @@ app.post("/relay/send", async (c) => {
     return c.json(responseBody, 429);
   }
 
+  if (!(await markIdempotentRequestInFlight(c.env, idempotencyKey, requestHash, "smtp"))) {
+    return c.json({ ok: false, error: "idempotency_pending" }, 409);
+  }
+
   const delivery = await sendRawViaCloudflare(c.env, from, recipients, mimeMessage);
   const deliveryOk = delivery.disposition === "accepted";
   const responseStatus = deliveryHttpStatus(delivery.disposition);
@@ -339,6 +343,16 @@ app.post("/relay/send", async (c) => {
   );
 
   const terminal = delivery.disposition === "accepted" || delivery.disposition === "permanent";
+  const idempotencyEffect = terminal
+    ? completeIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp", {
+        ok: deliveryOk,
+        status: responseStatus,
+        body: responseBody,
+        headers: { "x-relay-policy-version": policyVersion },
+      })
+    : delivery.disposition === "transient"
+      ? releaseIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp")
+      : Promise.resolve();
   await settleSideEffects(`smtp ${delivery.disposition}`, {
     audit: recordSendEvent(c.env, {
       traceId: c.req.header("x-relay-trace-id") ?? crypto.randomUUID(),
@@ -359,16 +373,7 @@ app.post("/relay/send", async (c) => {
       errorCode: responseErrorCode ?? undefined,
       cfErrorCode: delivery.result.errorCode,
     }),
-    idempotency: terminal
-      ? completeIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp", {
-          ok: deliveryOk,
-          status: responseStatus,
-          body: responseBody,
-          headers: { "x-relay-policy-version": policyVersion },
-        })
-      : delivery.disposition === "transient"
-        ? releaseIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp")
-        : refreshIdempotentRequestLease(c.env, idempotencyKey, requestHash, "smtp"),
+    idempotency: idempotencyEffect,
   });
 
   return c.json(responseBody, responseStatus);
@@ -657,6 +662,10 @@ app.post("/send", async (c) => {
     return c.json(responseBody, 429);
   }
 
+  if (!(await markIdempotentRequestInFlight(c.env, idempotencyKey, requestHash, "http"))) {
+    return c.json({ ok: false, error: "idempotency_pending" }, 409);
+  }
+
   const delivery = await sendRawViaCloudflare(c.env, from, recipients, mimeMessage);
   const deliveryOk = delivery.disposition === "accepted";
   const responseStatus = deliveryHttpStatus(delivery.disposition);
@@ -679,6 +688,15 @@ app.post("/send", async (c) => {
   };
 
   const terminal = delivery.disposition === "accepted" || delivery.disposition === "permanent";
+  const idempotencyEffect = terminal
+    ? completeIdempotentRequest(c.env, idempotencyKey, requestHash, "http", {
+        ok: deliveryOk,
+        status: responseStatus,
+        body: responseBody,
+      })
+    : delivery.disposition === "transient"
+      ? releaseIdempotentRequest(c.env, idempotencyKey, requestHash, "http")
+      : Promise.resolve();
   await settleSideEffects(`http ${delivery.disposition}`, {
     audit: recordSendEvent(c.env, {
       traceId: crypto.randomUUID(),
@@ -698,15 +716,7 @@ app.post("/send", async (c) => {
       errorCode: responseErrorCode ?? undefined,
       cfErrorCode: delivery.result.errorCode,
     }),
-    idempotency: terminal
-      ? completeIdempotentRequest(c.env, idempotencyKey, requestHash, "http", {
-          ok: deliveryOk,
-          status: responseStatus,
-          body: responseBody,
-        })
-      : delivery.disposition === "transient"
-        ? releaseIdempotentRequest(c.env, idempotencyKey, requestHash, "http")
-        : refreshIdempotentRequestLease(c.env, idempotencyKey, requestHash, "http"),
+    idempotency: idempotencyEffect,
   });
 
   return c.json(responseBody, responseStatus);
@@ -1129,7 +1139,6 @@ interface ParsedCloudflareResult {
   queued: unknown[] | null;
   bounced: unknown[] | null;
   errorCode: string | null;
-  errorPointer: string | null;
 }
 
 interface CloudflareDelivery {
@@ -1189,7 +1198,7 @@ async function sendRawViaCloudflare(env: Env, from: string, recipients: string[]
 
   if (!response.ok || result.success === false) {
     return {
-      disposition: isPermanentCloudflareFailure(response.status, result.errorPointer) ? "permanent" : "transient",
+      disposition: isPermanentCloudflareFailure(response.status, result.success) ? "permanent" : "transient",
       cfStatus: response.status,
       cfRequestId,
       cfRayId,
@@ -1199,8 +1208,8 @@ async function sendRawViaCloudflare(env: Env, from: string, recipients: string[]
   }
 
   // A successful HTTP status without the documented success/result shape may
-  // still mean the provider accepted the message. Hold the reservation briefly
-  // rather than either duplicating the send or falsely making it permanent.
+  // still mean the provider accepted the message. Hold the reservation for the
+  // idempotency window rather than either duplicating the send or falsely making it permanent.
   return {
     disposition: "ambiguous",
     cfStatus: response.status,
@@ -1223,7 +1232,7 @@ function emptyCloudflareDelivery(
     cfRequestId,
     cfRayId,
     safeResponse: null,
-    result: { success: null, delivered: null, queued: null, bounced: null, errorCode: null, errorPointer: null },
+    result: { success: null, delivered: null, queued: null, bounced: null, errorCode: null },
   };
 }
 
@@ -1274,13 +1283,13 @@ async function settleSideEffects(context: string, effects: Record<string, Promis
 
 function parseCloudflareResult(value: unknown): ParsedCloudflareResult {
   if (typeof value !== "object" || value === null) {
-    return { success: null, delivered: null, queued: null, bounced: null, errorCode: null, errorPointer: null };
+    return { success: null, delivered: null, queued: null, bounced: null, errorCode: null };
   }
   const object = value as { success?: unknown; result?: unknown; errors?: unknown };
   const result = typeof object.result === "object" && object.result !== null ? (object.result as Record<string, unknown>) : {};
   const errors = Array.isArray(object.errors) ? object.errors : [];
   const firstError = errors.find(
-    (error): error is { code?: unknown; source?: { pointer?: unknown } } => typeof error === "object" && error !== null,
+    (error): error is { code?: unknown } => typeof error === "object" && error !== null,
   );
   return {
     success: typeof object.success === "boolean" ? object.success : null,
@@ -1288,14 +1297,11 @@ function parseCloudflareResult(value: unknown): ParsedCloudflareResult {
     queued: Array.isArray(result.queued) ? result.queued : null,
     bounced: Array.isArray(result.permanent_bounces) ? result.permanent_bounces : null,
     errorCode: typeof firstError?.code === "string" || typeof firstError?.code === "number" ? String(firstError.code) : null,
-    errorPointer: typeof firstError?.source?.pointer === "string" ? firstError.source.pointer : null,
   };
 }
 
-function isPermanentCloudflareFailure(status: number, errorPointer: string | null): boolean {
-  if (status !== 400 && status !== 422) return false;
-  const pointer = errorPointer?.toLowerCase().replace(/^\//, "") ?? "";
-  return pointer === "mime_message" || pointer === "recipients" || pointer.startsWith("recipients/");
+function isPermanentCloudflareFailure(status: number, success: boolean | null): boolean {
+  return success === false && (status === 400 || status === 422);
 }
 
 function parseBearer(raw: string | undefined): string | null {

@@ -372,7 +372,7 @@ export async function completeIdempotentRequest(
   const expiresAt = now + idempotencyTtlSeconds;
   const responseJson = JSON.stringify({ ...response, request_hash: requestHash, source, expires_at: expiresAt });
   const result = await env.D1_MAIN.prepare(
-    "UPDATE idempotency_keys SET status = 'completed', response_json = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'pending'",
+    "UPDATE idempotency_keys SET status = 'completed', response_json = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'in_flight'",
   )
     .bind(responseJson, now, expiresAt, key, requestHash, source)
     .run();
@@ -382,6 +382,21 @@ export async function completeIdempotentRequest(
   await env.KV_HOT.put(`idem:${key}`, responseJson, { expirationTtl: idempotencyTtlSeconds });
 }
 
+export async function markIdempotentRequestInFlight(
+  env: Env,
+  key: string,
+  requestHash: string,
+  source: "smtp" | "http",
+): Promise<boolean> {
+  const now = nowSeconds();
+  const result = await env.D1_MAIN.prepare(
+    "UPDATE idempotency_keys SET status = 'in_flight', updated_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'pending' AND expires_at > ?",
+  )
+    .bind(now, key, requestHash, source, now)
+    .run();
+  return result.meta.changes > 0;
+}
+
 export async function releaseIdempotentRequest(
   env: Env,
   key: string,
@@ -389,23 +404,9 @@ export async function releaseIdempotentRequest(
   source: "smtp" | "http",
 ): Promise<void> {
   await env.D1_MAIN.prepare(
-    "DELETE FROM idempotency_keys WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'pending'",
+    "DELETE FROM idempotency_keys WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status IN ('pending', 'in_flight')",
   )
     .bind(key, requestHash, source)
-    .run();
-}
-
-export async function refreshIdempotentRequestLease(
-  env: Env,
-  key: string,
-  requestHash: string,
-  source: "smtp" | "http",
-): Promise<void> {
-  const now = nowSeconds();
-  await env.D1_MAIN.prepare(
-    "UPDATE idempotency_keys SET updated_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'pending' AND expires_at > ?",
-  )
-    .bind(now, key, requestHash, source, now)
     .run();
 }
 
