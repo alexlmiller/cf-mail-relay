@@ -150,6 +150,7 @@ describe("setup main", () => {
       assert.doesNotMatch(command, /<admin@example\.com>/, `placeholder leaked: ${command}`);
       assert.doesNotMatch(command, /<domain>/, `placeholder leaked: ${command}`);
     }
+    assert.equal(result.plan.commands[0], "export CLOUDFLARE_ACCOUNT_ID=acc_123");
     assert.ok(result.plan.commands.some((command) => command.includes("d1 migrations apply cf-mail-relay --remote")));
     assert.ok(result.plan.commands.some((command) => command.includes("--account-id acc_123")));
     assert.ok(result.plan.commands.some((command) => command.includes("--pages-url https://mail.example.com")));
@@ -824,6 +825,17 @@ routes = [
       /Could not inspect remote Worker secrets.*HTTP 403.*Refusing to guess from local files/s,
     );
     assert.equal(harness.journalHistory.length, 0);
+    assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
+  });
+
+  it("refuses a Wrangler config bound to another account before any mutation", async () => {
+    const harness = createApplyHarness({ wranglerExists: true });
+    harness.files.set(harness.options.wranglerPath, 'account_id = "another-account"\n');
+
+    await assert.rejects(
+      harness.run(),
+      /selects Cloudflare account another-account, but --account-id selects acc/,
+    );
     assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
   });
 

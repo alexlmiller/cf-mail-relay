@@ -129,6 +129,16 @@ export async function runApply(ctx) {
   const progress = ctx.progressImpl ?? defaultProgress;
   const steps = [];
 
+  if (existsImpl(options.wranglerPath) && !options.force) {
+    const configuredAccountId = readTopLevelWranglerAccountId(readFileImpl(options.wranglerPath));
+    if (configuredAccountId !== null && configuredAccountId !== options.accountId) {
+      throw new Error(
+        `${options.wranglerPath} selects Cloudflare account ${configuredAccountId}, but --account-id selects ${options.accountId}. ` +
+        "Use the matching account or pass --force to replace the config before Wrangler runs.",
+      );
+    }
+  }
+
   // 1. Validate sending domains before mutating Cloudflare or deploying. The
   //    results are reused later for D1 registration so setup does not fail on a
   //    late provider lookup after the Worker is already deployed.
@@ -440,6 +450,22 @@ function runWrangler(execImpl, cwd, args, accountId, stdin) {
   };
   if (stdin !== undefined) options.stdin = stdin;
   return execImpl("pnpm", ["exec", "wrangler", ...args], options);
+}
+
+function readTopLevelWranglerAccountId(toml) {
+  for (const sourceLine of String(toml).split(/\r?\n/u)) {
+    const line = sourceLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    if (line.startsWith("[")) return null;
+    if (!/^account_id\s*=/u.test(line)) continue;
+
+    const match = line.match(/^account_id\s*=\s*(["'])([^"']+)\1(?:\s*#.*)?$/u);
+    if (match === null) {
+      throw new Error("Could not read top-level account_id from the existing Wrangler config.");
+    }
+    return match[2];
+  }
+  return null;
 }
 
 /**
@@ -978,6 +1004,7 @@ function buildPlan(options) {
     // `pnpm run setup --apply` instead; the wizard fills config, pushes
     // generated secrets, bootstraps D1, and writes RUNBOOK.md.
     commands: [
+      `export CLOUDFLARE_ACCOUNT_ID=${options.accountId}`,
       `pnpm --dir worker exec wrangler d1 create ${options.d1DatabaseName}`,
       `pnpm --dir worker exec wrangler kv namespace create ${options.kvNamespaceTitle}`,
       `pnpm --dir worker exec wrangler d1 migrations apply ${options.d1DatabaseName} --remote`,
