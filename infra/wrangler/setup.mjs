@@ -232,7 +232,7 @@ export async function runApply(ctx) {
   // 5. Apply D1 migrations.
   if (!options.skipMigrations) {
     progress(`Applying D1 migrations to ${d1.name}`);
-    await runWrangler(execImpl, options.workerDir, ["d1", "migrations", "apply", d1.name, "--remote"]);
+    await runWrangler(execImpl, options.workerDir, ["d1", "migrations", "apply", d1.name, "--remote"], options.accountId);
     progress(`Setting smtp_host=${options.relayHost} in D1 settings`);
     await runWrangler(execImpl, options.workerDir, [
       "d1",
@@ -241,7 +241,7 @@ export async function runApply(ctx) {
       "--remote",
       "--command",
       `INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('smtp_host', ${sqlStringLiteral(JSON.stringify(options.relayHost))}, unixepoch())`,
-    ]);
+    ], options.accountId);
     steps.push({ step: "migrations_applied" });
     steps.push({ step: "smtp_host_configured", smtp_host: options.relayHost });
   }
@@ -263,6 +263,7 @@ export async function runApply(ctx) {
         execImpl,
         options.workerDir,
         ["secret", "bulk", "--name", options.workerScriptName],
+        options.accountId,
         `${JSON.stringify(recoveryJournal.secrets)}\n`,
       );
       managedSecretsPushed = managedSecretNames.length;
@@ -288,6 +289,7 @@ export async function runApply(ctx) {
       execImpl,
       options.workerDir,
       ["secret", "put", "CF_API_TOKEN", "--name", options.workerScriptName],
+      options.accountId,
       env[options.tokenEnv] ?? "",
     );
     cfTokenPushed = true;
@@ -325,7 +327,7 @@ export async function runApply(ctx) {
     progress("Building admin UI bundle");
     await execImpl("pnpm", ["--filter", "@cf-mail-relay/ui", "build"], { cwd: options.repoRoot });
     progress(`Deploying worker to ${options.adminUrl}`);
-    await runWrangler(execImpl, options.workerDir, ["deploy"]);
+    await runWrangler(execImpl, options.workerDir, ["deploy"], options.accountId);
     steps.push({ step: "deployed", admin_url: options.adminUrl });
   }
 
@@ -337,14 +339,14 @@ export async function runApply(ctx) {
   //    every retry and left the relay deployed with no admin user.
   if (!options.skipBootstrap) {
     progress("Checking whether users table is empty");
-    const usersEmpty = await isUsersTableEmpty(execImpl, options.workerDir, d1.name);
+    const usersEmpty = await isUsersTableEmpty(execImpl, options.workerDir, d1.name, options.accountId);
     if (!usersEmpty) {
       progress("Bootstrap skipped: users table is not empty");
       steps.push({ step: "bootstrap_admin", skipped: true, reason: "users_table_not_empty" });
     } else {
       const adminEmail = options.allowEmails[0];
       progress(`Bootstrapping admin ${adminEmail} directly in D1`);
-      const userId = await bootstrapAdminInD1(execImpl, options.workerDir, d1.name, adminEmail);
+      const userId = await bootstrapAdminInD1(execImpl, options.workerDir, d1.name, adminEmail, options.accountId);
       steps.push({ step: "bootstrap_admin", email: adminEmail, user_id: userId, method: "d1" });
     }
   }
@@ -365,7 +367,7 @@ export async function runApply(ctx) {
       `INSERT INTO domains (id, domain, cloudflare_zone_id, status, enabled, created_at, updated_at) ` +
         `VALUES (${sqlStringLiteral(domainId)}, ${sqlStringLiteral(lookup.domain)}, ${sqlStringLiteral(lookup.zone_id)}, ${sqlStringLiteral(lookup.status)}, 1, unixepoch(), unixepoch()) ` +
         `ON CONFLICT(domain) DO UPDATE SET cloudflare_zone_id = excluded.cloudflare_zone_id, status = excluded.status, updated_at = unixepoch();`,
-    ]);
+    ], options.accountId);
     registeredDomains.push(lookup);
   }
   if (registeredDomains.length > 0) {
@@ -379,7 +381,7 @@ export async function runApply(ctx) {
       "--remote",
       "--command",
       policyVersionBumpSql(),
-    ]);
+    ], options.accountId);
     steps.push({ step: "domains_registered", domains: registeredDomains });
   }
 
@@ -431,8 +433,13 @@ export async function runApply(ctx) {
   };
 }
 
-function runWrangler(execImpl, cwd, args, stdin) {
-  return execImpl("pnpm", ["exec", "wrangler", ...args], stdin === undefined ? { cwd } : { cwd, stdin });
+function runWrangler(execImpl, cwd, args, accountId, stdin) {
+  const options = {
+    cwd,
+    env: { CLOUDFLARE_ACCOUNT_ID: accountId },
+  };
+  if (stdin !== undefined) options.stdin = stdin;
+  return execImpl("pnpm", ["exec", "wrangler", ...args], options);
 }
 
 /**
@@ -462,11 +469,11 @@ function defaultProgress(message) {
   process.stderr.write(`==> ${message}\n`);
 }
 
-async function isUsersTableEmpty(execImpl, cwd, databaseName) {
+async function isUsersTableEmpty(execImpl, cwd, databaseName, accountId) {
   const output = await execImpl(
     "pnpm",
     ["exec", "wrangler", "d1", "execute", databaseName, "--remote", "--json", "--command", "SELECT count(*) AS n FROM users"],
-    { cwd, captureStdout: true },
+    { cwd, captureStdout: true, env: { CLOUDFLARE_ACCOUNT_ID: accountId } },
   );
   return parseUsersCount(String(output ?? "")) === 0;
 }
@@ -490,7 +497,7 @@ export function parseUsersCount(output) {
   throw new Error("Could not read users count from D1: no `n` column in any result row.");
 }
 
-async function bootstrapAdminInD1(execImpl, cwd, databaseName, email) {
+async function bootstrapAdminInD1(execImpl, cwd, databaseName, email, accountId) {
   const now = Math.floor(Date.now() / 1000);
   const userId = `usr_${randomBytes(16).toString("hex")}`;
   await runWrangler(execImpl, cwd, [
@@ -501,7 +508,7 @@ async function bootstrapAdminInD1(execImpl, cwd, databaseName, email) {
     "--command",
     `INSERT INTO users (id, email, display_name, access_subject, role, disabled_at, created_at, updated_at) ` +
       `VALUES (${sqlStringLiteral(userId)}, ${sqlStringLiteral(email.toLowerCase())}, NULL, NULL, 'admin', NULL, ${now}, ${now})`,
-  ]);
+  ], accountId);
   await runWrangler(execImpl, cwd, [
     "d1",
     "execute",
@@ -510,7 +517,7 @@ async function bootstrapAdminInD1(execImpl, cwd, databaseName, email) {
     "--command",
     `INSERT OR REPLACE INTO settings (key, value_json, updated_at) ` +
       `VALUES ('bootstrap_completed_at', ${sqlStringLiteral(JSON.stringify(now))}, ${now})`,
-  ]);
+  ], accountId);
   return userId;
 }
 
@@ -1155,7 +1162,7 @@ function runCommand(command, args, options = {}) {
     const stdout = [];
     const child = spawn(command, args, {
       cwd: options.cwd ?? process.cwd(),
-      env: process.env,
+      env: { ...process.env, ...(options.env ?? {}) },
       stdio: [
         options.stdin === undefined ? "ignore" : "pipe",
         captureStdout ? "pipe" : "inherit",

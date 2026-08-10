@@ -4,6 +4,7 @@
 # wrangler.toml is gitignored.
 
 name = "cf-mail-relay-worker"
+account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
 main = "src/index.ts"
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
