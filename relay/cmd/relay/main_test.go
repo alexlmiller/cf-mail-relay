@@ -2,12 +2,63 @@ package main
 
 import (
 	"errors"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/alexlmiller/cf-mail-relay/relay/internal/workerclient"
 	"github.com/emersion/go-smtp"
 )
+
+func TestLocalHealthcheckAddress(t *testing.T) {
+	tests := []struct {
+		listen string
+		want   string
+	}{
+		{listen: ":587", want: "127.0.0.1:587"},
+		{listen: "0.0.0.0:2525", want: "127.0.0.1:2525"},
+		{listen: "[::]:587", want: "127.0.0.1:587"},
+		{listen: "127.0.0.2:587", want: "127.0.0.2:587"},
+	}
+	for _, test := range tests {
+		t.Run(test.listen, func(t *testing.T) {
+			got, err := localHealthcheckAddress(test.listen)
+			if err != nil {
+				t.Fatalf("localHealthcheckAddress() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("localHealthcheckAddress() = %q want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestCheckSMTPBanner(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			done <- acceptErr
+			return
+		}
+		defer conn.Close()
+		_, writeErr := conn.Write([]byte("220 relay.test ESMTP ready\r\n"))
+		done <- writeErr
+	}()
+
+	if err := checkSMTPBanner(listener.Addr().String(), time.Second); err != nil {
+		t.Fatalf("checkSMTPBanner() error = %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("SMTP fixture error = %v", err)
+	}
+}
 
 func TestSenderAllowed(t *testing.T) {
 	tests := []struct {

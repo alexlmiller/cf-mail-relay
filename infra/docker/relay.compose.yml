@@ -1,26 +1,32 @@
-# Reference compose for the relay. Adopters typically run this on a public VPS
-# (Hetzner, etc.) with inbound 587/tcp open and DNS-only smtp.<domain> A/AAAA
-# pointing at the host.
-#
-# This file mounts cert and key files from ./tls/. Pair with any external ACME
-# tool: lego, certbot, Caddy, or Traefik. See infra/docker/relay-with-lego.compose.yml
-# for an integrated example.
+# Supported relay deployment. Copy this file, `.env.example`, and
+# `sync-certificates.sh` to one directory on the relay host. The certificate
+# sync helper writes dereferenced files under ./tls for the nonroot container.
 
 services:
   relay:
-    image: ghcr.io/alexlmiller/cf-mail-relay/relay:latest
+    image: ghcr.io/alexlmiller/cf-mail-relay/relay:${CF_MAIL_RELAY_VERSION:?set CF_MAIL_RELAY_VERSION to an immutable release tag}
     container_name: cf-mail-relay
     restart: unless-stopped
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "587:587"
-    env_file:
-      - .env                                    # secrets — gitignored
     environment:
       RELAY_LISTEN_ADDR: ":587"
+      RELAY_DOMAIN: ${RELAY_DOMAIN:?set RELAY_DOMAIN}
+      RELAY_WORKER_URL: ${RELAY_WORKER_URL:?set RELAY_WORKER_URL}
+      RELAY_KEY_ID: ${RELAY_KEY_ID:?set RELAY_KEY_ID}
+      RELAY_HMAC_SECRET: ${RELAY_HMAC_SECRET:?set RELAY_HMAC_SECRET}
       RELAY_TLS_CERT_FILE: /tls/fullchain.pem
       RELAY_TLS_KEY_FILE: /tls/privkey.pem
-      RELAY_MAX_BYTES: "4500000"
-      RELAY_MAX_RECIPIENTS: "50"
+      RELAY_MAX_BYTES: ${RELAY_MAX_BYTES:-4500000}
+      RELAY_CONN_PER_MIN: ${RELAY_CONN_PER_MIN:-60}
+      RELAY_AUTH_PER_MIN: ${RELAY_AUTH_PER_MIN:-20}
+      RELAY_AUTH_LOCKOUT_BASE_SECONDS: ${RELAY_AUTH_LOCKOUT_BASE_SECONDS:-30}
     volumes:
       - ./tls:/tls:ro
     healthcheck:
@@ -28,3 +34,4 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 10s

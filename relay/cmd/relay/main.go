@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -24,7 +25,9 @@ import (
 	"github.com/emersion/go-smtp"
 )
 
-const version = "0.1.0-ms7"
+var appVersion = "dev"
+
+const protocolVersion = "0.1.0-ms7"
 const defaultMaxMessageBytes = 4_718_592
 
 type config struct {
@@ -44,6 +47,14 @@ type config struct {
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
+		if err := checkSMTPBanner(envOrDefault("RELAY_LISTEN_ADDR", ":587"), 5*time.Second); err != nil {
+			log.Printf("SMTP healthcheck failed: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Printf("cf-mail-relay %s (protocol %s)\n", appVersion, protocolVersion)
 		return
 	}
 
@@ -62,7 +73,7 @@ func main() {
 			BaseURL: cfg.WorkerURL,
 			KeyID:   cfg.HMACKeyID,
 			Secret:  cfg.HMACSecret,
-			Version: version,
+			Version: protocolVersion,
 			HTTPClient: &http.Client{
 				Timeout: 30 * time.Second,
 			},
@@ -81,13 +92,50 @@ func main() {
 	server.ReadTimeout = 2 * time.Minute
 	server.WriteTimeout = 2 * time.Minute
 
-	log.Printf("cf-mail-relay %s listening on %s", version, cfg.ListenAddr)
+	log.Printf("cf-mail-relay %s (protocol %s) listening on %s", appVersion, protocolVersion, cfg.ListenAddr)
 	if cfg.AllowInsecureAuth {
 		log.Printf("WARNING: RELAY_ALLOW_INSECURE_AUTH is enabled; SMTP AUTH is allowed before STARTTLS")
 	}
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func checkSMTPBanner(listenAddr string, timeout time.Duration) error {
+	address, err := localHealthcheckAddress(listenAddr)
+	if err != nil {
+		return err
+	}
+	conn, err := net.DialTimeout("tcp", address, timeout)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", address, err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("set deadline: %w", err)
+	}
+
+	banner, err := bufio.NewReader(io.LimitReader(conn, 512)).ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("read SMTP banner: %w", err)
+	}
+	if !strings.HasPrefix(banner, "220 ") && !strings.HasPrefix(banner, "220-") {
+		return fmt.Errorf("unexpected SMTP banner %q", strings.TrimSpace(banner))
+	}
+	_, _ = io.WriteString(conn, "QUIT\r\n")
+	return nil
+}
+
+func localHealthcheckAddress(listenAddr string) (string, error) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil || port == "" {
+		return "", fmt.Errorf("invalid RELAY_LISTEN_ADDR for healthcheck")
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port), nil
 }
 
 type backend struct {
