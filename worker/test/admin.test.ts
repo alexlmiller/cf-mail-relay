@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   checkCloudflareApiHealth,
+  checkSystemHealth,
   createSmtpCredential,
   createApiKey,
   createDomain,
@@ -116,6 +117,48 @@ describe("admin dashboard", () => {
     });
   });
 
+  it("defaults administrative schema probes to the current schema baseline", async () => {
+    const kv = new Map<string, string>();
+    const env = makeEnv();
+    env.REQUIRED_D1_SCHEMA_VERSION = "";
+    env.ACCESS_JWKS_JSON = '{"keys":[]}';
+    env.D1_MAIN = {
+      prepare: (sql: string) => {
+        const makeStatement = () => ({
+          bind: () => makeStatement(),
+          first: async () => {
+            if (sql.includes("FROM settings WHERE key = 'schema_version'")) return { value_json: "6" };
+            if (sql.includes("MAX(ts) AS last_ts")) return { last_ts: null };
+            if (sql.includes("COUNT(*) AS total") && sql.includes("source = 'bootstrap'")) return { total: 0 };
+            return null;
+          },
+        });
+        return makeStatement();
+      },
+    } as unknown as D1Database;
+    env.KV_HOT = {
+      put: vi.fn(async (key: string, value: string) => {
+        kv.set(key, value);
+      }),
+      get: vi.fn(async (key: string) => kv.get(key) ?? null),
+      delete: vi.fn(async (key: string) => {
+        kv.delete(key);
+      }),
+    } as unknown as KVNamespace;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ success: true, errors: [], messages: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+
+    const schemaProbe = (await checkSystemHealth(env)).find((probe) => probe.name === "d1_schema");
+    expect(schemaProbe).toMatchObject({ ok: true, status: 200, detail: "actual=6 required=6" });
+  });
+
   it("keeps dashboard loading when Cloudflare API health fetch fails", async () => {
     vi.stubGlobal(
       "fetch",
@@ -209,8 +252,9 @@ describe("admin dashboard", () => {
     await expect(createApiKey(env, { user_id: "usr_1", name: "x".repeat(129) })).rejects.toThrow("invalid_name");
   });
 
-  it("includes cached Access JWKS entries in the administrative cache flush", async () => {
+  it("flushes exactly the live administrative cache namespaces", async () => {
     const listedPrefixes: string[] = [];
+    const expectedPrefixes = ["cred:", "apikey:", "idem:", "access:jwks:"];
     const env = makeEnv();
     env.KV_HOT = {
       list: vi.fn(async (options: { prefix?: string }) => {
@@ -220,8 +264,8 @@ describe("admin dashboard", () => {
       delete: vi.fn(async () => undefined),
     } as unknown as KVNamespace;
 
-    await expect(flushKvCaches(env)).resolves.toMatchObject({ prefixes: expect.arrayContaining(["access:jwks:"]) });
-    expect(listedPrefixes).toContain("access:jwks:");
+    await expect(flushKvCaches(env)).resolves.toEqual({ deleted: 0, prefixes: expectedPrefixes });
+    expect(listedPrefixes).toEqual(expectedPrefixes);
   });
 
   it("rejects missing user role instead of defaulting to admin", async () => {

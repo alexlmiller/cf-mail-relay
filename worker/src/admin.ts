@@ -129,7 +129,7 @@ async function probeCloudflareApi(env: Env): Promise<HealthProbe> {
 async function probeD1Schema(env: Env): Promise<HealthProbe> {
   const checkedAt = nowSeconds();
   try {
-    const required = env.REQUIRED_D1_SCHEMA_VERSION || "1";
+    const required = env.REQUIRED_D1_SCHEMA_VERSION || "6";
     const row = await env.D1_MAIN.prepare("SELECT value_json FROM settings WHERE key = 'schema_version'").first<{ value_json: string }>();
     const actual = row?.value_json !== undefined ? parseSettingValue(row.value_json) : null;
     const ok = actual === required;
@@ -734,7 +734,7 @@ export async function bumpPolicyVersionAction(env: Env): Promise<{ policy_versio
 
 /** Bulk delete the in-worker KV caches. Returns the number of keys removed. */
 export async function flushKvCaches(env: Env): Promise<{ deleted: number; prefixes: string[] }> {
-  const prefixes = ["cred:", "apikey:", "domain:", "sender:", "idem:", "tombstone:cred:", "tombstone:apikey:", "access:jwks:"];
+  const prefixes = ["cred:", "apikey:", "idem:", "access:jwks:"];
   let deleted = 0;
   for (const prefix of prefixes) {
     let cursor: string | null = null;
