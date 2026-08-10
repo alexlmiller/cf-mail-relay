@@ -69,6 +69,7 @@ import {
   extractHeader,
   extractHeaders,
   markIdempotentRequestInFlight,
+  markSmtpIdempotentRequestAmbiguous,
   policyVersionFromD1,
   recordBootstrapFailure,
   recordSendEvent,
@@ -355,7 +356,7 @@ app.post("/relay/send", async (c) => {
       })
     : delivery.disposition === "transient"
       ? releaseIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp")
-      : Promise.resolve();
+      : markSmtpIdempotentRequestAmbiguous(c.env, idempotencyKey, requestHash);
   await settleSideEffects(`smtp ${delivery.disposition}`, {
     audit: recordSendEvent(c.env, {
       traceId: c.req.header("x-relay-trace-id") ?? crypto.randomUUID(),
