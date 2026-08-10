@@ -4,7 +4,7 @@
 // writes PNGs to infra/screenshots/out/.
 //
 // Run: pnpm screenshots          (all shots)
-//      pnpm screenshots dashboard (single shot, prefix match)
+//      pnpm screenshots dashboard (shots whose names contain the filter)
 
 import { spawn } from "node:child_process";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";

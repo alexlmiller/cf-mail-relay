@@ -1,180 +1,119 @@
 # Operations
 
-Day-2 procedures for an adopter running cf-mail-relay. This document is
-intentionally slim; the canonical architecture lives in `docs/architecture.md`,
-and adopter setup is in the project `README.md`.
+Day-2 procedures. Setup is in [README.md](../README.md); security boundaries are
+in [architecture.md](architecture.md).
 
-## Secrets you can rotate
+## Rotate secrets
 
-| Secret | Where | When to rotate | Grace window |
-|---|---|---|---|
-| `RELAY_HMAC_SECRET_CURRENT` | Worker secret + relay env | Yearly, or when the relay host is suspected compromised | Dual-accept via `RELAY_HMAC_SECRET_PREVIOUS`; no built-in expiry — operator clears it after restart. |
-| `CF_API_TOKEN` | Worker secret | When the token is rotated in the Cloudflare dashboard | None — single shot |
-| `CREDENTIAL_PEPPER` | Worker secret | Avoid — rotating invalidates every stored SMTP credential and API key hash | None |
-| `METADATA_PEPPER` | Worker secret | Avoid — rotating breaks audit-log hash continuity | None |
-| `BOOTSTRAP_SETUP_TOKEN` | Worker secret | Manual recovery bootstrap only; the setup wizard does not create it. Delete it immediately after use. | N/A |
+| Secret | Guidance |
+|---|---|
+| `RELAY_HMAC_SECRET_CURRENT` | Rotate yearly or after relay-host exposure. Use `_PREVIOUS` only for the restart overlap. |
+| `CF_API_TOKEN` | Replace after token rotation or exposure. No overlap is needed. |
+| `CREDENTIAL_PEPPER` | Avoid routine rotation; it invalidates all SMTP credentials and API keys. |
+| `METADATA_PEPPER` | Avoid routine rotation; it breaks audit-hash continuity. |
+| `BOOTSTRAP_SETUP_TOKEN` | Manual recovery only. Delete immediately after bootstrap. |
 
-### Rotate the relay → Worker HMAC secret
+### Relay HMAC
 
 ```sh
 pnpm rotate:hmac
 ```
 
-The script emits a fresh 32-byte secret and a step-by-step runbook. The four
-steps are:
+The command prints the new secret and exact steps:
 
-1. `wrangler secret put RELAY_HMAC_SECRET_PREVIOUS` ← the **existing** current
-   value. The Worker accepts both `_CURRENT` and `_PREVIOUS` so the relay's
-   restart can take a few minutes without dropping submissions.
-2. `wrangler secret put RELAY_HMAC_SECRET_CURRENT` ← the **new** value.
-3. Update the relay container's `RELAY_HMAC_SECRET` env and `docker compose
-   up -d relay` to restart with the new value.
-4. After the relay is healthy (next successful authed SMTP submission), delete
-   `RELAY_HMAC_SECRET_PREVIOUS`. The Worker accepts it as long as it's set —
-   there is no time-based auto-expiry — so leaving it around indefinitely
-   extends the dual-acceptance window. Aim to clear it within ~1 hour.
+1. Put the existing current value in `RELAY_HMAC_SECRET_PREVIOUS`.
+2. Put the new value in `RELAY_HMAC_SECRET_CURRENT`.
+3. Update the relay's `RELAY_HMAC_SECRET` and restart it.
+4. Verify an authenticated submission, then delete
+   `RELAY_HMAC_SECRET_PREVIOUS`.
 
-The HMAC contract binds the request body **and** the relay headers that affect
-authorization. Both sides include a sorted `signedHeaders` block (names +
-normalized values) in the canonical string. Mismatched values surface as
-`missing_signed_headers` or `missing_required_signed_header` on the worker.
+The Worker accepts `_PREVIOUS` until it is deleted. Keep the overlap short;
+there is no automatic expiry.
 
-### Rotate the Cloudflare API token
+### Runtime Cloudflare token
 
 ```sh
-pnpm exec wrangler secret put CF_API_TOKEN --config worker/wrangler.toml
+pnpm --dir worker exec wrangler secret put CF_API_TOKEN
 ```
 
-`CF_API_TOKEN` needs Account Email Sending Edit plus Zone Read for the sending
-zones. Email Sending is used for `send_raw`; Zone Read lets the admin API keep
-domain zone IDs and Email Sending status in sync. Workers pick up the new value
-on the next request after `wrangler secret put` lands, so no overlap is needed.
-The dashboard's **Cloudflare API** health pill flips green within a minute.
+The runtime token needs Account Email Sending Edit and Zone Read for sending
+zones. Reload the dashboard or select **Refresh** to update its health result.
 
-## Ops actions on the dashboard
+## Dashboard actions
 
-The Operations card on the admin dashboard exposes two safe-to-click maintenance
-actions; both are also available as POST endpoints:
+- **Bump policy version** invalidates credential and API-key cache keys. Use it
+  after direct D1 policy edits.
+- **Flush caches** removes credential, API-key, idempotency, and Access-JWKS KV
+  entries. D1 remains authoritative.
 
-- `POST /admin/api/ops/bump-policy-version` — increments `settings.policy_version`,
-  which is part of every KV credential cache key. Forces SMTP and API auth to
-  re-fetch credentials from D1 on the next request. Use after editing a user
-  or domain row directly in D1 if you want changes to propagate immediately.
-- `POST /admin/api/ops/flush-caches` — bulk deletes `cred:`, `apikey:`,
-  `idem:`, and `access:jwks:` KV entries. Use sparingly; rebuilds cost one D1
-  round-trip per cache miss.
+The equivalent endpoints are `POST /admin/api/ops/bump-policy-version` and
+`POST /admin/api/ops/flush-caches`.
 
-## Idempotency semantics
+## Idempotency
 
-- **`/relay/send`**: idempotency key is `sha256(source ‖ envelope_from ‖
-  sorted_recipients ‖ message_id_header ‖ stripped_mime_sha256)`. Reused key
-  with a different request hash returns `409 idempotency_key_conflict`.
-- **`/send`** (HTTP API): the supplied `Idempotency-Key` header is namespaced
-  by `api_key_id` to prevent cross-tenant collisions. If you reuse a key with
-  a different `from`/`recipients`/MIME, expect a `409 idempotency_key_conflict`
-  — pick a fresh key.
-- Worker uses D1 as the authority. SMTP reservations and completed responses
-  remain fenced for seven days, exceeding Gmail's roughly 48-hour retry
-  window after a lost final SMTP response. HTTP API idempotency remains 24h.
-  KV mirrors completed responses for the matching window purely as a
-  fast-replay path; D1 wins on conflict.
-- An SMTP provider call whose result is explicitly ambiguous is recorded as
-  `ambiguous` and remains fenced for one hour. After that delay, one retry may
-  atomically reclaim the same reservation. This trades a bounded duplicate
-  risk for recovery only when Cloudflare's acceptance could not be determined.
-- A confirmed provider acceptance whose completion record then fails remains
-  `in_flight` for the full seven-day SMTP window and is not retried. Worker
-  termination during provider I/O is likewise conservatively fenced because
-  no durable ambiguity transition was recorded. HTTP ambiguity is never given
-  the one-hour SMTP retry lease and remains fenced for its 24-hour window.
+- SMTP: the Worker derives a fingerprint from the source, envelope sender,
+  sorted recipients, client `Message-ID`, and stripped MIME digest. Reservations
+  and completed responses remain in D1 for seven days.
+- HTTP: caller `Idempotency-Key` values are scoped to the API key. Reusing one
+  for different content returns `409 idempotency_key_conflict`. Without a key,
+  the Worker derives one. HTTP records remain for 24 hours.
+- KV mirrors completed results only as a fast path. D1 wins on conflict.
+- An explicitly ambiguous SMTP provider result is fenced for one hour, after
+  which one retry may reclaim it. A confirmed acceptance whose completion write
+  fails remains fenced for seven days. HTTP ambiguity is never retried through
+  the SMTP lease.
 
-## MIME spoof defenses (informational)
+## Bootstrap signal
 
-The Worker rejects messages where:
+The normal setup wizard creates the first admin directly in D1 and does not set
+`BOOTSTRAP_SETUP_TOKEN`. Manual `POST /bootstrap/admin` calls with a wrong token
+are written to `auth_failures` with `source = 'bootstrap'`; invalid bodies and
+already-completed responses are not.
 
-- The MIME `From:` header doesn't match the authenticated envelope/body
-  `from` → `from_header_mismatch` (403).
-- A `Sender:` header is present but not on the user's allowed-senders list
-  → `sender_header_not_allowed` (403).
-- Multiple `From:` headers → `duplicate_from_header` (400).
-- Multiple `Sender:` headers → `duplicate_sender_header` (400).
-- Multiple `Message-ID:` headers → `duplicate_message_id_header` (400).
-- The MIME bytes are not UTF-8 → `mime_not_utf8_json_safe` (422).
-
-Outbound, the Worker strips `Bcc:` plus capture/authentication trace headers
-before calling Cloudflare's `send_raw`: `Received:`, `X-Received:`,
-`X-Gm-message-state:`, `Authentication-Results:`, `Received-SPF:`,
-`DKIM-Signature:`, `ARC-*`, and `X-Originating-IP:`.
-
-## Bootstrap audit signal
-
-Failed `POST /bootstrap/admin` attempts (wrong token, malformed body, already
-completed) land in `auth_failures` with `source = 'bootstrap'`. The Events page
-has a Bootstrap chip on the Auth Failures tab and a warning-tinted Source pill
-to make those rows easy to spot. The dashboard's `bootstrap_failures_24h`
-probe flips warning if any rows appear in the last 24 hours.
-
-If you see bootstrap failures **after** completing your initial bootstrap,
-something is poking at your relay's bootstrap endpoint — verify
-`BOOTSTRAP_SETUP_TOKEN` is unset:
+If wrong-token attempts appear after setup, verify that the optional secret is
+absent:
 
 ```sh
-pnpm exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN
+pnpm --dir worker exec wrangler secret delete BOOTSTRAP_SETUP_TOKEN
 ```
 
-## Cron handler
+## Migrations and recovery
 
-The Worker has a scheduled handler (`crons = ["17 3 * * *"]` in
-`wrangler.toml`) that runs at 03:17 UTC and prunes expired `relay_nonces`,
-`idempotency_keys`, old `auth_failures`, and old `rate_reservations` rows. The
-cadence is intentionally off-cycle to avoid the top of every hour. Bump the
-schedule if you operate at scale and start seeing table growth between runs.
-
-## Schema migrations
-
-`worker/migrations/` is the canonical migration directory. Apply remote:
+Apply all pending migrations before deploying newer Worker code:
 
 ```sh
-pnpm --dir worker exec wrangler d1 migrations apply cf-mail-relay --remote
+pnpm --dir worker exec wrangler d1 migrations apply <d1-database-name> --remote
 ```
 
-`/healthz` returns `schema_version_mismatch` (500) until the deployed Worker's
-`REQUIRED_D1_SCHEMA_VERSION` matches `settings.schema_version`. Always migrate
-before deploying a newer worker.
+`/healthz` returns `schema_version_mismatch` until code and D1 agree. The current
+schema is migration version 6.
 
-`0005_privacy_retention_hardening.sql` deletes existing `idempotency_keys` rows
-to remove any cached provider responses that predate response sanitization.
-Apply it during a low-traffic window: retries of messages accepted before the
-migration will not have their previous idempotency rows available.
+Migration `0005_privacy_retention_hardening.sql` deletes every existing
+idempotency row because older rows may contain provider responses. Apply it
+during low traffic: retries of pre-migration requests temporarily lose their
+duplicate-send fence. Migration `0006_extend_smtp_idempotency.sql` extends
+surviving SMTP fences to seven days.
 
-`0006_extend_smtp_idempotency.sql` preserves the v1.1 seven-day SMTP fence for
-rows written by v1.0, which used a 24-hour expiry. It does not change HTTP API
-idempotency retention or store any additional message data.
+Cloudflare [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
+provides point-in-time recovery. A restore overwrites the database, so record
+the pre-restore bookmark and follow Cloudflare's current procedure.
 
-Current schema baseline: `worker/migrations/0001_init.sql` + `0002_security_hardening.sql`
-+ `0003_drop_retention.sql` + `0004_smtp_host_setting.sql` +
-`0005_privacy_retention_hardening.sql` + `0006_extend_smtp_idempotency.sql`
-(current version: 6).
+## Cleanup
 
-## Managing infra with OpenTofu (optional)
+The scheduled handler runs daily at `03:17 UTC`. It removes expired relay
+nonces, idempotency rows, auth failures, and quota reservations. Keep the
+`[triggers]` block from `worker/wrangler.toml.example`.
 
-The setup wizard is idempotent and will reuse existing D1/KV resources when
-given `--d1-id` and `--kv-id`; the Access helper updates the matching Access
-app by name. It also reads remote Worker secret names before mutation. Complete
-managed-secret state is reused, while incomplete state without the matching
-mode-`0600` recovery journal is refused. Adopters who prefer declarative state
-can drive resource creation via OpenTofu and pass the resulting IDs to `pnpm
-run setup`.
+## MIME handling
 
-Wrangler secret writes may create intermediate Worker versions. Setup writes
-the three managed values in one bulk request, retries an ambiguous result with
-the same journaled values, and blocks its final application deploy until all
-required remote secret names are present.
+The Worker rejects misaligned or duplicate sender identity headers and strips
+`Bcc` plus capture-hop authentication headers before delivery. See the
+[SMTP flow](architecture.md#smtp-flow) for the contract. Cloudflare response
+arrays are stored only as counts and categorical status/reason codes.
 
-A reference module is in `infra/opentofu/`; see its `README.md` for the
-two-phase workflow.
+## OpenTofu
 
-Secrets stay out of tfstate. When initialization or explicit disaster recovery
-requires a secret write, the wizard uses Wrangler's secret commands, never
-Terraform/OpenTofu. See the project README for recovery-journal and
-`--rotate-all-worker-secrets` behavior.
+The setup wizard is the default provisioning path. The optional
+[OpenTofu module](../infra/opentofu/README.md) can own D1, KV, and Access.
+Secrets and Worker deployment stay with Wrangler so secret values never enter
+tfstate.

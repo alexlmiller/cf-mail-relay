@@ -512,7 +512,12 @@ describe("relay endpoints", () => {
     const response = await app.request("/healthz", { method: "GET" }, makeEnv({ REQUIRED_D1_SCHEMA_VERSION: "3" }));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ ok: true, version: "0.1.0-ms7", schema_version: "3" });
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      version: expect.any(String),
+      git_sha: expect.any(String),
+      schema_version: "3",
+    });
   });
 
   it("authenticates SMTP credentials with domain-wide senders inherited through /relay/auth", async () => {

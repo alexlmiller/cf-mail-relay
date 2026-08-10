@@ -1,16 +1,15 @@
-# Supported relay deployment
+# Relay deployment
 
-The supported production path is one nonroot relay container with certificates
-managed on the host. This keeps ACME credentials and provider-specific proxy
-configuration out of the relay stack.
+The supported production deployment is one nonroot container with certificates
+managed on the host.
 
 The directory contains:
 
 - `relay.compose.yml` — hardened Compose service pinned to an immutable release.
 - `.env.example` — every required and optional runtime setting.
-- `sync-certificates.sh` — validates and atomically publishes host-managed
-  certificate material as one PEM bundle for container UID/GID `65532`, then
-  restarts a running relay.
+- `sync-certificates.sh` — checks certificate parseability and key matching,
+  publishes one atomic PEM bundle for container UID/GID `65532`, then restarts
+  a running relay.
 
 ## Install
 
@@ -25,16 +24,22 @@ sudo chmod 0755 /opt/cf-mail-relay/sync-certificates.sh
 sudo chmod 0600 /opt/cf-mail-relay/.env
 ```
 
-Edit `/opt/cf-mail-relay/.env` with the immutable release tag and values from
-the setup runbook. The SMTP hostname must be a DNS-only `A` or `AAAA` record;
-Cloudflare's HTTP proxy does not proxy SMTP.
+Edit `/opt/cf-mail-relay/.env`. Set a published immutable release tag and copy
+the relay values from `RUNBOOK.md`. The SMTP hostname must be a DNS-only `A` or
+`AAAA` record.
 
-Use the ACME client already managed by the host. For certbot, an initial
-certificate could be issued with:
+Use the host's existing ACME client. A Certbot standalone HTTP-01 request looks
+like this:
 
 ```sh
 sudo certbot certonly --standalone -d smtp.example.com --agree-tos -m admin@example.com
 ```
+
+This requires working public DNS, inbound TCP `80`, and no conflicting listener.
+Check [Certbot's standalone guidance](https://eff-certbot.readthedocs.io/en/stable/using.html#standalone)
+and [Let's Encrypt's challenge requirements](https://letsencrypt.org/docs/challenge-types/)
+before running it. Use another supported challenge when those conditions do not
+fit the host.
 
 Publish the dereferenced certificate and key as one bundle in the deployment
 directory:
@@ -46,11 +51,11 @@ sudo /opt/cf-mail-relay/sync-certificates.sh \
   /opt/cf-mail-relay
 ```
 
-The helper refuses unreadable, invalid, or mismatched material. It combines the
-certificate and private key in `tls/relay.pem`, mode `0600`, owned by UID/GID
-`65532`, and publishes the pair with one atomic rename. Source symlinks are
-dereferenced so the container never depends on an ACME client's private archive
-paths.
+The helper requires readable, parseable certificate/key files with matching
+public keys. It does not validate expiry, hostname, chain, or certificate
+purpose; the ACME client remains responsible for those checks. It writes a
+mode-`0600` bundle owned by UID/GID `65532` and publishes it with one atomic
+rename. Source symlinks are dereferenced.
 
 Start and verify the relay:
 
@@ -64,6 +69,21 @@ openssl s_client -connect smtp.example.com:587 -starttls smtp -servername smtp.e
 
 The container healthcheck connects to the local SMTP listener and requires a
 valid `220` banner; it does not merely check that the process exists.
+
+## Upgrade and rollback
+
+Change only `CF_MAIL_RELAY_VERSION` in `.env`, then:
+
+```sh
+cd /opt/cf-mail-relay
+sudo docker compose pull relay
+sudo docker compose up -d relay
+sudo docker compose ps relay
+openssl s_client -connect smtp.example.com:587 -starttls smtp -servername smtp.example.com -verify_return_error -brief
+```
+
+Roll back by restoring the previous immutable tag and repeating the commands.
+Do not use `latest` in production.
 
 ## Certificate renewal hook
 
@@ -85,5 +105,5 @@ Compose file is absent or the relay service is stopped, the helper publishes the
 renewed bundle successfully but warns that a restart is still required before
 the relay will serve the new certificate.
 
-`RELAY_ALLOW_INSECURE_AUTH` and `RELAY_ALLOW_INSECURE_WORKER_URL` are for
-isolated local development only. Do not set either in a public deployment.
+`RELAY_ALLOW_INSECURE_AUTH` and `RELAY_ALLOW_INSECURE_WORKER_URL` are for local
+development only.

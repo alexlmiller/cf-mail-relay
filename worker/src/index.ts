@@ -100,8 +100,10 @@ export interface Env {
 }
 
 const app = new Hono<{ Bindings: Env }>();
-const workerVersion = "0.1.0-ms7";
-const gitSha = "ms7";
+// Retain these pre-semver fields for health-response compatibility. They are
+// legacy identifiers, not the application release or source revision.
+const legacyHealthVersion = "0.1.0-ms7";
+const legacyHealthGitSha = "ms7";
 const requiredSchemaVersionDefault = "6";
 const maxRelayBodyBytes = 6 * 1024 * 1024;
 const maxRelayAuthBodyBytes = 16 * 1024;
@@ -121,8 +123,8 @@ app.get("/healthz", async (c) => {
     return c.json(
       {
         ok: false,
-        version: workerVersion,
-        git_sha: gitSha,
+        version: legacyHealthVersion,
+        git_sha: legacyHealthGitSha,
         error: "schema_version_mismatch",
         required_schema_version: requiredSchemaVersion,
         actual_schema_version: actualSchemaVersion,
@@ -132,8 +134,8 @@ app.get("/healthz", async (c) => {
   }
   return c.json({
     ok: true,
-    version: workerVersion,
-    git_sha: gitSha,
+    version: legacyHealthVersion,
+    git_sha: legacyHealthGitSha,
     schema_version: actualSchemaVersion,
   });
 });
@@ -1053,6 +1055,8 @@ function decodeUtf8(bytes: Uint8Array): string | null {
 }
 
 function isSupportedRelayVersion(version: string): boolean {
+  // Deployed relays use the original legacy wire identifier. Treat it as a
+  // protocol value; application releases use independent semver.
   return /^0\.1\.0-ms(?:[7-9]|\d{2,})$/.test(version);
 }
 

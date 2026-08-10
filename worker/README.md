@@ -1,75 +1,40 @@
-# worker/
+# Worker
 
-Cloudflare Worker. TypeScript, Hono, D1, KV. **Also serves the admin UI**
-at the same hostname via Workers Static Assets — the `[assets]` block in
-`wrangler.toml` points at `./public/`, which `pnpm --filter ui build`
-writes into.
+Cloudflare Worker for policy, delivery, and state. It also serves the admin UI
+from `worker/public/` through Workers Static Assets.
 
-The Worker is the policy and delivery authority. It validates credentials,
-sender permissions, quotas, idempotency, and Cloudflare Access admin JWTs before
-calling Cloudflare Email Sending `send_raw`.
+Before calling Email Sending `send_raw`, the Worker validates credentials,
+sender grants, quotas, idempotency, Cloudflare Access JWTs, MIME `From:`
+alignment, and singleton identity headers. It strips `Bcc` and capture-hop
+headers. See [the route and trust-boundary reference](../docs/architecture.md).
 
-The Worker also enforces MIME/envelope alignment: SMTP and HTTP sends must have
-a MIME `From:` matching the authorized sender, and `Bcc:` is stripped before
-calling Cloudflare. Duplicate singleton identity headers (`From:`, `Sender:`,
-and `Message-ID:`) are rejected before delivery with `duplicate_from_header` /
-`duplicate_sender_header` / `duplicate_message_id_header`.
+## Configuration
 
-## Routes
+Copy `wrangler.toml.example` to the gitignored `wrangler.toml`, or generate it
+with `pnpm run setup`. Required bindings and values are:
 
-| Route | Purpose | Auth |
-|---|---|---|
-| `GET /healthz` | Liveness and D1 schema compatibility | none |
-| `POST /bootstrap/admin` | Create the first admin user | bootstrap bearer token |
-| `POST /relay/auth` | Verify SMTP credential | relay HMAC |
-| `POST /relay/send` | Send raw MIME received from relay | relay HMAC |
-| `POST /send` | Send raw MIME from an app/client | API key |
-| `/admin/api/*` | Admin UI API | Cloudflare Access JWT + Origin on unsafe browser methods |
-| `/self/api/*` | Sender self-service API | Cloudflare Access JWT + Origin on unsafe browser methods |
-| `GET /` and `/_astro/*` | Admin UI bundle (Workers Static Assets) | none; API calls require Access |
-| `GET /<other>` | SPA fallback → serves `/index.html` | none at the edge (the SPA's JS triggers Access on its own API calls) |
-
-Unsafe admin/self requests from browsers must include the configured trusted
-`Origin`. Non-browser scripts without `Origin` and without Fetch Metadata
-headers are allowed to proceed to Cloudflare Access JWT authorization.
-
-## Bindings
-
-See `wrangler.toml.example`. Required bindings include:
-
-- `D1_MAIN`
-- `KV_HOT`
-- `CF_API_TOKEN`
-- `CF_ACCOUNT_ID`
-- `CREDENTIAL_PEPPER`
-- `METADATA_PEPPER`
-- `RELAY_HMAC_SECRET_CURRENT`
-- `ACCESS_TEAM_DOMAIN`
-- `ACCESS_AUDIENCE`
+- `D1_MAIN` and `KV_HOT`
+- `CF_ACCOUNT_ID` and runtime secret `CF_API_TOKEN`
+- `CREDENTIAL_PEPPER` and `METADATA_PEPPER`
+- `RELAY_HMAC_KEY_ID` and `RELAY_HMAC_SECRET_CURRENT`
+- `ACCESS_TEAM_DOMAIN` and `ACCESS_AUDIENCE`
 - `REQUIRED_D1_SCHEMA_VERSION`
 
-`CF_API_TOKEN` should be scoped to Account Email Sending Edit plus Zone Read for
-the sending zones. The send path uses Email Sending; domain create/refresh uses
-Zone Read to discover the Cloudflare zone and Email Sending status.
+The runtime Cloudflare token needs Account Email Sending Edit and Zone Read for
+sending zones. `RELAY_HMAC_SECRET_PREVIOUS` is optional during rotation.
+`BOOTSTRAP_SETUP_TOKEN` is optional and only for manual recovery; normal setup
+creates the first admin directly in D1.
 
-`BOOTSTRAP_SETUP_TOKEN` is optional and only used for the manual recovery
-`POST /bootstrap/admin` flow. The normal setup wizard bootstraps the first
-admin directly in D1 and does not create that secret.
-
-## Local Development
+## Local development
 
 ```sh
-cd worker
-pnpm typecheck
-pnpm test
-pnpm exec wrangler dev
+cp worker/wrangler.toml.example worker/wrangler.toml
+pnpm --dir worker exec wrangler d1 migrations apply cf-mail-relay --local
+pnpm --dir worker test
+pnpm --dir worker typecheck
+pnpm --dir ui build
+pnpm --dir worker exec wrangler dev
 ```
 
-Apply migrations with:
-
-```sh
-pnpm exec wrangler d1 migrations apply <DB_NAME>
-```
-
-Apply migrations before deploying the Worker. `/healthz` returns
-`schema_version_mismatch` when the code expects a newer D1 schema.
+Apply remote migrations before newer Worker code. `/healthz` reports
+`schema_version_mismatch` until code and D1 agree.

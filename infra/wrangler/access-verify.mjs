@@ -185,7 +185,7 @@ async function checkWorkerHealth(fetchImpl, adminUrl) {
   if (!response.ok || response.body?.ok !== true) {
     return failCheck("worker_healthz", `Worker /healthz failed with HTTP ${response.status}.`, response.body ?? response.text);
   }
-  return passCheck("worker_healthz", "Worker /healthz is healthy and not Access-gated.", { version: response.body.version, git_sha: response.body.git_sha });
+  return passCheck("worker_healthz", "Worker /healthz is healthy and not Access-gated.", { schema_version: response.body.schema_version });
 }
 
 async function checkPublicUiShell(fetchImpl, adminUrl) {

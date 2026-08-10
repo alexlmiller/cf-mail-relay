@@ -1,59 +1,38 @@
 # Contributing
 
-Thanks for your interest. Read [AGENTS.md](./AGENTS.md) and
-[docs/architecture.md](./docs/architecture.md) before opening a substantive PR.
+Read [AGENTS.md](AGENTS.md) and [docs/architecture.md](docs/architecture.md).
+Open an issue before changing scope or an auth/security boundary.
 
-## Scope
+## Commits
 
-Keep the project focused:
+Use [Conventional Commits](https://www.conventionalcommits.org/). Release-please
+derives versions and changelogs from them. Common prefixes are `feat:`, `fix:`,
+`docs:`, `chore:`, `refactor:`, `test:`, and `ci:`.
 
-- Send-only SMTP and raw-MIME HTTP submission.
-- No inbound mail handling.
-- No templates, mailing lists, scheduling, or message body storage.
-- No multi-tenant SaaS layer.
-- Cloudflare Workers, D1, KV, Access, and Email Sending only. The admin UI
-  ships inside the Worker via Workers Static Assets — no separate Pages
-  project.
+## Branches
 
-Open an issue before adding a new product surface or changing an auth/security
-boundary.
+`dev` is the development branch. `main` is the protected release branch.
+Release PRs and tags come from `main` only. Keep substantive work in
+`.worktrees/<feature>` and preserve unrelated changes.
 
-## Commit Style
+When syncing `dev` to `main`, prefer a rebase merge for a single-commit sync PR.
+If it is squash merged, realign `dev` to `main` before more work.
 
-Use [Conventional Commits](https://www.conventionalcommits.org/). `release-please`
-derives versions and changelogs from commit prefixes.
+## Release recovery
 
-- `feat:` user-facing feature
-- `fix:` bug fix
-- `docs:` documentation only
-- `chore:` cleanup or tooling
-- `refactor:` behavior-preserving code change
-- `test:` tests only
-- `ci:` CI/build only
-
-## Branches and Releases
-
-`dev` is the default development branch. `main` is the protected release branch.
-Release PRs and tags are created from `main` only; the release workflow sets
-`release-please` `target-branch: main` explicitly.
-
-When syncing `dev` into `main` for a release, prefer rebase merge for a
-single-commit sync PR so the branches stay aligned. If a sync PR is squash
-merged, realign `dev` to `main` before continuing development.
-
-## Worktrees
-
-Use worktrees under `.worktrees/` for substantive work:
+The release workflow publishes immutable `linux/amd64` and `linux/arm64` relay
+images, then promotes only the latest published release to `latest`. If image
+publication fails after a stable GitHub release exists, rerun recovery from
+`main`:
 
 ```sh
-git worktree add .worktrees/feat-name -b feat/name
+gh workflow run release.yml --ref main -f tag=vX.Y.Z
 ```
 
-Preserve unrelated dirty files.
+Recovery rejects unpublished, mutable, non-semver, or non-`main` tags. See
+[GitHub's manual workflow guide](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
 
 ## Checks
-
-Run the narrow checks for your change. For broad changes:
 
 ```sh
 pnpm test
@@ -65,6 +44,5 @@ go vet ./...
 go test ./...
 ```
 
-## Security
-
-Do not open public issues for vulnerabilities. See [SECURITY.md](./SECURITY.md).
+Run focused checks for narrow changes. Report vulnerabilities privately as
+described in [SECURITY.md](SECURITY.md).

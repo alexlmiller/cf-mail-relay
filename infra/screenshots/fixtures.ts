@@ -510,12 +510,12 @@ const DASHBOARD: DashboardData = {
     error_code: null,
   },
   system_health: [
-    { name: "cloudflare_api", ok: true, status: 200, error_code: null, detail: "Email Sending API responsive", checked_at: t(11) },
-    { name: "d1_schema", ok: true, status: 200, error_code: null, detail: "Schema v3 matches REQUIRED_D1_SCHEMA_VERSION", checked_at: t(11) },
-    { name: "kv", ok: false, status: 200, error_code: "slow", detail: "Sentinel round-trip 412ms (>250ms threshold)", checked_at: t(11) },
-    { name: "access_jwks", ok: true, status: 200, error_code: null, detail: "JWKS cached · 3 keys", checked_at: t(11) },
-    { name: "recent_relay_send", ok: true, status: null, error_code: null, detail: "Last send 45s ago", checked_at: t(11) },
-    { name: "bootstrap_failures_24h", ok: true, status: null, error_code: null, detail: "2 in window (expected — bootstrap token still active)", checked_at: t(11) },
+    { name: "cloudflare_api", ok: true, status: 200, error_code: null, detail: "Token verifies", checked_at: t(11) },
+    { name: "d1_schema", ok: true, status: 200, error_code: null, detail: "actual=6 required=6", checked_at: t(11) },
+    { name: "kv", ok: true, status: 200, error_code: null, detail: "Sentinel round-trips", checked_at: t(11) },
+    { name: "access_jwks", ok: true, status: 200, error_code: null, detail: "3 keys", checked_at: t(11) },
+    { name: "recent_relay_send", ok: true, status: 200, error_code: null, detail: "Last accepted relay send 45s ago", checked_at: t(11) },
+    { name: "bootstrap_failures_24h", ok: false, status: 200, error_code: null, detail: "2 failed bootstrap attempts in 24h", checked_at: t(11) },
   ],
 };
 
@@ -528,12 +528,12 @@ const DASHBOARD_EMPTY: DashboardData = {
   resource_counts: { users: 1, domains: 0, senders: 0, smtp_credentials: 0 },
   cf_api_health: { ok: true, status: 200, checked_at: t(11), error_code: null },
   system_health: [
-    { name: "cloudflare_api", ok: true, status: 200, error_code: null, detail: "Email Sending API responsive", checked_at: t(11) },
-    { name: "d1_schema", ok: true, status: 200, error_code: null, detail: "Schema v3 matches REQUIRED_D1_SCHEMA_VERSION", checked_at: t(11) },
-    { name: "kv", ok: true, status: 200, error_code: null, detail: "Sentinel round-trip 38ms", checked_at: t(11) },
-    { name: "access_jwks", ok: true, status: 200, error_code: null, detail: "JWKS cached · 3 keys", checked_at: t(11) },
-    { name: "recent_relay_send", ok: false, status: null, error_code: "no_sends_24h", detail: "No accepted relay sends in the last 24h", checked_at: t(11) },
-    { name: "bootstrap_failures_24h", ok: true, status: null, error_code: null, detail: "0 in window", checked_at: t(11) },
+    { name: "cloudflare_api", ok: true, status: 200, error_code: null, detail: "Token verifies", checked_at: t(11) },
+    { name: "d1_schema", ok: true, status: 200, error_code: null, detail: "actual=6 required=6", checked_at: t(11) },
+    { name: "kv", ok: true, status: 200, error_code: null, detail: "Sentinel round-trips", checked_at: t(11) },
+    { name: "access_jwks", ok: true, status: 200, error_code: null, detail: "3 keys", checked_at: t(11) },
+    { name: "recent_relay_send", ok: false, status: 200, error_code: null, detail: "No accepted relay sends in 24h", checked_at: t(11) },
+    { name: "bootstrap_failures_24h", ok: true, status: 200, error_code: null, detail: "No bootstrap attempts", checked_at: t(11) },
   ],
 };
 
