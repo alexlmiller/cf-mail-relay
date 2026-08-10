@@ -64,6 +64,7 @@ export async function main(argv, env, depsOrFetch = {}) {
   const execImpl = deps.execImpl ?? runCommand;
   const readFileImpl = deps.readFileImpl ?? ((path) => readFileSync(path, "utf8"));
   const writeFileImpl = deps.writeFileImpl ?? writeFileWithMode;
+  const writeSensitiveFileImpl = deps.writeSensitiveFileImpl ?? writeSensitiveFileAtomic;
   const existsImpl = deps.existsImpl ?? existsSync;
   const writeRecoveryJournalImpl = deps.writeRecoveryJournalImpl ?? writeRecoveryJournalAtomic;
   const removeRecoveryJournalImpl = deps.removeRecoveryJournalImpl ?? ((path) => unlinkSync(path));
@@ -78,6 +79,7 @@ export async function main(argv, env, depsOrFetch = {}) {
       execImpl,
       readFileImpl,
       writeFileImpl,
+      writeSensitiveFileImpl,
       existsImpl,
       writeRecoveryJournalImpl,
       removeRecoveryJournalImpl,
@@ -117,6 +119,7 @@ export async function runApply(ctx) {
     execImpl,
     readFileImpl,
     writeFileImpl,
+    writeSensitiveFileImpl = writeSensitiveFileAtomic,
     existsImpl,
     writeRecoveryJournalImpl = writeRecoveryJournalAtomic,
     removeRecoveryJournalImpl = (path) => unlinkSync(path),
@@ -399,7 +402,7 @@ export async function runApply(ctx) {
       relayKeyId: options.relayKeyId,
       relayHost: options.relayHost,
     });
-    writeFileImpl(options.runbookPath, runbook, { encoding: "utf8", mode: 0o600 });
+    writeSensitiveFileImpl(options.runbookPath, runbook, { encoding: "utf8", mode: 0o600 });
     steps.push({
       step: "runbook_written",
       path: options.runbookPath,
@@ -646,6 +649,19 @@ function loadRecoveryJournal(options, readFileImpl, existsImpl) {
 
 function planManagedSecrets(options, remoteState, existingJournal) {
   if (existingJournal !== null) {
+    if (existingJournal.operation === "initialize" && options.rotateAllWorkerSecrets) {
+      throw new Error(
+        `Setup recovery journal ${options.recoveryJournalPath} records an interrupted normal initialization, ` +
+        `but --rotate-all-worker-secrets requests destructive replacement. Refusing to change recovery intent. ` +
+        `Rerun without --rotate-all-worker-secrets to resume the journaled initialization.`,
+      );
+    }
+    if (existingJournal.operation === "replace_all" && !options.rotateAllWorkerSecrets) {
+      throw new Error(
+        `Setup recovery journal ${options.recoveryJournalPath} records an interrupted destructive replacement. ` +
+        `Rerun with --rotate-all-worker-secrets to confirm that destructive intent again and resume the same journaled values.`,
+      );
+    }
     return { journal: existingJournal, newJournal: false };
   }
 
@@ -679,25 +695,28 @@ function planManagedSecrets(options, remoteState, existingJournal) {
 }
 
 export function writeRecoveryJournalAtomic(path, journal) {
+  writeSensitiveFileAtomic(path, `${JSON.stringify(journal, null, 2)}\n`);
+}
+
+export function writeSensitiveFileAtomic(path, body, options = {}) {
   const temporaryPath = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
-  let temporaryWritten = false;
   try {
-    writeFileSync(temporaryPath, `${JSON.stringify(journal, null, 2)}\n`, {
+    writeFileSync(temporaryPath, body, {
+      ...options,
       encoding: "utf8",
       mode: 0o600,
       flag: "wx",
     });
-    temporaryWritten = true;
     chmodSync(temporaryPath, 0o600);
     renameSync(temporaryPath, path);
     chmodSync(path, 0o600);
   } catch (error) {
-    if (temporaryWritten && existsSync(temporaryPath)) {
+    if (existsSync(temporaryPath)) {
       try {
         unlinkSync(temporaryPath);
       } catch {
-        // Preserve the original persistence error; the temp path contains no
-        // more information than the target journal would have contained.
+        // Preserve the original persistence error. The temp file has the same
+        // owner-only mode and no more information than the target would have.
       }
     }
     throw error;
@@ -1174,6 +1193,9 @@ Modes:
                             Managed secrets use one bulk write, which may create
                             an intermediate Worker version; final deployment is
                             blocked until every required secret name is present.
+                            A new install without runtime CF_API_TOKEN exits
+                            nonzero after this intentional first phase; set the
+                            token, then rerun the same command.
 Required (both modes):
   --account-id              Cloudflare account ID (or CLOUDFLARE_ACCOUNT_ID).
   --admin-url               URL where the admin UI + API will live
@@ -1197,8 +1219,9 @@ Apply flags:
                              credential pepper, metadata pepper, and relay HMAC
                              secret. This invalidates existing credentials/API
                              keys and requires relay reconfiguration. Normal
-                             retries automatically resume the mode-0600 recovery
-                             journal and do not need this flag.
+                             initialization retries resume without this flag.
+                             Destructive replacement retries must include it
+                             again; setup refuses a flag/journal intent mismatch.
   --push-cf-api-token       Push your setup CLOUDFLARE_API_TOKEN as the worker's
                              runtime CF_API_TOKEN secret. NOT recommended — your
                              setup token has broad scopes; the runtime token

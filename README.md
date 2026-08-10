@@ -211,7 +211,9 @@ The wizard intentionally does **not** push its broad setup API token as the
 Worker runtime `CF_API_TOKEN`. On a new installation, the first `--apply`
 creates or reuses the infrastructure and pushes the three generated
 application secrets, then stops before the build and final deploy step if
-`CF_API_TOKEN` is absent.
+`CF_API_TOKEN` is absent. This intentional first phase exits nonzero so an
+unattended setup cannot mistake the incomplete deployment for success; after
+setting the runtime token, rerun the same command to finish.
 Create a least-privilege Cloudflare API token with **Account -> Email Sending
 -> Edit** plus **Zone -> Zone -> Read** for the sending zones, then push it:
 
@@ -251,7 +253,10 @@ recovery journal, setup refuses to guess or replace live values.
 operation. It replaces the credential pepper, metadata pepper, and relay HMAC
 secret, invalidating existing credentials and requiring relay reconfiguration.
 Do not use it for a normal retry or routine HMAC rotation; use `pnpm
-rotate:hmac` for the latter.
+rotate:hmac` for the latter. If destructive replacement is interrupted, rerun
+with `--rotate-all-worker-secrets` again to confirm the destructive intent and
+resume the same journaled values. Setup refuses both a replacement journal
+without the flag and the flag alongside a normal-initialization journal.
 
 Validate the same-origin Access gate:
 
