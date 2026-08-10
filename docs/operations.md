@@ -78,6 +78,15 @@ actions; both are also available as POST endpoints:
   window after a lost final SMTP response. HTTP API idempotency remains 24h.
   KV mirrors completed responses for the matching window purely as a
   fast-replay path; D1 wins on conflict.
+- An SMTP provider call whose result is explicitly ambiguous is recorded as
+  `ambiguous` and remains fenced for one hour. After that delay, one retry may
+  atomically reclaim the same reservation. This trades a bounded duplicate
+  risk for recovery only when Cloudflare's acceptance could not be determined.
+- A confirmed provider acceptance whose completion record then fails remains
+  `in_flight` for the full seven-day SMTP window and is not retried. Worker
+  termination during provider I/O is likewise conservatively fenced because
+  no durable ambiguity transition was recorded. HTTP ambiguity is never given
+  the one-hour SMTP retry lease and remains fenced for its 24-hour window.
 
 ## MIME spoof defenses (informational)
 

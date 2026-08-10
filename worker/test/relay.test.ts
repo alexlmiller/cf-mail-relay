@@ -179,6 +179,21 @@ function makeD1(): D1Database & { state: FakeD1State } {
       state.idempotency.set(key, { ...existing, status: "in_flight", updated_at: Number(args[0]) });
       return { meta: { changes: 1 } };
     }
+    if (sql.includes("UPDATE idempotency_keys SET status = 'ambiguous'")) {
+      const key = String(args[1]);
+      const existing = state.idempotency.get(key);
+      if (
+        existing === undefined ||
+        existing.status !== "in_flight" ||
+        existing.request_hash !== String(args[2]) ||
+        existing.source !== "smtp" ||
+        existing.expires_at <= Number(args[3])
+      ) {
+        return { meta: { changes: 0 } };
+      }
+      state.idempotency.set(key, { ...existing, status: "ambiguous", updated_at: Number(args[0]) });
+      return { meta: { changes: 1 } };
+    }
     if (sql.includes("UPDATE idempotency_keys SET status = 'completed'")) {
       if (state.failIdempotencyCompletion) throw new Error("simulated idempotency completion failure");
       const key = String(args[3]);
@@ -216,6 +231,27 @@ function makeD1(): D1Database & { state: FakeD1State } {
         created_at: Number(args[2]),
         updated_at: Number(args[3]),
         expires_at: Number(args[4]),
+      });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("SET status = 'pending', response_json = NULL, updated_at = ?")) {
+      const key = String(args[1]);
+      const existing = state.idempotency.get(key);
+      if (
+        existing === undefined ||
+        existing.status !== "ambiguous" ||
+        existing.request_hash !== String(args[2]) ||
+        existing.source !== "smtp" ||
+        existing.updated_at > Number(args[3]) ||
+        existing.expires_at <= Number(args[4])
+      ) {
+        return { meta: { changes: 0 } };
+      }
+      state.idempotency.set(key, {
+        ...existing,
+        status: "pending",
+        response_json: null,
+        updated_at: Number(args[0]),
       });
       return { meta: { changes: 1 } };
     }
@@ -396,6 +432,29 @@ function httpSendRequest(
         recipients: ["alex@example.net"],
         raw: Buffer.from(mime, "utf8").toString("base64"),
       }),
+    },
+    env,
+  );
+}
+
+async function smtpSendRequest(
+  env: Record<string, unknown>,
+  nonce: string,
+  subject = "SMTP ambiguity",
+): Promise<Response> {
+  const body = new TextEncoder().encode(
+    `From: gmail@alexmiller.net\r\nTo: alex@example.net\r\nMessage-ID: <smtp-ambiguity@example.net>\r\nSubject: ${subject}\r\n\r\nBody\r\n`,
+  );
+  return app.request(
+    "/relay/send",
+    {
+      method: "POST",
+      headers: await signedSendHeaders(body, nonce, {
+        "x-relay-envelope-from": "gmail@alexmiller.net",
+        "x-relay-recipients": "alex@example.net",
+        "x-relay-credential-id": "cred_1",
+      }),
+      body,
     },
     env,
   );
@@ -987,7 +1046,80 @@ describe("relay endpoints", () => {
     expect(cfFetch).toHaveBeenCalledTimes(2);
   });
 
-  it("holds an in-flight reservation when the provider transport outcome is ambiguous", async () => {
+  it("retries an explicitly ambiguous SMTP send once its one-hour fence expires", async () => {
+    const env = makeEnv();
+    const cfFetch = vi
+      .fn<() => Promise<Response>>()
+      .mockRejectedValueOnce(new TypeError("simulated network failure"))
+      .mockResolvedValueOnce(cloudflareSuccess());
+    vi.stubGlobal("fetch", cfFetch);
+
+    const first = await smtpSendRequest(env, "smtp-ambiguous-1");
+    expect(first.status).toBe(502);
+    await expect(first.json()).resolves.toMatchObject({ ok: false, error_code: "cloudflare_send_raw_ambiguous" });
+
+    const d1 = env.D1_MAIN as D1Database & { state: FakeD1State };
+    const row = [...d1.state.idempotency.values()][0];
+    expect(row?.status).toBe("ambiguous");
+    expect((await smtpSendRequest(env, "smtp-ambiguous-2")).status).toBe(409);
+    if (row !== undefined) row.updated_at -= 60 * 60 + 1;
+
+    expect((await smtpSendRequest(env, "smtp-ambiguous-3")).status).toBe(200);
+    expect(cfFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows only one concurrent retry to reclaim a stale ambiguous SMTP reservation", async () => {
+    const env = makeEnv();
+    let releaseRetry = (): void => undefined;
+    const retryGate = new Promise<void>((resolve) => {
+      releaseRetry = resolve;
+    });
+    const cfFetch = vi
+      .fn<() => Promise<Response>>()
+      .mockRejectedValueOnce(new TypeError("simulated network failure"))
+      .mockImplementation(async () => {
+        await retryGate;
+        return cloudflareSuccess();
+      });
+    vi.stubGlobal("fetch", cfFetch);
+
+    expect((await smtpSendRequest(env, "smtp-concurrent-1", "Concurrent retry")).status).toBe(502);
+    const row = [...(env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency.values()][0];
+    expect(row?.status).toBe("ambiguous");
+    if (row !== undefined) row.updated_at -= 60 * 60 + 1;
+
+    const retries = [
+      smtpSendRequest(env, "smtp-concurrent-2", "Concurrent retry"),
+      smtpSendRequest(env, "smtp-concurrent-3", "Concurrent retry"),
+    ];
+    const fenced = await Promise.race(retries);
+    expect(fenced.status).toBe(409);
+    expect(cfFetch).toHaveBeenCalledTimes(2);
+    releaseRetry();
+
+    const responses = await Promise.all(retries);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    expect(cfFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a confirmed SMTP acceptance fenced when completion persistence fails", async () => {
+    const env = makeEnv();
+    const d1 = env.D1_MAIN as D1Database & { state: FakeD1State };
+    d1.state.failIdempotencyCompletion = true;
+    const cfFetch = vi.fn(async () => cloudflareSuccess());
+    vi.stubGlobal("fetch", cfFetch);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    expect((await smtpSendRequest(env, "smtp-completion-1", "Accepted persistence")).status).toBe(200);
+    const row = [...d1.state.idempotency.values()][0];
+    expect(row?.status).toBe("in_flight");
+    if (row !== undefined) row.updated_at -= 60 * 60 + 1;
+
+    expect((await smtpSendRequest(env, "smtp-completion-2", "Accepted persistence")).status).toBe(409);
+    expect(cfFetch).toHaveBeenCalledOnce();
+  });
+
+  it("holds an HTTP in-flight reservation for its full window when the provider transport outcome is ambiguous", async () => {
     const env = makeEnv();
     const cfFetch = vi.fn(async () => {
       throw new TypeError("simulated network failure");
@@ -1003,7 +1135,7 @@ describe("relay endpoints", () => {
     await expect(second.json()).resolves.toMatchObject({ ok: false, error: "idempotency_pending" });
     const row = (env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency.get("http:key_1:ambiguous-fetch");
     expect(row?.status).toBe("in_flight");
-    if (row !== undefined) row.updated_at -= 301;
+    if (row !== undefined) row.updated_at -= 60 * 60 + 1;
     expect((await httpSendRequest(env, "ambiguous-fetch")).status).toBe(409);
     expect(cfFetch).toHaveBeenCalledOnce();
   });
