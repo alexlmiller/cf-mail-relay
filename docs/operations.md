@@ -138,9 +138,14 @@ to remove any cached provider responses that predate response sanitization.
 Apply it during a low-traffic window: retries of messages accepted before the
 migration will not have their previous idempotency rows available.
 
+`0006_extend_smtp_idempotency.sql` preserves the v1.1 seven-day SMTP fence for
+rows written by v1.0, which used a 24-hour expiry. It does not change HTTP API
+idempotency retention or store any additional message data.
+
 Current schema baseline: `worker/migrations/0001_init.sql` + `0002_security_hardening.sql`
 + `0003_drop_retention.sql` + `0004_smtp_host_setting.sql` +
-`0005_privacy_retention_hardening.sql` (current version: 5).
+`0005_privacy_retention_hardening.sql` + `0006_extend_smtp_idempotency.sql`
+(current version: 6).
 
 ## Managing infra with OpenTofu (optional)
 
