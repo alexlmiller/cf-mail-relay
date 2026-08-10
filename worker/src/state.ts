@@ -96,6 +96,7 @@ const httpIdempotencyTtlSeconds = 24 * 60 * 60;
 const smtpIdempotencyTtlSeconds = 7 * 24 * 60 * 60;
 export const idempotencyPendingLeaseSeconds = 5 * 60;
 const maxSmtpUsernameLength = 254;
+export const smtpAmbiguousRetryDelaySeconds = 60 * 60;
 
 export async function authenticateSmtpCredential(
   env: Env,
@@ -434,6 +435,22 @@ export async function markIdempotentRequestInFlight(
     .bind(now, key, requestHash, source, now)
     .run();
   return result.meta.changes > 0;
+}
+
+export async function markSmtpIdempotentRequestAmbiguous(
+  env: Env,
+  key: string,
+  requestHash: string,
+): Promise<void> {
+  const now = nowSeconds();
+  const result = await env.D1_MAIN.prepare(
+    "UPDATE idempotency_keys SET status = 'ambiguous', updated_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = 'smtp' AND status = 'in_flight' AND expires_at > ?",
+  )
+    .bind(now, key, requestHash, now)
+    .run();
+  if (result.meta.changes === 0) {
+    throw new Error("SMTP idempotency reservation was not marked ambiguous");
+  }
 }
 
 export async function releaseIdempotentRequest(
@@ -832,6 +849,24 @@ async function resolveExistingIdempotencyRequest(
       "UPDATE idempotency_keys SET status = 'pending', response_json = NULL, created_at = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'failed'",
     )
       .bind(now, now, now + ttlSeconds, key, requestHash, source)
+      .run();
+    if (takeover.meta.changes > 0) {
+      return { status: "new" };
+    }
+    return attempt < 2
+      ? resolveExistingIdempotencyRequest(env, key, requestHash, source, now, attempt + 1)
+      : { status: "pending" };
+  }
+
+  if (
+    source === "smtp" &&
+    existing.status === "ambiguous" &&
+    existing.updated_at <= now - smtpAmbiguousRetryDelaySeconds
+  ) {
+    const takeover = await env.D1_MAIN.prepare(
+      "UPDATE idempotency_keys SET status = 'pending', response_json = NULL, updated_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = 'smtp' AND status = 'ambiguous' AND updated_at <= ? AND expires_at > ?",
+    )
+      .bind(now, key, requestHash, now - smtpAmbiguousRetryDelaySeconds, now)
       .run();
     if (takeover.meta.changes > 0) {
       return { status: "new" };
