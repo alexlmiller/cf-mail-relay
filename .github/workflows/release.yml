@@ -177,8 +177,13 @@ jobs:
           REGISTRY_IMAGE: ghcr.io/${{ github.repository }}/relay
           SOURCE_URL: https://github.com/${{ github.repository }}
           VERSION: ${{ steps.release.outputs.version }}
+        # Keep release identity workflow-owned so recovery also works for tags
+        # whose historical bake file predates OCI index annotations.
         run: >-
           docker buildx bake --push
+          --set "relay.annotations=index:org.opencontainers.image.revision=$GIT_SHA"
+          --set "relay.annotations=index:org.opencontainers.image.source=$SOURCE_URL"
+          --set "relay.annotations=index:org.opencontainers.image.version=$VERSION"
           --var GIT_SHA="$GIT_SHA"
           --var REGISTRY_IMAGE="$REGISTRY_IMAGE"
           --var SOURCE_URL="$SOURCE_URL"
