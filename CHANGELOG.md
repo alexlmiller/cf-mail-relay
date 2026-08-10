@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/alexlmiller/cf-mail-relay/compare/v1.0.0...v1.1.0) (2026-08-10)
+
+
+### Features
+
+* prepare v1.1.0 release ([c99a1fb](https://github.com/alexlmiller/cf-mail-relay/commit/c99a1fbb21cdb39d40cb05e3ad6d961eda4697e6))
+
 ## 1.0.0 (2026-05-21)
 
 
