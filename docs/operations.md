@@ -70,7 +70,8 @@ Normally, let an `ambiguous` row reach its one-hour retry lease and leave an
 `in_flight` message, so deleting it can cause duplicate delivery. **Flush
 caches** does not release either state because D1 is authoritative.
 
-If an SMTP client remains blocked, inspect the live rows:
+After confirming the originating SMTP and Worker request has ended, inspect
+live rows that have been unchanged for at least five minutes:
 
 ```sh
 pnpm --dir worker exec wrangler d1 execute <d1-database-name> --remote --command \
@@ -78,13 +79,14 @@ pnpm --dir worker exec wrangler d1 execute <d1-database-name> --remote --command
    FROM idempotency_keys
   WHERE source = 'smtp'
     AND status IN ('in_flight', 'ambiguous')
+    AND updated_at <= unixepoch() - 300
     AND expires_at > unixepoch()
   ORDER BY updated_at DESC;"
 ```
 
-Correlate the timestamps with relay, Worker, and provider records. Only when
-duplicate risk is explicitly acceptable, delete the exact unchanged
-`in_flight` row:
+Correlate the timestamps with relay, Worker, and provider records. Age alone
+does not prove the provider rejected the message. Only when duplicate risk is
+explicitly acceptable, delete the exact unchanged `in_flight` row:
 
 ```sh
 pnpm --dir worker exec wrangler d1 execute <d1-database-name> --remote --command \
@@ -94,6 +96,7 @@ pnpm --dir worker exec wrangler d1 execute <d1-database-name> --remote --command
     AND source = 'smtp'
     AND status = 'in_flight'
     AND updated_at = <observed-updated-at>
+    AND updated_at <= unixepoch() - 300
     AND expires_at = <observed-expires-at>;"
 ```
 
