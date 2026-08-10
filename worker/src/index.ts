@@ -109,6 +109,9 @@ const maxIdempotencyKeyBytes = 255;
 const maxCloudflareResponseBytes = 256 * 1024;
 const maxCloudflareHeaderValueBytes = 2_048;
 const maxAdminJsonBodyBytes = 64 * 1024;
+// RFC 5322 section 2.1.1 limits physical lines excluding the trailing CRLF.
+const recommendedMimeLineBytes = 78;
+const maxMimeLineBytes = 998;
 
 app.get("/healthz", async (c) => {
   const requiredSchemaVersion = c.env.REQUIRED_D1_SCHEMA_VERSION || requiredSchemaVersionDefault;
@@ -791,6 +794,11 @@ function containsMessageId(references: string, messageId: string): boolean {
 }
 
 function setMimeHeader(mimeMessage: string, name: string, value: string): string {
+  const formattedHeader = foldMimeHeader(name, value);
+  if (formattedHeader === null) {
+    return mimeMessage;
+  }
+
   const normalized = mimeMessage.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
   const headerEnd = normalized.indexOf("\n\n");
   if (headerEnd === -1) {
@@ -809,13 +817,42 @@ function setMimeHeader(mimeMessage: string, name: string, value: string): string
   const target = name.toLowerCase();
   const existingIndex = headers.findIndex((header) => (header.split(":", 1)[0]?.toLowerCase() ?? "") === target);
   if (existingIndex >= 0) {
-    headers[existingIndex] = `${name}: ${value}`;
+    headers[existingIndex] = formattedHeader;
   } else {
-    headers.push(`${name}: ${value}`);
+    headers.push(formattedHeader);
   }
 
   const body = normalized.slice(headerEnd + 2).replaceAll("\n", "\r\n");
-  return `${headers.join("\r\n")}\r\n\r\n${body}`;
+  const renderedHeaders = headers.map((header) => header.replaceAll("\n", "\r\n")).join("\r\n");
+  return `${renderedHeaders}\r\n\r\n${body}`;
+}
+
+function foldMimeHeader(name: string, value: string): string | null {
+  const tokens = value.trim().split(/\s+/).filter((token) => token.length > 0);
+  if (tokens.length === 0) {
+    return `${name}:`;
+  }
+
+  const encoder = new TextEncoder();
+  const lines: string[] = [];
+  let current = `${name}:`;
+
+  for (const token of tokens) {
+    const candidate = `${current} ${token}`;
+    if (encoder.encode(candidate).byteLength <= recommendedMimeLineBytes) {
+      current = candidate;
+      continue;
+    }
+
+    lines.push(current);
+    current = ` ${token}`;
+    if (encoder.encode(current).byteLength > maxMimeLineBytes) {
+      return null;
+    }
+  }
+
+  lines.push(current);
+  return lines.join("\n");
 }
 
 function stripMimeHeaders(mimeMessage: string, names: string[]): string {
