@@ -47,6 +47,8 @@ flowchart LR
 ## What It Does
 
 - SMTP submission on port `587` for mail clients and applications.
+- Conversation-thread compatibility for SMTP clients when Cloudflare replaces
+  their submitted `Message-ID` values.
 - Raw MIME HTTP API for applications.
 - Admin UI for domains, senders, users, SMTP credentials, API keys, and events.
 - Multi-domain sending from one Cloudflare account.
@@ -288,7 +290,10 @@ For each sender address:
 
 For Gmail, open Settings -> Accounts and Import -> Send mail as -> Add another
 email address. Use the relay hostname, port `587`, TLS, the SMTP username, and
-the generated SMTP password, then confirm Gmail's verification email.
+the generated SMTP password, then confirm Gmail's verification email. The relay
+copies Gmail's original `Message-ID` into `References` before Cloudflare Email
+Sending replaces it, allowing replies to reconnect to Gmail's local Sent
+conversation.
 
 For applications, use the same values:
 

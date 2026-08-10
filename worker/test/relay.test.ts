@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import app, { stripCaptureHopHeaders } from "../src/index";
+import app, { anchorClientMessageIdInReferences, stripCaptureHopHeaders } from "../src/index";
 import { hmacSha256Hex, sha256Hex, signRelayRequest } from "../src/hmac";
 
 const hmacSecret = "relay-secret";
@@ -376,6 +376,49 @@ describe("relay endpoints", () => {
     await expect(response.json()).resolves.toMatchObject({ ok: true, cf_status: 200, idempotency_key: expect.any(String) });
   });
 
+  it("anchors the SMTP client's Message-ID in References before Cloudflare send_raw", async () => {
+    const cfFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        from: "gmail@alexmiller.net",
+        recipients: ["alex@example.net"],
+        mime_message:
+          "From: Alex <gmail@alexmiller.net>\r\n" +
+          "Message-ID: <gmail-original@mail.gmail.com>\r\n" +
+          "Subject: Thread anchor\r\n" +
+          "References: <gmail-original@mail.gmail.com>\r\n\r\n" +
+          "Body\r\n",
+      });
+      return new Response(JSON.stringify({ success: true, errors: [], messages: [], result: { delivered: [], queued: [], permanent_bounces: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", cfFetch);
+
+    const body = new TextEncoder().encode(
+      "From: Alex <gmail@alexmiller.net>\r\n" +
+        "Message-ID: <gmail-original@mail.gmail.com>\r\n" +
+        "Subject: Thread anchor\r\n\r\n" +
+        "Body\r\n",
+    );
+    const response = await app.request(
+      "/relay/send",
+      {
+        method: "POST",
+        headers: await signedSendHeaders(body, "message-id-anchor-nonce", {
+          "x-relay-envelope-from": "gmail@alexmiller.net",
+          "x-relay-recipients": "alex@example.net",
+          "x-relay-credential-id": "cred_1",
+        }),
+        body,
+      },
+      makeEnv(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(cfFetch).toHaveBeenCalledOnce();
+  });
+
   it("re-checks sender allowlist on /relay/send", async () => {
     const body = new TextEncoder().encode("From: Alex <blocked@example.net>\r\n\r\nBody\r\n");
     const response = await app.request(
@@ -574,7 +617,7 @@ describe("relay endpoints", () => {
         from: "gmail@alexmiller.net",
         recipients: ["alex@example.net", "copy@example.net", "hidden@example.net"],
         mime_message:
-          "From: Alex <gmail@alexmiller.net>\r\nTo: alex@example.net\r\nCc: Copy <copy@example.net>\r\nSubject: API\r\n\r\nBody\r\n",
+          "From: Alex <gmail@alexmiller.net>\r\nTo: alex@example.net\r\nCc: Copy <copy@example.net>\r\nMessage-ID: <http-client@example.net>\r\nSubject: API\r\n\r\nBody\r\n",
       });
       return new Response(
         JSON.stringify({
@@ -592,7 +635,7 @@ describe("relay endpoints", () => {
     vi.stubGlobal("fetch", cfFetch);
 
     const mime =
-      "From: Alex <gmail@alexmiller.net>\r\nTo: alex@example.net\r\nCc: Copy <copy@example.net>\r\nBcc: hidden@example.net\r\nSubject: API\r\n\r\nBody\r\n";
+      "From: Alex <gmail@alexmiller.net>\r\nTo: alex@example.net\r\nCc: Copy <copy@example.net>\r\nBcc: hidden@example.net\r\nMessage-ID: <http-client@example.net>\r\nSubject: API\r\n\r\nBody\r\n";
     const response = await app.request(
       "/send",
       {
@@ -854,5 +897,44 @@ describe("stripCaptureHopHeaders", () => {
           "From: a@example.com\r\n\r\nHello\r\n",
       ),
     ).toBe("From: a@example.com\r\n\r\nHello\r\n");
+  });
+});
+
+describe("anchorClientMessageIdInReferences", () => {
+  it("appends the client Message-ID to an existing folded References chain", () => {
+    expect(
+      anchorClientMessageIdInReferences(
+        "From: a@example.com\r\n" +
+          "Message-ID: <current@example.com>\r\n" +
+          "References: <root@example.com>\r\n\t<parent@example.com>\r\n\r\n" +
+          "Hello\r\n",
+      ),
+    ).toBe(
+      "From: a@example.com\r\n" +
+        "Message-ID: <current@example.com>\r\n" +
+        "References: <root@example.com> <parent@example.com> <current@example.com>\r\n\r\n" +
+        "Hello\r\n",
+    );
+  });
+
+  it("inherits In-Reply-To when References is absent", () => {
+    expect(
+      anchorClientMessageIdInReferences(
+        "From: a@example.com\r\nMessage-ID: <current@example.com>\r\nIn-Reply-To: <parent@example.com>\r\n\r\nHello\r\n",
+      ),
+    ).toContain("References: <parent@example.com> <current@example.com>\r\n");
+  });
+
+  it("does not duplicate an existing client Message-ID anchor", () => {
+    const mime =
+      "From: a@example.com\r\nMessage-ID: <current@example.com>\r\nReferences: <root@example.com> <current@example.com>\r\n\r\nHello\r\n";
+    expect(anchorClientMessageIdInReferences(mime)).toBe(mime);
+  });
+
+  it("leaves MIME without a common, valid Message-ID unchanged", () => {
+    const missing = "From: a@example.com\r\nSubject: Missing\r\n\r\nHello\r\n";
+    const malformed = "From: a@example.com\r\nMessage-ID: not-a-message-id\r\n\r\nHello\r\n";
+    expect(anchorClientMessageIdInReferences(missing)).toBe(missing);
+    expect(anchorClientMessageIdInReferences(malformed)).toBe(malformed);
   });
 });
