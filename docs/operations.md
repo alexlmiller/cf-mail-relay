@@ -73,8 +73,11 @@ actions; both are also available as POST endpoints:
   by `api_key_id` to prevent cross-tenant collisions. If you reuse a key with
   a different `from`/`recipients`/MIME, expect a `409 idempotency_key_conflict`
   — pick a fresh key.
-- Worker uses D1 as the authority. KV mirrors completed responses with a 24h
-  TTL purely for the fast-replay path; D1 wins on conflict.
+- Worker uses D1 as the authority. SMTP reservations and completed responses
+  remain fenced for seven days, exceeding Gmail's roughly 48-hour retry
+  window after a lost final SMTP response. HTTP API idempotency remains 24h.
+  KV mirrors completed responses for the matching window purely as a
+  fast-replay path; D1 wins on conflict.
 
 ## MIME spoof defenses (informational)
 

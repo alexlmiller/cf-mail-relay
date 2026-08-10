@@ -92,7 +92,8 @@ export interface QuotaInput {
 
 const authDecisionTtlSeconds = 5;
 const credentialCacheTtlSeconds = 300;
-const idempotencyTtlSeconds = 24 * 60 * 60;
+const httpIdempotencyTtlSeconds = 24 * 60 * 60;
+const smtpIdempotencyTtlSeconds = 7 * 24 * 60 * 60;
 export const idempotencyPendingLeaseSeconds = 5 * 60;
 const maxSmtpUsernameLength = 254;
 
@@ -385,10 +386,11 @@ export async function beginIdempotentRequest(
   }
 
   const now = nowSeconds();
+  const ttlSeconds = idempotencyTtlSeconds(source);
   const result = await env.D1_MAIN.prepare(
     "INSERT OR IGNORE INTO idempotency_keys (idempotency_key, request_hash, source, status, response_json, created_at, updated_at, expires_at) VALUES (?, ?, ?, 'pending', NULL, ?, ?, ?)",
   )
-    .bind(key, requestHash, source, now, now, now + idempotencyTtlSeconds)
+    .bind(key, requestHash, source, now, now, now + ttlSeconds)
     .run();
   if (result.meta.changes > 0) {
     return { status: "new" };
@@ -405,7 +407,8 @@ export async function completeIdempotentRequest(
   response: ReplayResponse,
 ): Promise<void> {
   const now = nowSeconds();
-  const expiresAt = now + idempotencyTtlSeconds;
+  const ttlSeconds = idempotencyTtlSeconds(source);
+  const expiresAt = now + ttlSeconds;
   const responseJson = JSON.stringify({ ...response, request_hash: requestHash, source, expires_at: expiresAt });
   const result = await env.D1_MAIN.prepare(
     "UPDATE idempotency_keys SET status = 'completed', response_json = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'in_flight'",
@@ -415,7 +418,7 @@ export async function completeIdempotentRequest(
   if (result.meta.changes === 0) {
     throw new Error("idempotency reservation was not completed");
   }
-  await env.KV_HOT.put(`idem:${key}`, responseJson, { expirationTtl: idempotencyTtlSeconds });
+  await env.KV_HOT.put(`idem:${key}`, responseJson, { expirationTtl: ttlSeconds });
 }
 
 export async function markIdempotentRequestInFlight(
@@ -786,6 +789,7 @@ async function resolveExistingIdempotencyRequest(
   now: number,
   attempt: number,
 ): Promise<{ status: "new" } | { status: "pending" } | { status: "conflict" } | { status: "replay"; response: ReplayResponse }> {
+  const ttlSeconds = idempotencyTtlSeconds(source);
   const existing = await env.D1_MAIN.prepare(
     "SELECT status, request_hash, source, response_json, created_at, updated_at, expires_at FROM idempotency_keys WHERE idempotency_key = ?",
   )
@@ -801,7 +805,7 @@ async function resolveExistingIdempotencyRequest(
     const takeover = await env.D1_MAIN.prepare(
       "UPDATE idempotency_keys SET request_hash = ?, source = ?, status = 'pending', response_json = NULL, created_at = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND expires_at <= ?",
     )
-      .bind(requestHash, source, now, now, now + idempotencyTtlSeconds, key, now)
+      .bind(requestHash, source, now, now, now + ttlSeconds, key, now)
       .run();
     if (takeover.meta.changes > 0) {
       return { status: "new" };
@@ -827,7 +831,7 @@ async function resolveExistingIdempotencyRequest(
     const takeover = await env.D1_MAIN.prepare(
       "UPDATE idempotency_keys SET status = 'pending', response_json = NULL, created_at = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'failed'",
     )
-      .bind(now, now, now + idempotencyTtlSeconds, key, requestHash, source)
+      .bind(now, now, now + ttlSeconds, key, requestHash, source)
       .run();
     if (takeover.meta.changes > 0) {
       return { status: "new" };
@@ -841,7 +845,7 @@ async function resolveExistingIdempotencyRequest(
     const takeover = await env.D1_MAIN.prepare(
       "UPDATE idempotency_keys SET response_json = NULL, created_at = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'pending' AND updated_at <= ? AND expires_at > ?",
     )
-      .bind(now, now, now + idempotencyTtlSeconds, key, requestHash, source, now - idempotencyPendingLeaseSeconds, now)
+      .bind(now, now, now + ttlSeconds, key, requestHash, source, now - idempotencyPendingLeaseSeconds, now)
       .run();
     if (takeover.meta.changes > 0) {
       return { status: "new" };
@@ -852,6 +856,10 @@ async function resolveExistingIdempotencyRequest(
   }
 
   return { status: "pending" };
+}
+
+function idempotencyTtlSeconds(source: "smtp" | "http"): number {
+  return source === "smtp" ? smtpIdempotencyTtlSeconds : httpIdempotencyTtlSeconds;
 }
 
 function parseReplayResponse(raw: string): ReplayResponse {
