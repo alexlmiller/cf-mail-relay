@@ -159,7 +159,7 @@ CREATE TABLE idempotency_keys (
   response_json   TEXT,                                                   -- cached response on completed/failed
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL,
-  expires_at      INTEGER NOT NULL                                        -- created_at + 24h
+  expires_at      INTEGER NOT NULL                                        -- source-specific replay window
 );
 CREATE INDEX idx_idempotency_expires ON idempotency_keys(expires_at);
 
