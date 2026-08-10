@@ -31,7 +31,7 @@ HTTP client
 | `worker/` | TypeScript, Hono, Cloudflare Workers | Policy, auth, idempotency, quotas, audit metadata, Email Sending API calls, **serves the admin UI bundle via Workers Static Assets** |
 | `ui/` | Astro, static bundle | Admin UI source; builds into `worker/public/` and is shipped with the Worker |
 | `demo/` | Astro + Workers Static Assets | Standalone public demo Worker with an in-browser mock API and no production bindings |
-| `shared/` | TypeScript | Shared schemas and delivery status mapping |
+| `shared/` | JSON fixture | Cross-runtime HMAC test vectors consumed by the relay and Worker tests |
 | `infra/` | Shell/Node/Docker examples | Setup, Access helper, doctors, relay deployment examples |
 
 ### Single-Origin Admin
@@ -255,7 +255,7 @@ go vet ./...
 go test ./...
 ```
 
-CI runs Worker/shared tests, UI typecheck/build, relay Go tests, and multi-arch
+CI runs Worker and setup tests, UI/demo typecheck/build, relay Go tests, and multi-arch
 Docker bake. Release-please owns unified semver. Relay release images are pushed
 to GHCR when a release is created.
 

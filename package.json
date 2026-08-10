@@ -6,12 +6,12 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@9.15.9",
   "engines": {
-    "node": ">=22.22.3"
+    "node": ">=22.23.2"
   },
   "scripts": {
-    "build": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' --filter='./demo' build",
-    "typecheck": "pnpm -r --filter='./worker' --filter='./ui' --filter='./shared' --filter='./demo' typecheck",
-    "test": "pnpm -r --filter='./worker' --filter='./shared' test && node --test infra/wrangler/*.test.mjs infra/setup/*.test.mjs",
+    "build": "pnpm -r --filter='./worker' --filter='./ui' --filter='./demo' build",
+    "typecheck": "pnpm -r --filter='./worker' --filter='./ui' --filter='./demo' typecheck",
+    "test": "pnpm --filter @cf-mail-relay/worker test && pnpm --filter @cf-mail-relay/demo typecheck && node --test infra/wrangler/*.test.mjs infra/setup/*.test.mjs",
     "demo:build": "pnpm --filter @cf-mail-relay/demo build",
     "demo:deploy": "pnpm --dir worker exec wrangler deploy --config ../demo/wrangler.toml",
     "setup": "node infra/wrangler/setup.mjs",
@@ -35,7 +35,7 @@
     }
   },
   "devDependencies": {
-    "playwright": "^1.60.0",
-    "tsx": "^4.22.3"
+    "playwright": "^1.62.1",
+    "tsx": "^4.23.10"
   }
 }
