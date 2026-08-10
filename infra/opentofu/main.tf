@@ -4,19 +4,7 @@
 // itself is deployed via `wrangler deploy` (not as IaC) and secrets are
 // always pushed via `wrangler secret put`, never through tfstate.
 //
-// Two-phase workflow:
-//
-//   1. tofu init && tofu apply -var "admin_url=https://mail.example.com" -var 'admin_emails=["you@example.com"]'
-//   2. pnpm run setup --apply \
-//        --account-id "$(tofu output -raw account_id)" \
-//        --admin-url "$(tofu output -raw admin_url)" \
-//        --d1-id "$(tofu output -raw d1_database_id)" \
-//        --kv-id "$(tofu output -raw kv_namespace_id)" \
-//        --domain example.com \
-//        --allow-email you@example.com
-//
-// The wizard detects the existing D1/KV/Access app and reuses them
-// without modification.
+// See README.md for the two-phase OpenTofu and setup-wizard workflow.
 
 terraform {
   required_providers {
@@ -31,8 +19,7 @@ terraform {
 
 provider "cloudflare" {
   // Pass CLOUDFLARE_API_TOKEN via env. The token needs:
-  //   Account: D1 Edit, KV Edit, Access: Apps Edit, Workers Scripts Edit
-  //   Zone: DNS Edit (only if you let tofu manage the worker route DNS)
+  //   Account: D1 Edit, KV Edit, Access Apps Edit, Access Policies Edit
 }
 
 variable "account_id" {

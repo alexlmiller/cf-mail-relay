@@ -155,11 +155,11 @@ CREATE TABLE idempotency_keys (
   idempotency_key TEXT PRIMARY KEY,
   request_hash    TEXT NOT NULL,                                          -- sha256 of normalized request input
   source          TEXT NOT NULL,                                          -- smtp|http
-  status          TEXT NOT NULL,                                          -- pending|completed|failed
+  status          TEXT NOT NULL,                                          -- pending|in_flight|ambiguous|completed|failed (legacy)
   response_json   TEXT,                                                   -- cached response on completed/failed
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL,
-  expires_at      INTEGER NOT NULL                                        -- created_at + 24h
+  expires_at      INTEGER NOT NULL                                        -- source-specific replay window
 );
 CREATE INDEX idx_idempotency_expires ON idempotency_keys(expires_at);
 

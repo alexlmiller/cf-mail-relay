@@ -1,5 +1,9 @@
 import { hmacSha256Hex } from "./hmac";
 import type { Env } from "./index";
+import { bumpPolicyVersion } from "./state";
+
+const maxCredentialLabelLength = 128;
+const maxSmtpUsernameLength = 254;
 
 export interface AppSettings {
   smtp_host: string | null;
@@ -125,7 +129,7 @@ async function probeCloudflareApi(env: Env): Promise<HealthProbe> {
 async function probeD1Schema(env: Env): Promise<HealthProbe> {
   const checkedAt = nowSeconds();
   try {
-    const required = env.REQUIRED_D1_SCHEMA_VERSION || "1";
+    const required = env.REQUIRED_D1_SCHEMA_VERSION || "6";
     const row = await env.D1_MAIN.prepare("SELECT value_json FROM settings WHERE key = 'schema_version'").first<{ value_json: string }>();
     const actual = row?.value_json !== undefined ? parseSettingValue(row.value_json) : null;
     const ok = actual === required;
@@ -433,7 +437,7 @@ export async function listSmtpCredentials(env: Env): Promise<unknown[]> {
 
 export async function createSmtpCredential(env: Env, body: Record<string, unknown>): Promise<SmtpSecretResult> {
   const id = prefixedId("cred");
-  const username = requireString(body.username, "username").trim().toLowerCase();
+  const username = requireSmtpUsername(body.username);
   const secret = randomSecret();
   const now = nowSeconds();
   await env.D1_MAIN.prepare(
@@ -442,7 +446,7 @@ export async function createSmtpCredential(env: Env, body: Record<string, unknow
     .bind(
       id,
       requireString(body.user_id, "user_id"),
-      requireString(body.name, "name"),
+      requireBoundedString(body.name, "name", maxCredentialLabelLength),
       username,
       await hmacSha256Hex(env.CREDENTIAL_PEPPER, secret),
       allowedSenderIdsJson(body.allowed_sender_ids),
@@ -488,7 +492,7 @@ export async function createApiKey(env: Env, body: Record<string, unknown>): Pro
   const id = prefixedId("key");
   const now = nowSeconds();
   const userId = requireString(body.user_id, "user_id");
-  const name = requireString(body.name, "name");
+  const name = requireBoundedString(body.name, "name", maxCredentialLabelLength);
   const allowedSenderIds = allowedSenderIdsJson(body.allowed_sender_ids);
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const secret = randomSecret();
@@ -664,7 +668,7 @@ export async function updateSmtpCredential(env: Env, id: string, body: Record<st
   const params: unknown[] = [];
   if ("name" in body) {
     fields.push("name = ?");
-    params.push(requireString(body.name, "name"));
+    params.push(requireBoundedString(body.name, "name", maxCredentialLabelLength));
   }
   if ("allowed_sender_ids" in body) {
     fields.push("allowed_sender_ids_json = ?");
@@ -687,7 +691,7 @@ export async function updateApiKey(env: Env, id: string, body: Record<string, un
   const params: unknown[] = [];
   if ("name" in body) {
     fields.push("name = ?");
-    params.push(requireString(body.name, "name"));
+    params.push(requireBoundedString(body.name, "name", maxCredentialLabelLength));
   }
   if ("allowed_sender_ids" in body) {
     fields.push("allowed_sender_ids_json = ?");
@@ -725,16 +729,12 @@ export async function listAuthFailures(env: Env): Promise<unknown[]> {
 
 /** Manual policy bump exposed via ops endpoint. */
 export async function bumpPolicyVersionAction(env: Env): Promise<{ policy_version: string }> {
-  const next = String(nowSeconds());
-  await env.D1_MAIN.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('policy_version', ?, ?)")
-    .bind(JSON.stringify(next), nowSeconds())
-    .run();
-  return { policy_version: next };
+  return { policy_version: await bumpPolicyVersion(env) };
 }
 
 /** Bulk delete the in-worker KV caches. Returns the number of keys removed. */
 export async function flushKvCaches(env: Env): Promise<{ deleted: number; prefixes: string[] }> {
-  const prefixes = ["cred:", "apikey:", "domain:", "sender:", "idem:", "tombstone:cred:", "tombstone:apikey:"];
+  const prefixes = ["cred:", "apikey:", "idem:", "access:jwks:"];
   let deleted = 0;
   for (const prefix of prefixes) {
     let cursor: string | null = null;
@@ -756,12 +756,6 @@ export async function flushKvCaches(env: Env): Promise<{ deleted: number; prefix
     }
   }
   return { deleted, prefixes };
-}
-
-async function bumpPolicyVersion(env: Env): Promise<void> {
-  await env.D1_MAIN.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('policy_version', ?, ?)")
-    .bind(JSON.stringify(String(nowSeconds())), nowSeconds())
-    .run();
 }
 
 async function withSmtpSettings(env: Env, result: { id: string; username: string; secret: string }): Promise<SmtpSecretResult> {
@@ -797,6 +791,22 @@ function requireString(value: unknown, field: string): string {
     throw new Error(`invalid_${field}`);
   }
   return value.trim();
+}
+
+function requireBoundedString(value: unknown, field: string, maxLength: number): string {
+  const normalized = requireString(value, field);
+  if (normalized.length > maxLength) {
+    throw new Error(`invalid_${field}`);
+  }
+  return normalized;
+}
+
+function requireSmtpUsername(value: unknown): string {
+  const normalized = requireString(value, "username").toLowerCase();
+  if (new TextEncoder().encode(normalized).byteLength > maxSmtpUsernameLength) {
+    throw new Error("invalid_username");
+  }
+  return normalized;
 }
 
 function optionalString(value: unknown): string | null {

@@ -1,31 +1,29 @@
 ---
 name: Bug report
-about: Something is broken in the relay, worker, or UI
+about: Report a reproducible problem
 labels: bug
 ---
 
-**Component**: relay / worker / ui / docs / setup
+**Component**: relay / worker / ui / demo / infra / docs
 
-**Version**: (release tag, or `git rev-parse HEAD`)
+**Release or commit**
 
-**Adopter environment**:
-- Relay host: (e.g., Hetzner Cloud, Docker version)
-- Cloudflare account plan: Workers Paid / Free
-- Email Sending domain status: verified / sandbox
-- Number of sending domains configured:
+**Environment**
 
-**Steps to reproduce**:
+- Relay OS and Docker version:
+- Cloudflare plan:
+- Sending-domain status:
+
+**Steps to reproduce**
+
 1.
 2.
-3.
 
-**Expected**:
+**Expected result**
 
-**Actual**:
+**Actual result**
 
-**Relay logs / Worker tail output** (redact secrets):
+**Redacted relay logs or Worker output**
 
+```text
 ```
-```
-
-**Anything else**:

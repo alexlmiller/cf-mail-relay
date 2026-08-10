@@ -15,6 +15,9 @@ describe("rotate-hmac helper", () => {
     assert.match(runbook, /EXAMPLESECRET/);
     assert.match(runbook, /RELAY_HMAC_SECRET_PREVIOUS/);
     assert.match(runbook, /RELAY_HMAC_SECRET_CURRENT/);
+    assert.match(runbook, /pnpm --dir worker exec wrangler secret put RELAY_HMAC_SECRET_CURRENT/);
+    assert.match(runbook, /pnpm --dir worker exec wrangler secret delete RELAY_HMAC_SECRET_PREVIOUS/);
+    assert.doesNotMatch(runbook, /--force/);
     assert.match(runbook, /docker compose up -d relay/);
     assert.match(runbook, /grace window/);
   });

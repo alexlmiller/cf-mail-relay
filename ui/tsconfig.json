@@ -1,11 +1,5 @@
 {
   "extends": "astro/tsconfigs/strict",
-  "compilerOptions": {
-    "baseUrl": ".",
-    "paths": {
-      "@cf-mail-relay/shared": ["../shared/src/index.ts"]
-    }
-  },
   "include": [".astro/types.d.ts", "**/*"],
   "exclude": ["dist"]
 }

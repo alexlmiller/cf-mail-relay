@@ -5,6 +5,10 @@
 import { hmacSha256Hex } from "./hmac";
 import type { Env } from "./index";
 import { getAppSettings, type AppSettings, type SmtpSecretResult } from "./admin";
+import { bumpPolicyVersion } from "./state";
+
+const maxCredentialLabelLength = 128;
+const maxSmtpUsernameLength = 254;
 
 export interface SelfProfile {
   id: string;
@@ -74,8 +78,8 @@ export async function selfSettings(env: Env): Promise<AppSettings> {
 }
 
 export async function selfCreateSmtpCredential(env: Env, userId: string, body: Record<string, unknown>): Promise<SmtpSecretResult> {
-  const name = requireString(body.name, "name");
-  const username = requireString(body.username, "username").trim().toLowerCase();
+  const name = requireBoundedString(body.name, "name", maxCredentialLabelLength);
+  const username = requireSmtpUsername(body.username);
   const id = prefixedId("cred");
   const secret = randomSecret();
   const now = nowSeconds();
@@ -131,7 +135,7 @@ export async function selfApiKeys(env: Env, userId: string): Promise<unknown[]> 
 }
 
 export async function selfCreateApiKey(env: Env, userId: string, body: Record<string, unknown>): Promise<{ id: string; key_prefix: string; secret: string }> {
-  const name = requireString(body.name, "name");
+  const name = requireBoundedString(body.name, "name", maxCredentialLabelLength);
   const id = prefixedId("key");
   const now = nowSeconds();
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -207,17 +211,27 @@ export async function selfSendEvents(env: Env, userId: string): Promise<unknown[
   return result.results ?? [];
 }
 
-async function bumpPolicyVersion(env: Env): Promise<void> {
-  await env.D1_MAIN.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('policy_version', ?, ?)")
-    .bind(JSON.stringify(String(nowSeconds())), nowSeconds())
-    .run();
-}
-
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`invalid_${field}`);
   }
   return value.trim();
+}
+
+function requireBoundedString(value: unknown, field: string, maxLength: number): string {
+  const normalized = requireString(value, field);
+  if (normalized.length > maxLength) {
+    throw new Error(`invalid_${field}`);
+  }
+  return normalized;
+}
+
+function requireSmtpUsername(value: unknown): string {
+  const normalized = requireString(value, "username").toLowerCase();
+  if (new TextEncoder().encode(normalized).byteLength > maxSmtpUsernameLength) {
+    throw new Error("invalid_username");
+  }
+  return normalized;
 }
 
 function randomSecret(): string {

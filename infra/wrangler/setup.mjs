@@ -2,17 +2,21 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const defaultApiBase = "https://api.cloudflare.com/client/v4";
-const requiredSecrets = [
-  "CF_API_TOKEN",
+const managedSecretNames = [
   "CREDENTIAL_PEPPER",
   "METADATA_PEPPER",
   "RELAY_HMAC_SECRET_CURRENT",
 ];
+const requiredSecrets = [
+  "CF_API_TOKEN",
+  ...managedSecretNames,
+];
+const recoveryJournalVersion = 1;
 // BOOTSTRAP_SETUP_TOKEN is intentionally not in `requiredSecrets`: the setup
 // wizard bootstraps the first admin directly through D1 so it does not depend
 // on reaching the freshly deployed admin URL from the installer machine. The
@@ -59,8 +63,11 @@ export async function main(argv, env, depsOrFetch = {}) {
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const execImpl = deps.execImpl ?? runCommand;
   const readFileImpl = deps.readFileImpl ?? ((path) => readFileSync(path, "utf8"));
-  const writeFileImpl = deps.writeFileImpl ?? ((path, body) => writeFileSync(path, body));
+  const writeFileImpl = deps.writeFileImpl ?? writeFileWithMode;
+  const writeSensitiveFileImpl = deps.writeSensitiveFileImpl ?? writeSensitiveFileAtomic;
   const existsImpl = deps.existsImpl ?? existsSync;
+  const writeRecoveryJournalImpl = deps.writeRecoveryJournalImpl ?? writeRecoveryJournalAtomic;
+  const removeRecoveryJournalImpl = deps.removeRecoveryJournalImpl ?? ((path) => unlinkSync(path));
   const accessAppImpl = deps.accessAppImpl ?? null;
   const client = new CloudflareApiClient(options.apiBase, token, fetchImpl);
 
@@ -72,7 +79,10 @@ export async function main(argv, env, depsOrFetch = {}) {
       execImpl,
       readFileImpl,
       writeFileImpl,
+      writeSensitiveFileImpl,
       existsImpl,
+      writeRecoveryJournalImpl,
+      removeRecoveryJournalImpl,
       accessAppImpl,
       fetchImpl,
     });
@@ -102,9 +112,32 @@ export async function main(argv, env, depsOrFetch = {}) {
 // ───────────────────────── Apply orchestrator ─────────────────────────
 
 export async function runApply(ctx) {
-  const { options, env, client, execImpl, readFileImpl, writeFileImpl, existsImpl, accessAppImpl, fetchImpl } = ctx;
+  const {
+    options,
+    env,
+    client,
+    execImpl,
+    readFileImpl,
+    writeFileImpl,
+    writeSensitiveFileImpl = writeSensitiveFileAtomic,
+    existsImpl,
+    writeRecoveryJournalImpl = writeRecoveryJournalAtomic,
+    removeRecoveryJournalImpl = (path) => unlinkSync(path),
+    accessAppImpl,
+    fetchImpl,
+  } = ctx;
   const progress = ctx.progressImpl ?? defaultProgress;
   const steps = [];
+
+  if (existsImpl(options.wranglerPath) && !options.force) {
+    const configuredAccountId = readTopLevelWranglerAccountId(readFileImpl(options.wranglerPath));
+    if (configuredAccountId !== null && configuredAccountId !== options.accountId) {
+      throw new Error(
+        `${options.wranglerPath} selects Cloudflare account ${configuredAccountId}, but --account-id selects ${options.accountId}. ` +
+        "Use the matching account or pass --force to replace the config before Wrangler runs.",
+      );
+    }
+  }
 
   // 1. Validate sending domains before mutating Cloudflare or deploying. The
   //    results are reused later for D1 registration so setup does not fail on a
@@ -116,6 +149,41 @@ export async function runApply(ctx) {
     domainLookups.push({ domain, zone_id: lookup.zoneId, status: lookup.status });
   }
   steps.push({ step: "domains_validated", domains: domainLookups });
+
+  // Secret state is remote state. A gitignored local wrangler.toml says
+  // nothing about whether this Worker is new, fully configured, or a live
+  // deployment opened from a fresh clone. Inspect names only; secret values
+  // remain unreadable by design.
+  progress(`Inspecting remote Worker secret names for ${options.workerScriptName}`);
+  const initialRemoteSecrets = await listWorkerSecretNames(client, options.accountId, options.workerScriptName);
+  const existingJournal = loadRecoveryJournal(options, readFileImpl, existsImpl);
+  const secretPlan = planManagedSecrets(options, initialRemoteSecrets, existingJournal);
+  let recoveryJournal = secretPlan.journal;
+
+  // Persist generated values before the first remote mutation. The journal is
+  // deliberately a narrow crash-recovery aid: it is gitignored, mode 0600,
+  // bound to one account/script/key id, and deleted after RUNBOOK.md is safely
+  // written. It is never returned or logged.
+  if (secretPlan.newJournal) {
+    progress(`Writing setup recovery journal ${options.recoveryJournalPath}`);
+    writeRecoveryJournalImpl(options.recoveryJournalPath, recoveryJournal);
+    steps.push({
+      step: "secret_recovery_journal",
+      path: options.recoveryJournalPath,
+      source: recoveryJournal.operation,
+      resumed: false,
+    });
+  } else if (recoveryJournal !== null) {
+    progress(`Resuming setup from ${options.recoveryJournalPath}`);
+    steps.push({
+      step: "secret_recovery_journal",
+      path: options.recoveryJournalPath,
+      source: recoveryJournal.operation,
+      resumed: true,
+    });
+  } else {
+    steps.push({ step: "managed_secrets", source: "remote", rotated: false });
+  }
 
   // 2. Resource creation (skip-if-exists). Honors --d1-id / --kv-id flags from caller.
   progress(`Ensuring D1 database ${options.d1DatabaseName}`);
@@ -148,16 +216,9 @@ export async function runApply(ctx) {
   const access = await accessRun(accessArgs, env, fetchImpl);
   steps.push({ step: "access", app_id: access.app_id, audience: access.access_audience, team_domain: access.access_team_domain });
 
-  // 4. Generate secrets and (next step) write them to wrangler.toml + push via wrangler.
-  const secrets = options.regenerateSecrets || !existsImpl(options.wranglerPath)
-    ? generateSecrets()
-    : null;
-  if (secrets !== null) {
-    progress(`Generated ${Object.keys(secrets).length} worker secrets in memory`);
-    steps.push({ step: "secrets_generated", names: Object.keys(secrets) });
-  }
-
-  // 5. Write worker/wrangler.toml from the example template.
+  // 4. Write worker/wrangler.toml from the example template. Its local
+  //    existence controls only whether this file is overwritten, never secret
+  //    generation or rotation.
   progress(`Writing ${options.wranglerPath}`);
   const wranglerToml = renderWranglerToml({
     template: readFileImpl(options.wranglerExamplePath),
@@ -178,10 +239,10 @@ export async function runApply(ctx) {
     steps.push({ step: "wrangler_toml", path: options.wranglerPath, written: false, reason: "exists; pass --force to overwrite" });
   }
 
-  // 6. Apply D1 migrations.
+  // 5. Apply D1 migrations.
   if (!options.skipMigrations) {
     progress(`Applying D1 migrations to ${d1.name}`);
-    await runWrangler(execImpl, options.workerDir, ["d1", "migrations", "apply", d1.name, "--remote"]);
+    await runWrangler(execImpl, options.workerDir, ["d1", "migrations", "apply", d1.name, "--remote"], options.accountId);
     progress(`Setting smtp_host=${options.relayHost} in D1 settings`);
     await runWrangler(execImpl, options.workerDir, [
       "d1",
@@ -190,43 +251,97 @@ export async function runApply(ctx) {
       "--remote",
       "--command",
       `INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('smtp_host', ${sqlStringLiteral(JSON.stringify(options.relayHost))}, unixepoch())`,
-    ]);
+    ], options.accountId);
     steps.push({ step: "migrations_applied" });
     steps.push({ step: "smtp_host_configured", smtp_host: options.relayHost });
   }
 
-  // 7. Push the generated secrets via wrangler. CF_API_TOKEN is NOT pushed
-  //    automatically: the operator's setup token has D1/KV/Access scopes,
-  //    but the worker's runtime token should be least-privilege (Email
-  //    Sending Edit only). The runbook documents the manual step.
-  //    Opt-in: --push-cf-api-token reuses the setup token (with a warning).
-  if (secrets !== null) {
-    progress(`Pushing ${Object.keys(secrets).length} worker secrets via wrangler`);
-    for (const [name, value] of Object.entries(secrets)) {
-      await runWrangler(execImpl, options.workerDir, ["secret", "put", name], value);
-    }
-    let cfTokenPushed = false;
-    if (options.pushCfApiToken && env[options.tokenEnv]) {
-      process.stderr.write(
-        "warning: --push-cf-api-token reuses your setup token as the worker's runtime CF_API_TOKEN.\n" +
-        "         Create a least-privilege Email-Sending-Edit-only token and rotate this after first send.\n",
+  // 6. Resume or perform the managed-secret write. Wrangler secret writes can
+  //    create and deploy an intermediate Worker version, so submit all three
+  //    managed values in one bulk request instead of exposing three successive
+  //    partial versions. If completion is ambiguous, the unchanged journal is
+  //    safe to retry because it supplies the exact same values.
+  let managedSecretsPushed = 0;
+  if (recoveryJournal !== null) {
+    const remotelyPresent = initialRemoteSecrets.names;
+    const bulkAlreadyComplete = managedSecretNames.every(
+      (name) => recoveryJournal.pushed_secret_names.includes(name) && remotelyPresent.has(name),
+    );
+    if (!bulkAlreadyComplete) {
+      progress(`Pushing ${managedSecretNames.length} managed Worker secrets in one bulk request`);
+      await runWrangler(
+        execImpl,
+        options.workerDir,
+        ["secret", "bulk", "--name", options.workerScriptName],
+        options.accountId,
+        `${JSON.stringify(recoveryJournal.secrets)}\n`,
       );
-      await runWrangler(execImpl, options.workerDir, ["secret", "put", "CF_API_TOKEN"], env[options.tokenEnv] ?? "");
-      cfTokenPushed = true;
+      managedSecretsPushed = managedSecretNames.length;
+      recoveryJournal = {
+        ...recoveryJournal,
+        pushed_secret_names: [...managedSecretNames],
+      };
+      writeRecoveryJournalImpl(options.recoveryJournalPath, recoveryJournal);
     }
-    steps.push({ step: "secrets_pushed", count: Object.keys(secrets).length + (cfTokenPushed ? 1 : 0), cf_api_token_pushed: cfTokenPushed });
   }
 
-  // 8. Build UI (outputs into worker/public/) and deploy worker.
+  // CF_API_TOKEN is independent of generated secret state. By default the
+  // broad setup token is not reused; operators set a least-privilege runtime
+  // token between apply attempts. This explicit escape hatch works on first
+  // runs and retries alike.
+  let cfTokenPushed = false;
+  if (options.pushCfApiToken && env[options.tokenEnv]) {
+    process.stderr.write(
+      "warning: --push-cf-api-token reuses your setup token as the worker's runtime CF_API_TOKEN.\n" +
+      "         Create a least-privilege Email-Sending-Edit-only token and rotate this after first send.\n",
+    );
+    await runWrangler(
+      execImpl,
+      options.workerDir,
+      ["secret", "put", "CF_API_TOKEN", "--name", options.workerScriptName],
+      options.accountId,
+      env[options.tokenEnv] ?? "",
+    );
+    cfTokenPushed = true;
+  }
+  if (managedSecretsPushed > 0 || cfTokenPushed) {
+    steps.push({
+      step: "secrets_pushed",
+      count: managedSecretsPushed + (cfTokenPushed ? 1 : 0),
+      managed_count: managedSecretsPushed,
+      cf_api_token_pushed: cfTokenPushed,
+    });
+  }
+
+  // Re-read remote names immediately before deploy. A first run normally stops
+  // here until the operator sets a least-privilege CF_API_TOKEN, while
+  // --push-cf-api-token can intentionally make setup one-shot.
+  progress("Verifying required Worker secret names before deploy");
+  const verifiedRemoteSecrets = await listWorkerSecretNames(client, options.accountId, options.workerScriptName);
+  const missingRequiredSecrets = requiredSecrets.filter((name) => !verifiedRemoteSecrets.names.has(name));
+  steps.push({
+    step: "worker_secrets_verified",
+    complete: missingRequiredSecrets.length === 0,
+    missing: missingRequiredSecrets,
+  });
+  if (!options.skipBuildDeploy && missingRequiredSecrets.length > 0) {
+    throw new Error(
+      `Refusing to deploy ${options.workerScriptName}: required Worker secrets are missing: ${missingRequiredSecrets.join(", ")}. ` +
+      `Set a least-privilege CF_API_TOKEN with \`pnpm --dir worker exec wrangler secret put CF_API_TOKEN\`, then rerun the same setup command. ` +
+      `Recovery values remain in ${options.recoveryJournalPath}.`,
+    );
+  }
+
+  // 7. Build UI (outputs into worker/public/) and deploy worker.
   if (!options.skipBuildDeploy) {
     progress("Building admin UI bundle");
     await execImpl("pnpm", ["--filter", "@cf-mail-relay/ui", "build"], { cwd: options.repoRoot });
     progress(`Deploying worker to ${options.adminUrl}`);
-    await runWrangler(execImpl, options.workerDir, ["deploy"]);
+    await runWrangler(execImpl, options.workerDir, ["deploy"], options.accountId);
     steps.push({ step: "deployed", admin_url: options.adminUrl });
   }
 
-  // 9. Bootstrap the first admin if no admin row exists yet. This is gated
+  // 8. Bootstrap the first admin if no admin row exists yet. This is gated
   //    on the actual D1 state, not on whether secrets were just regenerated.
   //    A retried --apply that previously failed at deploy must still bootstrap
   //    on the next attempt — earlier versions of this script keyed bootstrap
@@ -234,19 +349,19 @@ export async function runApply(ctx) {
   //    every retry and left the relay deployed with no admin user.
   if (!options.skipBootstrap) {
     progress("Checking whether users table is empty");
-    const usersEmpty = await isUsersTableEmpty(execImpl, options.workerDir, d1.name);
+    const usersEmpty = await isUsersTableEmpty(execImpl, options.workerDir, d1.name, options.accountId);
     if (!usersEmpty) {
       progress("Bootstrap skipped: users table is not empty");
       steps.push({ step: "bootstrap_admin", skipped: true, reason: "users_table_not_empty" });
     } else {
       const adminEmail = options.allowEmails[0];
       progress(`Bootstrapping admin ${adminEmail} directly in D1`);
-      const userId = await bootstrapAdminInD1(execImpl, options.workerDir, d1.name, adminEmail);
+      const userId = await bootstrapAdminInD1(execImpl, options.workerDir, d1.name, adminEmail, options.accountId);
       steps.push({ step: "bootstrap_admin", email: adminEmail, user_id: userId, method: "d1" });
     }
   }
 
-  // 10. Register each --domain in D1 so the admin UI shows it on first login.
+  // 9. Register each --domain in D1 so the admin UI shows it on first login.
   //     `enabled` is left alone on conflict so admin-driven disables stick
   //     across reruns.
   const registeredDomains = [];
@@ -262,37 +377,63 @@ export async function runApply(ctx) {
       `INSERT INTO domains (id, domain, cloudflare_zone_id, status, enabled, created_at, updated_at) ` +
         `VALUES (${sqlStringLiteral(domainId)}, ${sqlStringLiteral(lookup.domain)}, ${sqlStringLiteral(lookup.zone_id)}, ${sqlStringLiteral(lookup.status)}, 1, unixepoch(), unixepoch()) ` +
         `ON CONFLICT(domain) DO UPDATE SET cloudflare_zone_id = excluded.cloudflare_zone_id, status = excluded.status, updated_at = unixepoch();`,
-    ]);
+    ], options.accountId);
     registeredDomains.push(lookup);
   }
   if (registeredDomains.length > 0) {
-    // Bump policy_version so any cached credentials miss on next read.
+    // Atomically bump policy_version so any cached credentials miss on next
+    // read. Setup can be rerun within the same second, so the next generation
+    // must consider both wall time and the currently stored value.
     await runWrangler(execImpl, options.workerDir, [
       "d1",
       "execute",
       d1.name,
       "--remote",
       "--command",
-      `INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('policy_version', ${sqlStringLiteral(JSON.stringify(String(Math.floor(Date.now() / 1000))))}, unixepoch())`,
-    ]);
+      policyVersionBumpSql(),
+    ], options.accountId);
     steps.push({ step: "domains_registered", domains: registeredDomains });
   }
 
-  // 11. Emit per-adopter RUNBOOK.md so the operator has a single source of
-  //    truth with every value (DNS records, relay env, admin URL, IDs).
-  progress(`Writing ${options.runbookPath}`);
-  const runbook = renderRunbook({
-    adminUrl: options.adminUrl,
-    accountId: options.accountId,
-    d1Id: d1.id,
-    kvId: kv.id,
-    domains: options.domains,
-    relayHmacSecret: secrets?.RELAY_HMAC_SECRET_CURRENT ?? "<existing>",
-    relayKeyId: options.relayKeyId,
-    relayHost: options.relayHost,
-  });
-  writeFileImpl(options.runbookPath, runbook);
-  steps.push({ step: "runbook_written", path: options.runbookPath });
+  // 10. Emit the adopter runbook only when an actual HMAC value is available:
+  //     either from the active recovery journal or from a valid existing
+  //     runbook. Remote secret values cannot be read back, so a fresh clone of
+  //     an existing deployment preserves/skips instead of writing a dangerous
+  //     placeholder over the operator's record.
+  const existingRunbookSecret = readExistingRunbookSecret(options.runbookPath, readFileImpl, existsImpl);
+  const relayHmacSecret = recoveryJournal?.secrets.RELAY_HMAC_SECRET_CURRENT ?? existingRunbookSecret;
+  if (relayHmacSecret !== null) {
+    progress(`${existingRunbookSecret !== null && recoveryJournal === null ? "Refreshing" : "Writing"} ${options.runbookPath}`);
+    const runbook = renderRunbook({
+      adminUrl: options.adminUrl,
+      accountId: options.accountId,
+      d1Id: d1.id,
+      kvId: kv.id,
+      domains: options.domains,
+      relayHmacSecret,
+      relayKeyId: options.relayKeyId,
+      relayHost: options.relayHost,
+    });
+    writeSensitiveFileImpl(options.runbookPath, runbook, { encoding: "utf8", mode: 0o600 });
+    steps.push({
+      step: "runbook_written",
+      path: options.runbookPath,
+      secret_source: recoveryJournal !== null ? "recovery_journal" : "existing_runbook",
+    });
+  } else {
+    progress(`Skipping ${options.runbookPath}: remote secret values are unreadable and no valid local runbook exists`);
+    steps.push({
+      step: "runbook_preserved",
+      path: options.runbookPath,
+      written: false,
+      reason: "remote_secret_value_unavailable",
+    });
+  }
+
+  if (recoveryJournal !== null) {
+    removeRecoveryJournalImpl(options.recoveryJournalPath);
+    steps.push({ step: "secret_recovery_journal_removed", path: options.recoveryJournalPath });
+  }
 
   return {
     ok: true,
@@ -302,19 +443,63 @@ export async function runApply(ctx) {
   };
 }
 
-function runWrangler(execImpl, cwd, args, stdin) {
-  return execImpl("pnpm", ["exec", "wrangler", ...args], stdin === undefined ? { cwd } : { cwd, stdin });
+function runWrangler(execImpl, cwd, args, accountId, stdin) {
+  const options = {
+    cwd,
+    env: { CLOUDFLARE_ACCOUNT_ID: accountId },
+  };
+  if (stdin !== undefined) options.stdin = stdin;
+  return execImpl("pnpm", ["exec", "wrangler", ...args], options);
+}
+
+function readTopLevelWranglerAccountId(toml) {
+  for (const sourceLine of String(toml).split(/\r?\n/u)) {
+    const line = sourceLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    if (line.startsWith("[")) return null;
+    if (!/^account_id\s*=/u.test(line)) continue;
+
+    const match = line.match(/^account_id\s*=\s*(["'])([^"']+)\1(?:\s*#.*)?$/u);
+    if (match === null) {
+      throw new Error("Could not read top-level account_id from the existing Wrangler config.");
+    }
+    return match[2];
+  }
+  return null;
+}
+
+/**
+ * Builds the single-statement policy generation update used by setup. Historic
+ * databases may store either a raw number (`7`) or a JSON string (`"7"`). The
+ * UPSERT handles both and advances to max(previous + 1, wall-clock seconds),
+ * matching the Worker mutation path without a read/write race.
+ */
+export function policyVersionBumpSql(now = Math.floor(Date.now() / 1000)) {
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new Error("policy_version wall-clock value must be a non-negative safe integer");
+  }
+  return `INSERT INTO settings (key, value_json, updated_at)
+VALUES ('policy_version', json_quote(CAST(${now} AS TEXT)), ${now})
+ON CONFLICT(key) DO UPDATE SET
+  value_json = json_quote(CAST(MAX(
+    CAST(CASE
+      WHEN json_valid(settings.value_json) THEN json_extract(settings.value_json, '$')
+      ELSE settings.value_json
+    END AS INTEGER) + 1,
+    ${now}
+  ) AS TEXT)),
+  updated_at = excluded.updated_at`;
 }
 
 function defaultProgress(message) {
   process.stderr.write(`==> ${message}\n`);
 }
 
-async function isUsersTableEmpty(execImpl, cwd, databaseName) {
+async function isUsersTableEmpty(execImpl, cwd, databaseName, accountId) {
   const output = await execImpl(
     "pnpm",
     ["exec", "wrangler", "d1", "execute", databaseName, "--remote", "--json", "--command", "SELECT count(*) AS n FROM users"],
-    { cwd, captureStdout: true },
+    { cwd, captureStdout: true, env: { CLOUDFLARE_ACCOUNT_ID: accountId } },
   );
   return parseUsersCount(String(output ?? "")) === 0;
 }
@@ -338,7 +523,7 @@ export function parseUsersCount(output) {
   throw new Error("Could not read users count from D1: no `n` column in any result row.");
 }
 
-async function bootstrapAdminInD1(execImpl, cwd, databaseName, email) {
+async function bootstrapAdminInD1(execImpl, cwd, databaseName, email, accountId) {
   const now = Math.floor(Date.now() / 1000);
   const userId = `usr_${randomBytes(16).toString("hex")}`;
   await runWrangler(execImpl, cwd, [
@@ -349,7 +534,7 @@ async function bootstrapAdminInD1(execImpl, cwd, databaseName, email) {
     "--command",
     `INSERT INTO users (id, email, display_name, access_subject, role, disabled_at, created_at, updated_at) ` +
       `VALUES (${sqlStringLiteral(userId)}, ${sqlStringLiteral(email.toLowerCase())}, NULL, NULL, 'admin', NULL, ${now}, ${now})`,
-  ]);
+  ], accountId);
   await runWrangler(execImpl, cwd, [
     "d1",
     "execute",
@@ -358,7 +543,7 @@ async function bootstrapAdminInD1(execImpl, cwd, databaseName, email) {
     "--command",
     `INSERT OR REPLACE INTO settings (key, value_json, updated_at) ` +
       `VALUES ('bootstrap_completed_at', ${sqlStringLiteral(JSON.stringify(now))}, ${now})`,
-  ]);
+  ], accountId);
   return userId;
 }
 
@@ -436,6 +621,164 @@ export function generateSecrets() {
   };
 }
 
+export async function listWorkerSecretNames(client, accountId, scriptName) {
+  const response = await client.get(`/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}/secrets`);
+  if (response.status === 404) {
+    return { script_exists: false, names: new Set() };
+  }
+  if (!response.ok) {
+    throw new Error(
+      `Could not inspect remote Worker secrets for ${scriptName}: HTTP ${response.status}. ` +
+      `Refusing to guess from local files; verify the setup token can read Workers Scripts.`,
+    );
+  }
+  const names = new Set(
+    (Array.isArray(response.body?.result) ? response.body.result : [])
+      .map((secret) => secret?.name)
+      .filter((name) => typeof name === "string"),
+  );
+  return { script_exists: true, names };
+}
+
+function loadRecoveryJournal(options, readFileImpl, existsImpl) {
+  if (!existsImpl(options.recoveryJournalPath)) {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileImpl(options.recoveryJournalPath));
+  } catch {
+    throw new Error(
+      `Setup recovery journal ${options.recoveryJournalPath} is unreadable or invalid JSON. ` +
+      `Refusing to rotate or overwrite remote secrets.`,
+    );
+  }
+  const bindingMatches = parsed?.version === recoveryJournalVersion
+    && parsed?.account_id === options.accountId
+    && parsed?.worker_script_name === options.workerScriptName
+    && parsed?.relay_key_id === options.relayKeyId;
+  const secretsValid = managedSecretNames.every((name) => isGeneratedSecret(parsed?.secrets?.[name]));
+  const pushedNamesValid = Array.isArray(parsed?.pushed_secret_names)
+    && parsed.pushed_secret_names.every((name) => managedSecretNames.includes(name));
+  const operationValid = parsed?.operation === "initialize" || parsed?.operation === "replace_all";
+  if (!bindingMatches || !secretsValid || !pushedNamesValid || !operationValid) {
+    throw new Error(
+      `Setup recovery journal ${options.recoveryJournalPath} does not match account ${options.accountId}, ` +
+      `Worker ${options.workerScriptName}, and relay key ${options.relayKeyId}, or its contents are invalid. ` +
+      `Refusing to use or overwrite it.`,
+    );
+  }
+  return {
+    version: recoveryJournalVersion,
+    account_id: parsed.account_id,
+    worker_script_name: parsed.worker_script_name,
+    relay_key_id: parsed.relay_key_id,
+    operation: parsed.operation,
+    created_at: parsed.created_at,
+    secrets: Object.fromEntries(managedSecretNames.map((name) => [name, parsed.secrets[name]])),
+    pushed_secret_names: [...new Set(parsed.pushed_secret_names)],
+  };
+}
+
+function planManagedSecrets(options, remoteState, existingJournal) {
+  if (existingJournal !== null) {
+    if (existingJournal.operation === "initialize" && options.rotateAllWorkerSecrets) {
+      throw new Error(
+        `Setup recovery journal ${options.recoveryJournalPath} records an interrupted normal initialization, ` +
+        `but --rotate-all-worker-secrets requests destructive replacement. Refusing to change recovery intent. ` +
+        `Rerun without --rotate-all-worker-secrets to resume the journaled initialization.`,
+      );
+    }
+    if (existingJournal.operation === "replace_all" && !options.rotateAllWorkerSecrets) {
+      throw new Error(
+        `Setup recovery journal ${options.recoveryJournalPath} records an interrupted destructive replacement. ` +
+        `Rerun with --rotate-all-worker-secrets to confirm that destructive intent again and resume the same journaled values.`,
+      );
+    }
+    return { journal: existingJournal, newJournal: false };
+  }
+
+  const missingManaged = managedSecretNames.filter((name) => !remoteState.names.has(name));
+  const shouldInitialize = !remoteState.script_exists;
+  if (!options.rotateAllWorkerSecrets && !shouldInitialize && missingManaged.length === 0) {
+    return { journal: null, newJournal: false };
+  }
+  if (!options.rotateAllWorkerSecrets && !shouldInitialize) {
+    throw new Error(
+      `Remote Worker ${options.workerScriptName} has incomplete managed secrets: missing ${missingManaged.join(", ")}. ` +
+      `No matching recovery journal exists at ${options.recoveryJournalPath}, so setup will not guess or rotate live values. ` +
+      `Restore the journal or, for deliberate disaster recovery only, rerun with --rotate-all-worker-secrets.`,
+    );
+  }
+
+  const operation = options.rotateAllWorkerSecrets ? "replace_all" : "initialize";
+  return {
+    newJournal: true,
+    journal: {
+      version: recoveryJournalVersion,
+      account_id: options.accountId,
+      worker_script_name: options.workerScriptName,
+      relay_key_id: options.relayKeyId,
+      operation,
+      created_at: new Date().toISOString(),
+      secrets: generateSecrets(),
+      pushed_secret_names: [],
+    },
+  };
+}
+
+export function writeRecoveryJournalAtomic(path, journal) {
+  writeSensitiveFileAtomic(path, `${JSON.stringify(journal, null, 2)}\n`);
+}
+
+export function writeSensitiveFileAtomic(path, body, options = {}) {
+  const temporaryPath = `${path}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
+  try {
+    writeFileSync(temporaryPath, body, {
+      ...options,
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    chmodSync(temporaryPath, 0o600);
+    renameSync(temporaryPath, path);
+    chmodSync(path, 0o600);
+  } catch (error) {
+    if (existsSync(temporaryPath)) {
+      try {
+        unlinkSync(temporaryPath);
+      } catch {
+        // Preserve the original persistence error. The temp file has the same
+        // owner-only mode and no more information than the target would have.
+      }
+    }
+    throw error;
+  }
+}
+
+export function writeFileWithMode(path, body, options) {
+  writeFileSync(path, body, options);
+  if (typeof options === "object" && options !== null && options.mode !== undefined) {
+    // Node only applies writeFile's mode when creating a file. RUNBOOK.md may
+    // already exist from an older setup run, so enforce the requested mode
+    // after every sensitive rewrite as well.
+    chmodSync(path, options.mode);
+  }
+}
+
+function readExistingRunbookSecret(path, readFileImpl, existsImpl) {
+  if (!existsImpl(path)) {
+    return null;
+  }
+  const match = /^RELAY_HMAC_SECRET=([^\r\n]+)$/mu.exec(readFileImpl(path));
+  const value = match?.[1]?.trim() ?? "";
+  return isGeneratedSecret(value) ? value : null;
+}
+
+function isGeneratedSecret(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value);
+}
+
 export function renderWranglerToml(input) {
   let body = input.template;
   body = body.replace(/name = "cf-mail-relay-worker"/u, `name = "${input.workerScriptName ?? "cf-mail-relay-worker"}"`);
@@ -472,8 +815,8 @@ export function renderRunbook(input) {
     `RELAY_KEY_ID=${input.relayKeyId}`,
     `RELAY_HMAC_SECRET=${input.relayHmacSecret}`,
     `RELAY_DOMAIN=${relayHost}`,
-    `RELAY_TLS_CERT_FILE=/tls/fullchain.pem`,
-    `RELAY_TLS_KEY_FILE=/tls/privkey.pem`,
+    `RELAY_TLS_CERT_FILE=/tls/relay.pem`,
+    `RELAY_TLS_KEY_FILE=/tls/relay.pem`,
     `\`\`\``,
     ``,
     `## DNS records to publish per sending domain`,
@@ -486,19 +829,18 @@ export function renderRunbook(input) {
       `Plus a DNS-only A record for the relay: \`${relayHost}\` -> your relay host IP.`,
       ``,
     ]),
-    `## Set the runtime CF_API_TOKEN (do this once, with a least-privilege token)`,
+    `## Verify the runtime CF_API_TOKEN`,
     ``,
-    `The wizard's setup token has D1/KV/Access scopes — too broad for the`,
-    `worker's runtime needs. Create a least-privilege Cloudflare API token`,
-    `with **Account · Email Sending · Edit** plus **Zone · Zone · Read**`,
-    `for the sending zones, then push it as the worker secret:`,
+    `Setup verifies that this Worker secret exists before deployment. Its value`,
+    `should be a least-privilege Cloudflare API token with **Account · Email`,
+    `Sending · Edit** plus **Zone · Zone · Read** for the sending zones. To`,
+    `set or rotate it, keep an administrative setup token exported for Wrangler`,
+    `authentication and paste the runtime token at the secret-value prompt:`,
     ``,
     `    pnpm --dir worker exec wrangler secret put CF_API_TOKEN`,
     ``,
-    `Until you do this the worker's dashboard will show CF API health as`,
-    `unhealthy and \`send_raw\` calls will fail. The wizard does NOT auto-set`,
-    `this secret on purpose; pass \`--push-cf-api-token\` to override (you'll`,
-    `get a warning).`,
+    `If setup was run with \`--push-cf-api-token\`, the broad setup token was`,
+    `reused and must be replaced with the least-privilege runtime token.`,
     ``,
     `## Day-2`,
     ``,
@@ -529,10 +871,11 @@ export function parseArgs(argv, env = process.env) {
     kvNamespaceId: "",
     kvNamespaceTitle: "cf-mail-relay-hot",
     pushCfApiToken: false,
-    regenerateSecrets: false,
+    recoveryJournalPath: join(repoRoot, ".cf-mail-relay-setup-recovery.json"),
     relayHost: "",
     relayKeyId: "rel_01",
     repoRoot,
+    rotateAllWorkerSecrets: false,
     runbookPath: join(repoRoot, "RUNBOOK.md"),
     skipBuildDeploy: false,
     skipBootstrap: false,
@@ -565,7 +908,12 @@ export function parseArgs(argv, env = process.env) {
         options.kvNamespaceId = readValue(argv, index, arg); index += 1; break;
       case "--kv-namespace-title": options.kvNamespaceTitle = readValue(argv, index, arg); index += 1; break;
       case "--push-cf-api-token": options.pushCfApiToken = true; break;
-      case "--regenerate-secrets": options.regenerateSecrets = true; break;
+      case "--rotate-all-worker-secrets": options.rotateAllWorkerSecrets = true; break;
+      case "--regenerate-secrets":
+        throw new Error(
+          "--regenerate-secrets was removed because it understated a destructive operation. " +
+          "Use --rotate-all-worker-secrets only for deliberate disaster recovery.",
+        );
       case "--relay-host":
       case "--smtp-host":
         options.relayHost = normalizeHostname(readValue(argv, index, arg)); index += 1; break;
@@ -637,13 +985,15 @@ function buildPlan(options) {
     // High-level steps performed by --apply.
     apply_steps: [
       `Validate Cloudflare Email Sending for each domain`,
+      `Inspect remote Worker secret names and refuse ambiguous partial state`,
+      `Persist newly generated values in a mode-0600 recovery journal before mutation`,
       `Create or reuse D1 database (${options.d1DatabaseName})`,
       `Create or reuse KV namespace (${options.kvNamespaceTitle})`,
       `Create or reuse Cloudflare Access app on ${options.adminUrl}`,
-      `Generate 3 worker secrets`,
       `Write worker/wrangler.toml`,
       `Apply D1 migrations`,
-      `Push secrets via wrangler`,
+      `Resume or push managed secrets via one Wrangler bulk write (may create an intermediate Worker version)`,
+      `Verify every required Worker secret before deploy`,
       `Build UI into worker/public/`,
       `Deploy worker`,
       `Create first admin directly in D1 when users table is empty`,
@@ -654,6 +1004,7 @@ function buildPlan(options) {
     // `pnpm run setup --apply` instead; the wizard fills config, pushes
     // generated secrets, bootstraps D1, and writes RUNBOOK.md.
     commands: [
+      `export CLOUDFLARE_ACCOUNT_ID=${options.accountId}`,
       `pnpm --dir worker exec wrangler d1 create ${options.d1DatabaseName}`,
       `pnpm --dir worker exec wrangler kv namespace create ${options.kvNamespaceTitle}`,
       `pnpm --dir worker exec wrangler d1 migrations apply ${options.d1DatabaseName} --remote`,
@@ -838,7 +1189,7 @@ function runCommand(command, args, options = {}) {
     const stdout = [];
     const child = spawn(command, args, {
       cwd: options.cwd ?? process.cwd(),
-      env: process.env,
+      env: { ...process.env, ...(options.env ?? {}) },
       stdio: [
         options.stdin === undefined ? "ignore" : "pipe",
         captureStdout ? "pipe" : "inherit",
@@ -873,6 +1224,12 @@ Modes:
                             falls back to a plan-only output.
   --apply                   Create resources, deploy the worker, bootstrap
                             the admin, write RUNBOOK.md. Requires a token.
+                            Managed secrets use one bulk write, which may create
+                            an intermediate Worker version; final deployment is
+                            blocked until every required secret name is present.
+                            A new install without runtime CF_API_TOKEN exits
+                            nonzero after this intentional first phase; set the
+                            token, then rerun the same command.
 Required (both modes):
   --account-id              Cloudflare account ID (or CLOUDFLARE_ACCOUNT_ID).
   --admin-url               URL where the admin UI + API will live
@@ -887,11 +1244,22 @@ Apply flags:
                              Allow pages.dev/workers.dev admin URLs. Custom
                              domains are strongly preferred.
   --d1-id <id>              Use existing D1 instead of creating.
+  --d1-database-name <name> Name used for migrations with --d1-id
+                            (default cf-mail-relay).
   --kv-id <id>              Use existing KV namespace instead of creating.
+  --access-app-name <name>  Access app to create or update
+                            (default cf-mail-relay-admin).
   --smtp-host <host>        SMTP relay hostname shown in client setup details
                              and RUNBOOK.md (default smtp.<first-domain>).
   --relay-key-id <id>       RELAY_HMAC_KEY_ID (default rel_01).
-  --regenerate-secrets      Force regenerate even if worker/wrangler.toml exists.
+  --rotate-all-worker-secrets
+                             Destructive disaster recovery: replace the
+                             credential pepper, metadata pepper, and relay HMAC
+                             secret. This invalidates existing credentials/API
+                             keys and requires relay reconfiguration. Normal
+                             initialization retries resume without this flag.
+                             Destructive replacement retries must include it
+                             again; setup refuses a flag/journal intent mismatch.
   --push-cf-api-token       Push your setup CLOUDFLARE_API_TOKEN as the worker's
                              runtime CF_API_TOKEN secret. NOT recommended — your
                              setup token has broad scopes; the runtime token

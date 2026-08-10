@@ -18,13 +18,18 @@ HTTPS.
 | `RELAY_TLS_CERT_FILE` | PEM cert path | required |
 | `RELAY_TLS_KEY_FILE` | PEM key path | required |
 | `RELAY_MAX_BYTES` | Max MIME bytes at DATA | `4718592` |
-| `RELAY_MAX_RECIPIENTS` | Max recipients | `50` |
 | `RELAY_CONN_PER_MIN` | Connections per remote IP per minute | `60` |
-| `RELAY_AUTH_PER_MIN` | AUTH attempts per username+remote pair per minute; remote IPs also get a 5x aggregate bucket | `20` |
-| `RELAY_AUTH_LOCKOUT_BASE_SECONDS` | Auth lockout base after failures | `30` |
+| `RELAY_AUTH_PER_MIN` | AUTH attempts per username per minute; each remote IP gets a 5x aggregate bucket | `20` |
+| `RELAY_AUTH_LOCKOUT_BASE_SECONDS` | Per-username/remote lockout base after failures | `30` |
 
-`RELAY_WORKER_URL` must use `https://`. For local-only development, set
-`RELAY_ALLOW_INSECURE_WORKER_URL=1` to permit `http://`.
+The recipient limit is fixed at 50 to match the Worker contract.
+The certificate and key paths may point to the same combined PEM bundle; the
+supported Compose deployment publishes them together as `/tls/relay.pem`.
+
+`RELAY_WORKER_URL` must use `https://`. For isolated local development only,
+set `RELAY_ALLOW_INSECURE_WORKER_URL=1` to permit `http://` or
+`RELAY_ALLOW_INSECURE_AUTH=1` to permit SMTP AUTH before STARTTLS. Never set
+either flag on an Internet-reachable relay.
 
 SMTP credential checks are cached for up to 5 seconds per relay process. This
 keeps revocation lag short, but high-throughput clients should expect one Worker
@@ -39,4 +44,6 @@ go test ./...
 go build ./cmd/relay
 ```
 
-See `infra/docker/` for deployment examples.
+`/relay --version` reports the release build version and the separately
+versioned relay-to-Worker protocol. See `infra/docker/` for the supported
+deployment.

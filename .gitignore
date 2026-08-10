@@ -33,8 +33,6 @@ worker/public/
 !.dev.vars.example
 wrangler.toml
 !wrangler.toml.example
-wrangler.spike.toml
-!wrangler.spike.toml.example
 
 # OpenTofu
 **/.terraform/
@@ -56,6 +54,9 @@ __pycache__/
 .env.*.local
 !.env.example
 RUNBOOK.md
+.cf-mail-relay-setup-recovery.json
+/RUNBOOK.md.tmp-*
+/.cf-mail-relay-setup-recovery.json.tmp-*
 
 # Test artifacts
 .coverage/
