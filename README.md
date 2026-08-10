@@ -208,13 +208,50 @@ credential setup details; omit it to use `smtp.<first-domain>`. You can change
 it later from **Settings**.
 
 The wizard intentionally does **not** push its broad setup API token as the
-Worker runtime `CF_API_TOKEN`. After `--apply`, create a least-privilege
-Cloudflare API token with **Account -> Email Sending -> Edit** plus **Zone ->
-Zone -> Read** for the sending zones, then push it:
+Worker runtime `CF_API_TOKEN`. On a new installation, the first `--apply`
+creates or reuses the infrastructure and pushes the three generated
+application secrets, then stops before the build and final deploy step if
+`CF_API_TOKEN` is absent.
+Create a least-privilege Cloudflare API token with **Account -> Email Sending
+-> Edit** plus **Zone -> Zone -> Read** for the sending zones, then push it:
 
 ```sh
 pnpm --dir worker exec wrangler secret put CF_API_TOKEN
 ```
+
+Keep the broad setup token exported so Wrangler can authenticate, and paste
+the new least-privilege runtime token at the secret-value prompt.
+
+Rerun the same `pnpm run setup --apply ...` command to verify the complete
+secret set and finish deployment. For an intentionally one-shot installation,
+`--push-cf-api-token` reuses the broad setup token and prints a warning; rotate
+that token to a least-privilege runtime token immediately afterward.
+
+Generated values are saved before the first remote mutation in
+`.cf-mail-relay-setup-recovery.json`. This gitignored file is written with mode
+`0600`, is bound to the selected account, Worker, and relay key ID, and lets an
+interrupted setup resume with exactly the same values. Do not delete it while
+recovering a failed setup. The wizard removes it after successfully writing
+the gitignored `RUNBOOK.md`.
+
+Wrangler secret writes may create and deploy intermediate Worker versions.
+Setup sends all three generated application secrets in one bulk request to
+avoid three successive partial versions, then reads the remote names again and
+blocks the final application deploy until every required name, including
+`CF_API_TOKEN`, is present. If the bulk result is ambiguous because the process
+was interrupted, retrying resends the same journaled values.
+
+Setup treats Worker secret names in Cloudflare as the source of truth; the
+presence or absence of a local `worker/wrangler.toml` never triggers secret
+generation. A fresh clone reuses a complete remote secret set. If an existing
+Worker has only part of the managed secret set and there is no matching
+recovery journal, setup refuses to guess or replace live values.
+
+`--rotate-all-worker-secrets` is an explicit destructive disaster-recovery
+operation. It replaces the credential pepper, metadata pepper, and relay HMAC
+secret, invalidating existing credentials and requiring relay reconfiguration.
+Do not use it for a normal retry or routine HMAC rotation; use `pnpm
+rotate:hmac` for the latter.
 
 Validate the same-origin Access gate:
 

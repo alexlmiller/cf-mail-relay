@@ -56,6 +56,7 @@ __pycache__/
 .env.*.local
 !.env.example
 RUNBOOK.md
+.cf-mail-relay-setup-recovery.json
 
 # Test artifacts
 .coverage/
