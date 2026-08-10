@@ -95,8 +95,8 @@ const credentialCacheTtlSeconds = 300;
 const httpIdempotencyTtlSeconds = 24 * 60 * 60;
 const smtpIdempotencyTtlSeconds = 7 * 24 * 60 * 60;
 export const idempotencyPendingLeaseSeconds = 5 * 60;
-const maxSmtpUsernameLength = 254;
 export const smtpAmbiguousRetryDelaySeconds = 60 * 60;
+const maxSmtpUsernameLength = 254;
 
 export async function authenticateSmtpCredential(
   env: Env,
