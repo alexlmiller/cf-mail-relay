@@ -57,6 +57,8 @@ __pycache__/
 !.env.example
 RUNBOOK.md
 .cf-mail-relay-setup-recovery.json
+/RUNBOOK.md.tmp-*
+/.cf-mail-relay-setup-recovery.json.tmp-*
 
 # Test artifacts
 .coverage/

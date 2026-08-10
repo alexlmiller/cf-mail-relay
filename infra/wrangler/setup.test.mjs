@@ -1,10 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { CloudflareApiClient, createOrFindD1, createOrFindKv, generateSecrets, lookupCloudflareDomain, main, parseArgs, parseUsersCount, policyVersionBumpSql, renderRunbook, renderWranglerToml, runApply, writeFileWithMode, writeRecoveryJournalAtomic } from "./setup.mjs";
+import { CloudflareApiClient, createOrFindD1, createOrFindKv, generateSecrets, lookupCloudflareDomain, main, parseArgs, parseUsersCount, policyVersionBumpSql, renderRunbook, renderWranglerToml, runApply, writeFileWithMode, writeRecoveryJournalAtomic, writeSensitiveFileAtomic } from "./setup.mjs";
 
 describe("setup policy_version generation", () => {
   it("preserves first-bootstrap behavior and advances on same-second reruns", () => {
@@ -167,7 +167,8 @@ describe("setup main", () => {
     const result = await main(["--help"], {});
     assert.match(result.usage, /--rotate-all-worker-secrets/);
     assert.match(result.usage, /Destructive disaster recovery/);
-    assert.match(result.usage, /mode-0600 recovery/);
+    assert.match(result.usage, /Destructive replacement retries must include it\s+again/);
+    assert.match(result.usage, /exits\s+nonzero after this intentional first phase/);
     assert.match(result.usage, /intermediate Worker version/);
     assert.match(result.usage, /blocked until every required secret name is present/);
     assert.doesNotMatch(result.usage, /--regenerate-secrets/);
@@ -421,6 +422,7 @@ routes = [{ pattern = "mail.example.com", custom_domain = true }]`],
       return files.get(path);
     },
     writeFileImpl: (path, body) => { files.set(path, body); },
+    writeSensitiveFileImpl: (path, body) => { files.set(path, body); },
     existsImpl: (path) => files.has(path),
     writeRecoveryJournalImpl: (path, journal) => {
       events.push("local-write:recovery-journal");
@@ -651,16 +653,32 @@ routes = [
     }
   });
 
-  it("tightens an existing sensitive file to owner-only permissions", () => {
+  it("atomically replaces a sensitive file with owner-only permissions", () => {
     const directory = mkdtempSync(join(tmpdir(), "cf-mail-relay-runbook-"));
     const path = join(directory, "RUNBOOK.md");
     try {
       writeFileWithMode(path, "old\n", { encoding: "utf8", mode: 0o644 });
       assert.equal(statSync(path).mode & 0o777, 0o644);
 
-      writeFileWithMode(path, "secret\n", { encoding: "utf8", mode: 0o600 });
+      writeSensitiveFileAtomic(path, "secret\n", { encoding: "utf8", mode: 0o600 });
       assert.equal(statSync(path).mode & 0o777, 0o600);
       assert.equal(readFileSync(path, "utf8"), "secret\n");
+      assert.deepEqual(readdirSync(directory), ["RUNBOOK.md"]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans up a sensitive temporary file if the atomic rename fails", () => {
+    const directory = mkdtempSync(join(tmpdir(), "cf-mail-relay-runbook-"));
+    const path = join(directory, "RUNBOOK.md");
+    try {
+      mkdirSync(path);
+      assert.throws(
+        () => writeSensitiveFileAtomic(path, "secret\n", { encoding: "utf8", mode: 0o600 }),
+        /EISDIR|ENOTDIR|ENOTEMPTY|operation not permitted/iu,
+      );
+      assert.deepEqual(readdirSync(directory), ["RUNBOOK.md"]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -789,6 +807,70 @@ routes = [
     });
 
     await assert.rejects(harness.run(), /recovery journal .* does not match account acc/s);
+    assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
+  });
+
+  it("resumes an initialize recovery journal without the destructive flag", async () => {
+    const journal = recoveryJournalFixture({ operation: "initialize" });
+    const harness = createApplyHarness({
+      recoveryJournal: journal,
+      rotateAllWorkerSecrets: false,
+    });
+
+    const result = await harness.run();
+
+    assert.ok(result.steps.some((step) =>
+      step.step === "secret_recovery_journal"
+      && step.source === "initialize"
+      && step.resumed === true));
+    const managedBulk = harness.execCalls.find(({ args }) => args.includes("secret") && args.includes("bulk"));
+    assert.deepEqual(JSON.parse(managedBulk.stdin), journal.secrets);
+  });
+
+  it("resumes a replace_all recovery journal only with the destructive flag", async () => {
+    const journal = recoveryJournalFixture({ operation: "replace_all" });
+    const harness = createApplyHarness({
+      recoveryJournal: journal,
+      remoteSecrets: requiredSecretNames,
+      scriptExists: true,
+      rotateAllWorkerSecrets: true,
+    });
+
+    const result = await harness.run();
+
+    assert.ok(result.steps.some((step) =>
+      step.step === "secret_recovery_journal"
+      && step.source === "replace_all"
+      && step.resumed === true));
+    const managedBulk = harness.execCalls.find(({ args }) => args.includes("secret") && args.includes("bulk"));
+    assert.deepEqual(JSON.parse(managedBulk.stdin), journal.secrets);
+  });
+
+  it("refuses the destructive flag when an initialize recovery journal exists", async () => {
+    const harness = createApplyHarness({
+      recoveryJournal: recoveryJournalFixture({ operation: "initialize" }),
+      rotateAllWorkerSecrets: true,
+    });
+
+    await assert.rejects(
+      harness.run(),
+      /records an interrupted normal initialization.*Rerun without --rotate-all-worker-secrets/s,
+    );
+    assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
+  });
+
+  it("requires the destructive flag again when a replace_all recovery journal exists", async () => {
+    const harness = createApplyHarness({
+      recoveryJournal: recoveryJournalFixture({ operation: "replace_all" }),
+      remoteSecrets: requiredSecretNames,
+      scriptExists: true,
+      rotateAllWorkerSecrets: false,
+    });
+
+    await assert.rejects(
+      harness.run(),
+      /records an interrupted destructive replacement.*Rerun with --rotate-all-worker-secrets/s,
+    );
     assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
   });
 
@@ -963,6 +1045,7 @@ routes = [
   { pattern = "mail.example.com", custom_domain = true },
 ]`,
       writeFileImpl: (path, body) => { writes.set(path, body); },
+      writeSensitiveFileImpl: (path, body) => { writes.set(path, body); },
       existsImpl: (path) => path === options.recoveryJournalPath ? recoveryJournal !== null : exists.has(path),
       writeRecoveryJournalImpl: (_path, journal) => { recoveryJournal = structuredClone(journal); },
       removeRecoveryJournalImpl: () => { recoveryJournal = null; },
@@ -1126,6 +1209,7 @@ routes = [
       readFileImpl: () => "",
       // Existing wrangler.toml — the previous --apply attempt created it.
       writeFileImpl: () => {},
+      writeSensitiveFileImpl: () => {},
       existsImpl: (path) => path === "/repo/worker/wrangler.toml",
       accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
       progressImpl: () => {},
@@ -1196,6 +1280,7 @@ routes = [
       },
       readFileImpl: () => "",
       writeFileImpl: () => {},
+      writeSensitiveFileImpl: () => {},
       existsImpl: (path) => path === options.recoveryJournalPath && recoveryJournal !== null,
       writeRecoveryJournalImpl: (_path, journal) => { recoveryJournal = structuredClone(journal); },
       removeRecoveryJournalImpl: () => { recoveryJournal = null; },
