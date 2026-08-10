@@ -2,6 +2,7 @@ name: CI - OpenTofu
 
 on:
   push:
+    branches: [dev, main]
     paths:
       - "infra/opentofu/**"
       - ".github/workflows/ci-opentofu.yml"
