@@ -252,10 +252,10 @@ app.post("/relay/send", async (c) => {
   }
 
   const strippedMimeMessage = stripCaptureHopHeaders(decoded);
+  const strippedMimeBytes = new TextEncoder().encode(strippedMimeMessage);
+  const strippedMimeSha256 = await sha256Hex(strippedMimeBytes);
+  const messageIdHeader = extractHeader(strippedMimeMessage, "message-id");
   const mimeMessage = anchorClientMessageIdInReferences(strippedMimeMessage);
-  const mimeMessageBytes = new TextEncoder().encode(mimeMessage);
-  const strippedMimeSha256 = await sha256Hex(mimeMessageBytes);
-  const messageIdHeader = extractHeader(mimeMessage, "message-id");
   const idempotencyKey = await computeSmtpIdempotencyKey({
     envelopeFrom: from,
     recipients,
@@ -346,7 +346,7 @@ app.post("/relay/send", async (c) => {
     from,
     recipient_count: recipients.length,
     raw_mime_size_bytes: rawMimeBytes.byteLength,
-    stripped_mime_size_bytes: mimeMessageBytes.byteLength,
+    stripped_mime_size_bytes: strippedMimeBytes.byteLength,
     raw_mime_sha256: rawMimeSha256,
     stripped_mime_sha256: strippedMimeSha256,
     idempotency_key: idempotencyKey,
@@ -363,7 +363,7 @@ app.post("/relay/send", async (c) => {
       ok: deliveryOk,
       recipient_count: recipients.length,
       raw_mime_size_bytes: rawMimeBytes.byteLength,
-      stripped_mime_size_bytes: mimeMessageBytes.byteLength,
+      stripped_mime_size_bytes: strippedMimeBytes.byteLength,
       cf_status: cfResponse.status,
     }),
   );

@@ -376,7 +376,7 @@ describe("relay endpoints", () => {
     await expect(response.json()).resolves.toMatchObject({ ok: true, cf_status: 200, idempotency_key: expect.any(String) });
   });
 
-  it("anchors the SMTP client's Message-ID in References before Cloudflare send_raw", async () => {
+  it("preserves the v1.0 SMTP idempotency key while sending the Message-ID anchor", async () => {
     const cfFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(JSON.parse(String(init?.body))).toMatchObject({
         from: "gmail@alexmiller.net",
@@ -396,7 +396,8 @@ describe("relay endpoints", () => {
     vi.stubGlobal("fetch", cfFetch);
 
     const body = new TextEncoder().encode(
-      "From: Alex <gmail@alexmiller.net>\r\n" +
+      "Received: by mail.example with SMTP id anchor\r\n" +
+        "From: Alex <gmail@alexmiller.net>\r\n" +
         "Message-ID: <gmail-original@mail.gmail.com>\r\n" +
         "Subject: Thread anchor\r\n\r\n" +
         "Body\r\n",
@@ -417,6 +418,13 @@ describe("relay endpoints", () => {
 
     expect(response.status).toBe(200);
     expect(cfFetch).toHaveBeenCalledOnce();
+    // Frozen from v1.0, which hashed the capture-hop-stripped MIME before any
+    // delivery-only transformation.
+    await expect(response.json()).resolves.toMatchObject({
+      idempotency_key: "0ba3578145d1f91b0e2407bc93e89ac3c243ca0b5343bc2dabbf09dbb1bbfe7b",
+      stripped_mime_sha256: "17eb540820202f7b4cb522c6d2189e5003aa4e1e3f5816618f71f9accb2d8d50",
+      stripped_mime_size_bytes: 112,
+    });
   });
 
   it("re-checks sender allowlist on /relay/send", async () => {
