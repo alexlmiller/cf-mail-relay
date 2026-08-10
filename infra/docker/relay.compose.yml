@@ -1,6 +1,6 @@
 # Supported relay deployment. Copy this file, `.env.example`, and
 # `sync-certificates.sh` to one directory on the relay host. The certificate
-# sync helper writes dereferenced files under ./tls for the nonroot container.
+# sync helper writes a dereferenced PEM bundle under ./tls for the nonroot container.
 
 services:
   relay:
@@ -21,9 +21,9 @@ services:
       RELAY_WORKER_URL: ${RELAY_WORKER_URL:?set RELAY_WORKER_URL}
       RELAY_KEY_ID: ${RELAY_KEY_ID:?set RELAY_KEY_ID}
       RELAY_HMAC_SECRET: ${RELAY_HMAC_SECRET:?set RELAY_HMAC_SECRET}
-      RELAY_TLS_CERT_FILE: /tls/fullchain.pem
-      RELAY_TLS_KEY_FILE: /tls/privkey.pem
-      RELAY_MAX_BYTES: ${RELAY_MAX_BYTES:-4500000}
+      RELAY_TLS_CERT_FILE: /tls/relay.pem
+      RELAY_TLS_KEY_FILE: /tls/relay.pem
+      RELAY_MAX_BYTES: ${RELAY_MAX_BYTES:-4718592}
       RELAY_CONN_PER_MIN: ${RELAY_CONN_PER_MIN:-60}
       RELAY_AUTH_PER_MIN: ${RELAY_AUTH_PER_MIN:-20}
       RELAY_AUTH_LOCKOUT_BASE_SECONDS: ${RELAY_AUTH_LOCKOUT_BASE_SECONDS:-30}
