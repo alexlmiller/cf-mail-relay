@@ -46,6 +46,9 @@ interface IdempotencyRow {
   request_hash: string;
   source: string;
   response_json: string | null;
+  created_at: number;
+  updated_at: number;
+  expires_at: number;
 }
 
 export interface SendEventInput {
@@ -77,6 +80,7 @@ export interface ReplayResponse {
   headers?: Record<string, string>;
   request_hash?: string;
   source?: "smtp" | "http";
+  expires_at?: number;
 }
 
 export interface QuotaInput {
@@ -88,7 +92,11 @@ export interface QuotaInput {
 
 const authDecisionTtlSeconds = 5;
 const credentialCacheTtlSeconds = 300;
-const idempotencyTtlSeconds = 24 * 60 * 60;
+const httpIdempotencyTtlSeconds = 24 * 60 * 60;
+const smtpIdempotencyTtlSeconds = 7 * 24 * 60 * 60;
+export const idempotencyPendingLeaseSeconds = 5 * 60;
+export const smtpAmbiguousRetryDelaySeconds = 60 * 60;
+const maxSmtpUsernameLength = 254;
 
 export async function authenticateSmtpCredential(
   env: Env,
@@ -97,19 +105,23 @@ export async function authenticateSmtpCredential(
   remoteIp: string | undefined,
 ): Promise<AuthDecision | { ok: false; reason: AuthFailureReason }> {
   const policyVersion = await policyVersionFromD1(env);
-  const credential = await lookupCredential(env, username, policyVersion);
+  const normalizedUsername = normalizeSmtpUsername(username);
+  const credential = utf8Length(normalizedUsername) <= maxSmtpUsernameLength
+    ? await lookupCredential(env, normalizedUsername, policyVersion)
+    : null;
   if (credential === null) {
-    await recordAuthFailure(env, username, "not_found", remoteIp);
+    await recordAuthFailure(env, await unknownUsernameToken(env, normalizedUsername), "not_found", remoteIp);
     return { ok: false, reason: "not_found" };
   }
+  const canonicalUsername = canonicalSmtpUsername(credential.username);
   if (credential.revoked_at !== null || credential.user_disabled_at !== null) {
-    await recordAuthFailure(env, username, "disabled", remoteIp);
+    await recordAuthFailure(env, canonicalUsername, "disabled", remoteIp);
     return { ok: false, reason: "disabled" };
   }
 
   const candidateHash = await credentialHash(env, password);
   if (!timingSafeEqualString(candidateHash, credential.secret_hash)) {
-    await recordAuthFailure(env, username, "bad_creds", remoteIp);
+    await recordAuthFailure(env, canonicalUsername, "bad_creds", remoteIp);
     return { ok: false, reason: "bad_creds" };
   }
 
@@ -231,11 +243,42 @@ export async function policyVersionFromD1(env: Env): Promise<string> {
   if (row === null) {
     return "1";
   }
+  return parsePolicyVersion(row.value_json);
+}
+
+/**
+ * Atomically advances the policy generation. The SQL expression accepts both
+ * historic raw numeric values (`7`) and JSON-string values (`"7"`), then uses
+ * the larger of wall-clock seconds or the previous generation plus one. D1
+ * serializes the UPSERT, so concurrent/same-second mutations cannot reuse a
+ * generation.
+ */
+export async function bumpPolicyVersion(env: Env): Promise<string> {
+  const now = nowSeconds();
+  await env.D1_MAIN.prepare(
+    `INSERT INTO settings (key, value_json, updated_at)
+     VALUES ('policy_version', json_quote(CAST(? AS TEXT)), ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value_json = json_quote(CAST(MAX(
+         CAST(CASE
+           WHEN json_valid(settings.value_json) THEN json_extract(settings.value_json, '$')
+           ELSE settings.value_json
+         END AS INTEGER) + 1,
+         ?
+       ) AS TEXT)),
+       updated_at = excluded.updated_at`,
+  )
+    .bind(now, now, now)
+    .run();
+  return policyVersionFromD1(env);
+}
+
+function parsePolicyVersion(raw: string): string {
   try {
-    const parsed = JSON.parse(row.value_json) as unknown;
+    const parsed = JSON.parse(raw) as unknown;
     return typeof parsed === "string" || typeof parsed === "number" ? String(parsed) : "1";
   } catch {
-    return row.value_json;
+    return raw;
   }
 }
 
@@ -328,33 +371,33 @@ export async function beginIdempotentRequest(
   requestHash: string,
   source: "smtp" | "http" = "smtp",
 ): Promise<{ status: "new" } | { status: "pending" } | { status: "conflict" } | { status: "replay"; response: ReplayResponse }> {
-  const cached = await env.KV_HOT.get(`idem:${key}`);
-  if (cached !== null) {
-    const cachedResponse = parseReplayResponse(cached);
-    if (cachedResponse.request_hash !== requestHash || cachedResponse.source !== source) {
-      return { status: "conflict" };
+  try {
+    const cached = await env.KV_HOT.get(`idem:${key}`);
+    if (cached !== null) {
+      const cachedResponse = parseReplayResponse(cached);
+      if (cachedResponse.expires_at !== undefined && cachedResponse.expires_at > nowSeconds()) {
+        if (cachedResponse.request_hash !== requestHash || cachedResponse.source !== source) {
+          return { status: "conflict" };
+        }
+        return { status: "replay", response: cachedResponse };
+      }
     }
-    return { status: "replay", response: cachedResponse };
+  } catch (error) {
+    console.warn("idempotency KV lookup failed; falling back to D1", error);
   }
 
   const now = nowSeconds();
+  const ttlSeconds = idempotencyTtlSeconds(source);
   const result = await env.D1_MAIN.prepare(
     "INSERT OR IGNORE INTO idempotency_keys (idempotency_key, request_hash, source, status, response_json, created_at, updated_at, expires_at) VALUES (?, ?, ?, 'pending', NULL, ?, ?, ?)",
   )
-    .bind(key, requestHash, source, now, now, now + idempotencyTtlSeconds)
+    .bind(key, requestHash, source, now, now, now + ttlSeconds)
     .run();
   if (result.meta.changes > 0) {
     return { status: "new" };
   }
 
-  const existing = await env.D1_MAIN.prepare("SELECT status, request_hash, source, response_json FROM idempotency_keys WHERE idempotency_key = ?").bind(key).first<IdempotencyRow>();
-  if (existing === null || existing.status === "pending" || existing.response_json === null) {
-    return { status: "pending" };
-  }
-  if (existing.request_hash !== requestHash || existing.source !== source) {
-    return { status: "conflict" };
-  }
-  return { status: "replay", response: parseReplayResponse(existing.response_json) };
+  return resolveExistingIdempotencyRequest(env, key, requestHash, source, now, 0);
 }
 
 export async function completeIdempotentRequest(
@@ -362,17 +405,65 @@ export async function completeIdempotentRequest(
   key: string,
   requestHash: string,
   source: "smtp" | "http",
-  success: boolean,
   response: ReplayResponse,
 ): Promise<void> {
   const now = nowSeconds();
-  const responseJson = JSON.stringify({ ...response, request_hash: requestHash, source });
-  await env.D1_MAIN.prepare("UPDATE idempotency_keys SET status = ?, response_json = ?, updated_at = ? WHERE idempotency_key = ?")
-    .bind(success ? "completed" : "failed", responseJson, now, key)
+  const ttlSeconds = idempotencyTtlSeconds(source);
+  const expiresAt = now + ttlSeconds;
+  const responseJson = JSON.stringify({ ...response, request_hash: requestHash, source, expires_at: expiresAt });
+  const result = await env.D1_MAIN.prepare(
+    "UPDATE idempotency_keys SET status = 'completed', response_json = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'in_flight'",
+  )
+    .bind(responseJson, now, expiresAt, key, requestHash, source)
     .run();
-  if (success) {
-    await env.KV_HOT.put(`idem:${key}`, responseJson, { expirationTtl: idempotencyTtlSeconds });
+  if (result.meta.changes === 0) {
+    throw new Error("idempotency reservation was not completed");
   }
+  await env.KV_HOT.put(`idem:${key}`, responseJson, { expirationTtl: ttlSeconds });
+}
+
+export async function markIdempotentRequestInFlight(
+  env: Env,
+  key: string,
+  requestHash: string,
+  source: "smtp" | "http",
+): Promise<boolean> {
+  const now = nowSeconds();
+  const result = await env.D1_MAIN.prepare(
+    "UPDATE idempotency_keys SET status = 'in_flight', updated_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'pending' AND expires_at > ?",
+  )
+    .bind(now, key, requestHash, source, now)
+    .run();
+  return result.meta.changes > 0;
+}
+
+export async function markSmtpIdempotentRequestAmbiguous(
+  env: Env,
+  key: string,
+  requestHash: string,
+): Promise<void> {
+  const now = nowSeconds();
+  const result = await env.D1_MAIN.prepare(
+    "UPDATE idempotency_keys SET status = 'ambiguous', updated_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = 'smtp' AND status = 'in_flight' AND expires_at > ?",
+  )
+    .bind(now, key, requestHash, now)
+    .run();
+  if (result.meta.changes === 0) {
+    throw new Error("SMTP idempotency reservation was not marked ambiguous");
+  }
+}
+
+export async function releaseIdempotentRequest(
+  env: Env,
+  key: string,
+  requestHash: string,
+  source: "smtp" | "http",
+): Promise<void> {
+  await env.D1_MAIN.prepare(
+    "DELETE FROM idempotency_keys WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status IN ('pending', 'in_flight')",
+  )
+    .bind(key, requestHash, source)
+    .run();
 }
 
 export async function recordSendEvent(env: Env, event: SendEventInput): Promise<void> {
@@ -447,7 +538,7 @@ export async function credentialHash(env: Env, password: string): Promise<string
 }
 
 async function lookupCredential(env: Env, username: string, policyVersion: string): Promise<CredentialRow | null> {
-  const normalizedUsername = username.trim().toLowerCase();
+  const normalizedUsername = normalizeSmtpUsername(username);
   const cacheKey = `cred:${policyVersion}:${normalizedUsername}`;
   const cached = await env.KV_HOT.get(cacheKey);
   if (cached !== null) {
@@ -570,21 +661,49 @@ async function allowedSendersForApiKey(env: Env, key: ApiKeyRow): Promise<string
 }
 
 function parseAllowedSenderIds(raw: string | null): string[] | null {
-  if (raw === null || raw.trim().length === 0) {
+  if (raw === null) {
     return null;
   }
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) && parsed.every((value) => typeof value === "string") ? parsed : null;
+    if (Array.isArray(parsed) && parsed.every((value) => typeof value === "string")) {
+      return parsed;
+    }
   } catch {
-    return null;
+    // Fall through to the stable fail-closed configuration error below.
   }
+  throw new Error("invalid_allowed_sender_ids_config");
 }
 
 async function recordAuthFailure(env: Env, username: string, reason: AuthFailureReason, remoteIp: string | undefined): Promise<void> {
   await env.D1_MAIN.prepare("INSERT INTO auth_failures (id, ts, source, remote_ip_hash, attempted_username, reason) VALUES (?, ?, 'smtp', ?, ?, ?)")
     .bind(prefixedId("authfail"), nowSeconds(), remoteIp === undefined ? null : await hmacSha256Hex(env.METADATA_PEPPER, remoteIp), username, reason)
     .run();
+}
+
+function normalizeSmtpUsername(username: string): string {
+  return username.trim().toLowerCase();
+}
+
+function canonicalSmtpUsername(username: string): string {
+  const normalized = normalizeSmtpUsername(username);
+  let bounded = "";
+  let bytes = 0;
+  for (const character of normalized) {
+    const characterBytes = utf8Length(character);
+    if (bytes + characterBytes > maxSmtpUsernameLength) break;
+    bounded += character;
+    bytes += characterBytes;
+  }
+  return bounded;
+}
+
+async function unknownUsernameToken(env: Env, username: string): Promise<string> {
+  return `hmac:${await hmacSha256Hex(env.METADATA_PEPPER, username)}`;
+}
+
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 async function updateCredentialLastUsed(env: Env, credentialId: string, remoteIp: string | undefined): Promise<void> {
@@ -679,9 +798,112 @@ function normalizeAddress(value: string): string {
   return value.toLowerCase().replace(/^<|>$/g, "").trim();
 }
 
+async function resolveExistingIdempotencyRequest(
+  env: Env,
+  key: string,
+  requestHash: string,
+  source: "smtp" | "http",
+  now: number,
+  attempt: number,
+): Promise<{ status: "new" } | { status: "pending" } | { status: "conflict" } | { status: "replay"; response: ReplayResponse }> {
+  const ttlSeconds = idempotencyTtlSeconds(source);
+  const existing = await env.D1_MAIN.prepare(
+    "SELECT status, request_hash, source, response_json, created_at, updated_at, expires_at FROM idempotency_keys WHERE idempotency_key = ?",
+  )
+    .bind(key)
+    .first<IdempotencyRow>();
+  if (existing === null) {
+    // A retention job may have removed the row after INSERT OR IGNORE. Let the
+    // caller retry rather than sending without a durable reservation.
+    return { status: "pending" };
+  }
+
+  if (existing.expires_at <= now) {
+    const takeover = await env.D1_MAIN.prepare(
+      "UPDATE idempotency_keys SET request_hash = ?, source = ?, status = 'pending', response_json = NULL, created_at = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND expires_at <= ?",
+    )
+      .bind(requestHash, source, now, now, now + ttlSeconds, key, now)
+      .run();
+    if (takeover.meta.changes > 0) {
+      return { status: "new" };
+    }
+    return attempt < 2
+      ? resolveExistingIdempotencyRequest(env, key, requestHash, source, now, attempt + 1)
+      : { status: "pending" };
+  }
+
+  if (existing.request_hash !== requestHash || existing.source !== source) {
+    return { status: "conflict" };
+  }
+
+  if (existing.status === "completed" && existing.response_json !== null) {
+    return { status: "replay", response: parseReplayResponse(existing.response_json) };
+  }
+
+  if (existing.status === "failed" && existing.response_json !== null) {
+    const legacyResponse = parseReplayResponse(existing.response_json);
+    if (isTerminalReplayResponse(legacyResponse)) {
+      return { status: "replay", response: legacyResponse };
+    }
+    const takeover = await env.D1_MAIN.prepare(
+      "UPDATE idempotency_keys SET status = 'pending', response_json = NULL, created_at = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'failed'",
+    )
+      .bind(now, now, now + ttlSeconds, key, requestHash, source)
+      .run();
+    if (takeover.meta.changes > 0) {
+      return { status: "new" };
+    }
+    return attempt < 2
+      ? resolveExistingIdempotencyRequest(env, key, requestHash, source, now, attempt + 1)
+      : { status: "pending" };
+  }
+
+  if (
+    source === "smtp" &&
+    existing.status === "ambiguous" &&
+    existing.updated_at <= now - smtpAmbiguousRetryDelaySeconds
+  ) {
+    const takeover = await env.D1_MAIN.prepare(
+      "UPDATE idempotency_keys SET status = 'pending', response_json = NULL, updated_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = 'smtp' AND status = 'ambiguous' AND updated_at <= ? AND expires_at > ?",
+    )
+      .bind(now, key, requestHash, now - smtpAmbiguousRetryDelaySeconds, now)
+      .run();
+    if (takeover.meta.changes > 0) {
+      return { status: "new" };
+    }
+    return attempt < 2
+      ? resolveExistingIdempotencyRequest(env, key, requestHash, source, now, attempt + 1)
+      : { status: "pending" };
+  }
+
+  if (existing.status === "pending" && existing.updated_at <= now - idempotencyPendingLeaseSeconds) {
+    const takeover = await env.D1_MAIN.prepare(
+      "UPDATE idempotency_keys SET response_json = NULL, created_at = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'pending' AND updated_at <= ? AND expires_at > ?",
+    )
+      .bind(now, now, now + ttlSeconds, key, requestHash, source, now - idempotencyPendingLeaseSeconds, now)
+      .run();
+    if (takeover.meta.changes > 0) {
+      return { status: "new" };
+    }
+    return attempt < 2
+      ? resolveExistingIdempotencyRequest(env, key, requestHash, source, now, attempt + 1)
+      : { status: "pending" };
+  }
+
+  return { status: "pending" };
+}
+
+function idempotencyTtlSeconds(source: "smtp" | "http"): number {
+  return source === "smtp" ? smtpIdempotencyTtlSeconds : httpIdempotencyTtlSeconds;
+}
+
 function parseReplayResponse(raw: string): ReplayResponse {
   const parsed = JSON.parse(raw) as ReplayResponse;
   return { ...parsed, status: parsed.status ?? (parsed.ok ? 200 : 502) };
+}
+
+function isTerminalReplayResponse(response: ReplayResponse): boolean {
+  return response.ok || response.status === 422;
 }
 
 function prefixedId(prefix: string): string {

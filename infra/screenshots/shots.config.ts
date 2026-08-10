@@ -1,5 +1,5 @@
 // Shot catalogue. Each entry produces one PNG in infra/screenshots/out/.
-// Curated shots are copied into docs/images/ via `pnpm screenshots:publish`.
+// Curated shots are copied from infra/screenshots/out/ into docs/images/.
 
 import type { Page } from "playwright";
 import { adminFixtures, emptyFixtures, senderFixtures, type FixtureMap } from "./fixtures";

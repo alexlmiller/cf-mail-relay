@@ -69,7 +69,7 @@ ACCESS_AUDIENCE = "aud_123"
         return json({ keys: [{ kid: "key_1" }] });
       }
       if (url === "https://mail.example.com/healthz") {
-        return json({ ok: true, version: "0.1.0-ms7", git_sha: "ms7" });
+        return json({ ok: true, schema_version: "6" });
       }
       if ((url === "https://mail.example.com" || url === "https://mail.example.com/") && init.redirect === "manual") {
         return text('<html><body><div id="app"></div></body></html>');
@@ -158,7 +158,7 @@ ACCESS_AUDIENCE = "aud_123"
         return json({ keys: [{ kid: "key_1" }] });
       }
       if (url === "https://mail.example.com/healthz") {
-        return json({ ok: true, version: "0.1.0-ms7", git_sha: "ms7" });
+        return json({ ok: true, schema_version: "6" });
       }
       if ((url === "https://mail.example.com" || url === "https://mail.example.com/") && init.headers?.["cf-access-jwt-assertion"] === "jwt") {
         return text('<html><body><div id="app"></div></body></html>');

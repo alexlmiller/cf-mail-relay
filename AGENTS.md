@@ -1,70 +1,51 @@
-# Agent Guidelines — Cloudflare Mail Relay
+# Agent guidelines
 
-Read this first, then read [docs/architecture.md](./docs/architecture.md).
+Read [docs/architecture.md](docs/architecture.md) before substantive work.
 
-## Project Shape
+## Repository map
 
-This is a release-ready SMTP-to-Cloudflare-Email-Sending bridge:
+| Path | Purpose |
+|---|---|
+| `relay/` | Go SMTP relay and container build |
+| `worker/` | Cloudflare policy/delivery API and static UI host |
+| `ui/` | Astro admin and sender UI source |
+| `demo/` | Isolated public demo with a mock API |
+| `shared/` | Cross-runtime HMAC vectors |
+| `infra/` | Setup, operations, OpenTofu, and relay deployment |
 
-- `relay/`: Go SMTP relay in Docker.
-- `worker/`: Cloudflare Worker that enforces policy, calls Email Sending
-  `send_raw`, AND serves the admin UI bundle (Workers Static Assets at
-  `worker/public/`). Same-origin admin — no separate Pages project.
-- `ui/`: Astro source for the admin UI. Builds into `worker/public/`.
-- `demo/`: standalone static Worker for the public click-through demo. It
-  imports the UI shell, installs the mock API, and must not be deployed with
-  production D1/KV/secrets or the production Worker route list.
-- `shared/`: shared TypeScript contracts.
-- `infra/`: setup wizard (`pnpm run setup --apply`), OpenTofu reference module,
-  Cloudflare Access helpers, HMAC rotation, doctor scripts, and Docker
-  relay deployment templates.
+## Invariants
 
-## Design Constraints
+- Send-only raw MIME. Do not add inbound mail, composition, templates,
+  scheduling, mailing lists, multi-tenant SaaS, or body storage without an
+  explicit scope decision.
+- One deployment serves one Cloudflare account and may serve many domains.
+- The Worker serves the UI and API from one origin. Cloudflare Access protects
+  only `/admin/api/*` and `/self/api/*`; do not gate the static shell,
+  `/relay/*`, `/send`, `/bootstrap/admin`, or `/healthz`.
+- D1 is authoritative. KV is a cache.
+- Relay requests use HMAC; `/send` uses API keys; admin/self APIs use validated
+  Access JWTs and browser Origin checks.
+- Credential hashes and identifying audit hashes use separate secret peppers.
+- The Worker runtime Cloudflare token is limited to Email Sending Edit and Zone
+  Read. Do not push the broader setup token unless the user explicitly accepts
+  immediate replacement.
+- Keep demo bindings, routes, and mock behavior out of the production Worker.
 
-- Send-only. No inbound mail handling.
-- Raw MIME only. Do not add structured JSON composition without an explicit
-  roadmap decision.
-- No message body storage.
-- One deployment serves one Cloudflare account, with many sending domains.
-- Single-origin admin: the Worker serves the UI + admin/self API on one
-  host (default `mail.<adopter-zone>`). Cloudflare Access is path-scoped
-  only to `/admin/api/*` and `/self/api/*`. Do not protect `/` or
-  `/_astro/*`: Access treats a root destination as the whole hostname, which
-  breaks `/relay/*`, `/send`, `/bootstrap/admin`, and `/healthz`.
-- D1 is source of truth. KV is cache only.
-- Relay-to-Worker auth is HMAC. The canonical string commits both the
-  body hash and a sorted `signedHeaders` block.
-- Admin auth is Cloudflare Access. Worker validates JWT (issuer + aud +
-  `type === "app"`) and the Origin on browser POSTs.
-- Credential/API-key hashes use HMAC-SHA256 keyed with a secret pepper.
-- The worker runtime needs a least-privilege `CF_API_TOKEN` with Account Email
-  Sending Edit plus Zone Read for the sending zones. The setup wizard does NOT
-  auto-push the operator's broader setup token; the runbook covers the manual
-  step.
-- The app stores the SMTP relay hostname in D1 `settings.smtp_host`. The setup
-  wizard initializes it from `--smtp-host` or `smtp.<first-domain>`; admins can
-  later edit it from the Settings screen.
-- Keep the public demo separate. Do not add `relay-demo.alexmiller.net` or demo
-  mode back to the production Worker; deploy the demo with `demo/wrangler.toml`.
+## Workflow
 
-## Working Rules
-
-- Use worktrees for substantive edits: `.worktrees/<feature>`.
-- `dev` is the default development branch; `main` is the protected release
-  branch. Release-please must target `main`, and release PRs/tags come from
-  `main` only.
-- Keep release-facing docs small. Prefer updating `README.md` or
-  `docs/architecture.md` over adding a new doc.
+- Use `.worktrees/<feature>` for substantive changes.
+- `dev` is the development branch; `main` is the protected release branch.
+  Release-please targets `main`.
+- Prefer updating existing docs over adding new ones.
 - Use Conventional Commits.
-- Do not commit secrets. Use `wrangler secret put`, local `.env`, or `.example`
-  files.
-- Anything that mutates Cloudflare, pushes to GitHub, publishes images, or
-  deploys requires explicit user approval.
-- Preserve unrelated dirty worktree changes.
+- Never commit secrets. Use Worker secrets and gitignored local files.
+- Cloudflare mutation, GitHub push, image publication, and deployment require
+  explicit user approval.
+- Preserve unrelated worktree changes.
 
 ## Checks
 
-Run the narrow check for your change, and for broad changes run:
+Run focused checks for narrow changes. For broad changes:
 
 ```sh
 pnpm test
@@ -76,5 +57,4 @@ go vet ./...
 go test ./...
 ```
 
-Docker release packaging is defined in `relay/docker-bake.hcl` and validated in
-CI.
+CI also validates OpenTofu, Docker packaging, migrations, and Wrangler dry-runs.

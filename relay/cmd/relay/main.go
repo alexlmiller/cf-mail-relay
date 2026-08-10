@@ -2,9 +2,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -24,8 +27,13 @@ import (
 	"github.com/emersion/go-smtp"
 )
 
-const version = "0.1.0-ms7"
+var appVersion = "dev"
+
+// Retain the original wire identifier for compatibility with deployed Workers.
+// It identifies the relay protocol, not the application release.
+const protocolVersion = "0.1.0-ms7"
 const defaultMaxMessageBytes = 4_718_592
+const healthcheckTimeout = 4 * time.Second
 
 type config struct {
 	ListenAddr        string
@@ -44,6 +52,20 @@ type config struct {
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
+		if err := checkSMTPStartTLS(
+			envOrDefault("RELAY_LISTEN_ADDR", ":587"),
+			os.Getenv("RELAY_TLS_CERT_FILE"),
+			os.Getenv("RELAY_TLS_KEY_FILE"),
+			envOrDefault("RELAY_DOMAIN", "localhost"),
+			healthcheckTimeout,
+		); err != nil {
+			log.Printf("SMTP STARTTLS healthcheck failed: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Printf("cf-mail-relay %s (protocol %s)\n", appVersion, protocolVersion)
 		return
 	}
 
@@ -62,7 +84,7 @@ func main() {
 			BaseURL: cfg.WorkerURL,
 			KeyID:   cfg.HMACKeyID,
 			Secret:  cfg.HMACSecret,
-			Version: version,
+			Version: protocolVersion,
 			HTTPClient: &http.Client{
 				Timeout: 30 * time.Second,
 			},
@@ -81,13 +103,135 @@ func main() {
 	server.ReadTimeout = 2 * time.Minute
 	server.WriteTimeout = 2 * time.Minute
 
-	log.Printf("cf-mail-relay %s listening on %s", version, cfg.ListenAddr)
+	log.Printf("cf-mail-relay %s (protocol %s) listening on %s", appVersion, protocolVersion, cfg.ListenAddr)
 	if cfg.AllowInsecureAuth {
 		log.Printf("WARNING: RELAY_ALLOW_INSECURE_AUTH is enabled; SMTP AUTH is allowed before STARTTLS")
 	}
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func checkSMTPStartTLS(listenAddr, certFile, keyFile, domain string, timeout time.Duration) error {
+	return checkSMTPStartTLSWithTrust(listenAddr, certFile, keyFile, domain, timeout, nil, nil)
+}
+
+func checkSMTPStartTLSWithTrust(
+	listenAddr, certFile, keyFile, domain string,
+	timeout time.Duration,
+	roots *x509.CertPool,
+	currentTime func() time.Time,
+) error {
+	address, err := localHealthcheckAddress(listenAddr)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(timeout)
+	conn, err := (&net.Dialer{Deadline: deadline}).Dial("tcp", address)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", address, err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(deadline); err != nil {
+		return fmt.Errorf("set deadline: %w", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	banner, err := readSMTPResponse(reader, "220")
+	if err != nil {
+		if banner != "" && !strings.HasPrefix(banner, "220 ") && !strings.HasPrefix(banner, "220-") {
+			return fmt.Errorf("unexpected SMTP banner %q", strings.TrimSpace(banner))
+		}
+		return fmt.Errorf("read SMTP banner: %w", err)
+	}
+
+	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("load configured certificate: %w", err)
+	}
+	if len(pair.Certificate) == 0 {
+		return errors.New("configured certificate has no leaf")
+	}
+	configuredFingerprint := sha256.Sum256(pair.Certificate[0])
+
+	if _, err := io.WriteString(conn, "EHLO healthcheck.local\r\n"); err != nil {
+		return fmt.Errorf("write SMTP EHLO: %w", err)
+	}
+	if _, err := readSMTPResponse(reader, "250"); err != nil {
+		return fmt.Errorf("read SMTP EHLO response: %w", err)
+	}
+	if _, err := io.WriteString(conn, "STARTTLS\r\n"); err != nil {
+		return fmt.Errorf("write SMTP STARTTLS: %w", err)
+	}
+	if _, err := readSMTPResponse(reader, "220"); err != nil {
+		return fmt.Errorf("read SMTP STARTTLS response: %w", err)
+	}
+	if reader.Buffered() != 0 {
+		return errors.New("SMTP listener sent unexpected plaintext after STARTTLS response")
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+		ServerName: domain,
+		Time:       currentTime,
+	}
+	tlsConn := tls.Client(conn, tlsConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		return fmt.Errorf("negotiate SMTP STARTTLS and verify served certificate for RELAY_DOMAIN %q: %w", domain, err)
+	}
+	defer tlsConn.Close()
+
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return errors.New("SMTP STARTTLS listener served no leaf certificate")
+	}
+	servedFingerprint := sha256.Sum256(state.PeerCertificates[0].Raw)
+	if servedFingerprint != configuredFingerprint {
+		return fmt.Errorf(
+			"served leaf certificate fingerprint %x does not match configured certificate %x",
+			servedFingerprint,
+			configuredFingerprint,
+		)
+	}
+	return nil
+}
+
+func readSMTPResponse(reader *bufio.Reader, expectedCode string) (string, error) {
+	firstLine, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(firstLine, expectedCode+" ") && !strings.HasPrefix(firstLine, expectedCode+"-") {
+		return firstLine, fmt.Errorf("unexpected SMTP response %q", strings.TrimSpace(firstLine))
+	}
+	if strings.HasPrefix(firstLine, expectedCode+"-") {
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return firstLine, err
+			}
+			if strings.HasPrefix(line, expectedCode+" ") {
+				break
+			}
+			if !strings.HasPrefix(line, expectedCode+"-") {
+				return firstLine, fmt.Errorf("unexpected SMTP response %q", strings.TrimSpace(line))
+			}
+		}
+	}
+	return firstLine, nil
+}
+
+func localHealthcheckAddress(listenAddr string) (string, error) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil || port == "" {
+		return "", fmt.Errorf("invalid RELAY_LISTEN_ADDR for healthcheck")
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port), nil
 }
 
 type backend struct {
@@ -118,31 +262,41 @@ func (s *session) AuthMechanisms() []string {
 }
 
 func (s *session) Auth(mech string) (sasl.Server, error) {
-	authenticate := func(username, password string) error {
-		if !s.backend.throttle.allowAuth(username, s.remoteIP) {
-			return smtp.ErrAuthFailed
-		}
-		response, err := s.backend.client.Auth(context.Background(), username, password)
-		if err != nil {
-			s.backend.throttle.recordAuthFailure(username, s.remoteIP)
-			return smtp.ErrAuthFailed
-		}
-		s.backend.throttle.recordAuthSuccess(username, s.remoteIP)
-		s.authed = true
-		s.authDecision = response
-		return nil
-	}
-
 	switch strings.ToUpper(mech) {
 	case sasl.Plain:
 		return sasl.NewPlainServer(func(_, username, password string) error {
-			return authenticate(username, password)
+			return s.authenticate(username, password)
 		}), nil
 	case sasl.Login:
-		return &loginServer{authenticate: authenticate}, nil
+		return &loginServer{authenticate: s.authenticate}, nil
 	default:
 		return nil, smtp.ErrAuthUnknownMechanism
 	}
+}
+
+func (s *session) authenticate(username, password string) error {
+	switch s.backend.throttle.checkAuth(username, s.remoteIP) {
+	case authLockedOut:
+		return smtpError(454, smtp.EnhancedCode{4, 7, 0}, "authentication temporarily locked; try again later")
+	case authRateLimited:
+		return smtpError(454, smtp.EnhancedCode{4, 7, 0}, "too many authentication attempts; try again later")
+	}
+
+	response, err := s.backend.client.Auth(context.Background(), username, password)
+	if err != nil {
+		var authErr *workerclient.AuthError
+		if errors.As(err, &authErr) && authErr.InvalidCredentials() {
+			s.backend.throttle.recordAuthFailure(username, s.remoteIP)
+			return smtp.ErrAuthFailed
+		}
+		log.Printf("temporary relay auth failure: %v", err)
+		return smtpError(454, smtp.EnhancedCode{4, 7, 0}, "temporary authentication failure; try again later")
+	}
+
+	s.backend.throttle.recordAuthSuccess(username, s.remoteIP)
+	s.authed = true
+	s.authDecision = response
+	return nil
 }
 
 func (s *session) Mail(from string, opts *smtp.MailOptions) error {
@@ -151,7 +305,7 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 	}
 	if opts != nil {
 		if opts.Body == smtp.Body8BitMIME || opts.Body == smtp.BodyBinaryMIME {
-			return smtpError(554, smtp.EnhancedCode{5, 6, 0}, "8-bit content not supported in MVP; use base64 or quoted-printable")
+			return smtpError(554, smtp.EnhancedCode{5, 6, 0}, "8-bit content not supported; use base64 or quoted-printable")
 		}
 		if opts.Size > s.backend.maxMessageBytes {
 			return smtpError(552, smtp.EnhancedCode{5, 3, 4}, "message too large")
@@ -198,7 +352,7 @@ func (s *session) Data(r io.Reader) error {
 		return smtpError(552, smtp.EnhancedCode{5, 3, 4}, "message too large")
 	}
 	if contains8Bit(mime) {
-		return smtpError(554, smtp.EnhancedCode{5, 6, 0}, "8-bit content not supported in MVP; use base64 or quoted-printable")
+		return smtpError(554, smtp.EnhancedCode{5, 6, 0}, "8-bit content not supported; use base64 or quoted-printable")
 	}
 
 	traceID := newTraceID()
@@ -386,21 +540,18 @@ func smtpErrorForSendError(err error) error {
 		return smtpError(451, smtp.EnhancedCode{4, 7, 1}, sendErr.Response.Error)
 	}
 
-	if sendErr.StatusCode == http.StatusTooManyRequests || sendErr.StatusCode >= 500 {
-		return smtpError(451, smtp.EnhancedCode{4, 7, 1}, "upstream send failed; try again later")
-	}
-	if sendErr.StatusCode >= 400 && sendErr.StatusCode < 500 {
-		return smtpError(550, smtp.EnhancedCode{5, 7, 1}, sendErr.Response.Error)
-	}
 	return smtpError(451, smtp.EnhancedCode{4, 7, 1}, "upstream send failed; try again later")
 }
 
 func isRelayOperatorError(err *workerclient.SendError) bool {
 	switch err.Response.Error {
-	case "replay_nonce", "unsupported_relay_version", "invalid_body_hash", "invalid_signature", "unknown_key_id", "missing_required_signed_header":
+	case "replay_nonce", "unsupported_relay_version", "invalid_body_hash", "invalid_body_sha256", "invalid_signature", "unknown_key_id",
+		"missing_required_signed_header", "missing_signed_headers", "invalid_timestamp", "timestamp_out_of_window",
+		"missing_key_id", "missing_timestamp", "missing_nonce", "missing_body_sha256", "missing_version", "missing_signature",
+		"missing_credential_id", "invalid_content_length":
 		return true
 	}
-	return err.Response.ErrorCode == "cloudflare_send_raw_permanent_failure"
+	return false
 }
 
 func envOrDefault(name, fallback string) string {
@@ -427,6 +578,14 @@ type authFailure struct {
 	lastFailure time.Time
 }
 
+type authThrottleDecision int
+
+const (
+	authAllowed authThrottleDecision = iota
+	authLockedOut
+	authRateLimited
+)
+
 func newThrottle(connPerMinute, authPerMinute int, authLockoutBase time.Duration) *throttle {
 	return &throttle{
 		connPerMinute:   connPerMinute,
@@ -451,8 +610,12 @@ func (t *throttle) allowConn(remoteIP string) bool {
 }
 
 func (t *throttle) allowAuth(username, remoteIP string) bool {
+	return t.checkAuth(username, remoteIP) == authAllowed
+}
+
+func (t *throttle) checkAuth(username, remoteIP string) authThrottleDecision {
 	if t == nil {
-		return true
+		return authAllowed
 	}
 	userKey := throttleUsername(username)
 	remoteKey := throttleRemote(remoteIP)
@@ -462,17 +625,20 @@ func (t *throttle) allowAuth(username, remoteIP string) bool {
 	defer t.mu.Unlock()
 	t.pruneLockedIfDue(now)
 	if failure, ok := t.authFailures[lockoutKey]; ok && now.Before(failure.blockUntil) {
-		return false
+		return authLockedOut
 	}
 	if t.authPerMinute <= 0 {
-		return true
+		return authAllowed
 	}
 	bucket := minuteBucket()
 	userCountKey := fmt.Sprintf("%s:user:%s", bucket, userKey)
 	remoteCountKey := fmt.Sprintf("%s:remote:%s", bucket, remoteKey)
 	t.authCounts[userCountKey]++
 	t.authCounts[remoteCountKey]++
-	return t.authCounts[userCountKey] <= t.authPerMinute && t.authCounts[remoteCountKey] <= t.authPerMinute*5
+	if t.authCounts[userCountKey] > t.authPerMinute || t.authCounts[remoteCountKey] > t.authPerMinute*5 {
+		return authRateLimited
+	}
+	return authAllowed
 }
 
 func (t *throttle) recordAuthFailure(username, remoteIP string) {

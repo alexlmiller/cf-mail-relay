@@ -6,22 +6,30 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to publish the relay image for
+        description: Published semver release tag to recover
         required: true
         type: string
 
 permissions: {}
 
+# Publishing and latest promotion must remain serialized across push and manual
+# recovery runs, regardless of the ref selected for workflow_dispatch.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release-please:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
     outputs:
       released: ${{ steps.release.outputs.release_created }}
       tag: ${{ steps.release.outputs.tag_name }}
+      sha: ${{ steps.release.outputs.sha }}
     steps:
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         id: release
@@ -32,15 +40,90 @@ jobs:
 
   docker-push-relay:
     needs: release-please
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.release-please.outputs.released == 'true')
+    if: >-
+      always() &&
+      !cancelled() &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        needs.release-please.outputs.released == 'true'
+      )
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: select release tag
+        id: selection
+        env:
+          AUTOMATIC_TAG: ${{ needs.release-please.outputs.tag }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$WORKFLOW_REF" != "refs/heads/main" ]]; then
+              echo "Manual release recovery must run from main" >&2
+              exit 1
+            fi
+            version=$DISPATCH_TAG
+          else
+            version=$AUTOMATIC_TAG
+          fi
+          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Refusing non-semver release tag: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
+          ref: ${{ steps.selection.outputs.version }}
+          fetch-depth: 0
+      - name: validate published release
+        id: release
+        env:
+          EXPECTED_SHA: ${{ needs.release-please.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.selection.outputs.version }}
+        run: |
+          set -euo pipefail
+          release_json=$(mktemp)
+          trap 'rm -f "$release_json"' EXIT
+
+          if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" >"$release_json"; then
+            echo "Refusing tag without a published GitHub release: $VERSION" >&2
+            exit 1
+          fi
+          if ! jq -e --arg version "$VERSION" '
+            .tag_name == $version and
+            .draft == false and
+            .prerelease == false and
+            .published_at != null
+          ' "$release_json" >/dev/null; then
+            echo "Release must be published, stable, and match $VERSION" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin main
+          tag_sha=$(git rev-list -n 1 "refs/tags/$VERSION")
+          head_sha=$(git rev-parse HEAD)
+          main_sha=$(git rev-parse FETCH_HEAD)
+          if [[ "$tag_sha" != "$head_sha" ]]; then
+            echo "Checked-out commit does not match release tag $VERSION" >&2
+            exit 1
+          fi
+          if [[ -n "$EXPECTED_SHA" && "$tag_sha" != "$EXPECTED_SHA" ]]; then
+            echo "Release tag and release-please output do not match" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag_sha" "$main_sha"; then
+            echo "Release tag is not reachable from main: $VERSION" >&2
+            exit 1
+          fi
+
+          echo "sha=$tag_sha" >>"$GITHUB_OUTPUT"
+          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -48,14 +131,109 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: docker buildx bake and push
+      - name: check immutable version tag
+        id: image
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          REGISTRY_IMAGE: ghcr.io/${{ github.repository }}/relay
+          SOURCE_URL: https://github.com/${{ github.repository }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          inspect_output=$(mktemp)
+          trap 'rm -f "$inspect_output"' EXIT
+          if docker buildx imagetools inspect --raw "$REGISTRY_IMAGE:$VERSION" >"$inspect_output" 2>&1; then
+            if ! jq -e --arg revision "$RELEASE_SHA" --arg source "$SOURCE_URL" --arg version "$VERSION" '
+              def runtime_manifests:
+                [.manifests[] |
+                  select(.platform.os != "unknown" or .platform.architecture != "unknown")];
+              .schemaVersion == 2 and
+              .mediaType == "application/vnd.oci.image.index.v1+json" and
+              .annotations["org.opencontainers.image.revision"] == $revision and
+              .annotations["org.opencontainers.image.source"] == $source and
+              .annotations["org.opencontainers.image.version"] == $version and
+              (runtime_manifests | length == 2) and
+              ([runtime_manifests[] |
+                select(.mediaType == "application/vnd.oci.image.manifest.v1+json") |
+                "\(.platform.os)/\(.platform.architecture)"] | sort) ==
+                ["linux/amd64", "linux/arm64"]
+            ' "$inspect_output" >/dev/null; then
+              echo "Existing immutable image is not the expected release index; refusing to overwrite it" >&2
+              jq '{schemaVersion, mediaType, annotations, platforms: [.manifests[]?.platform]}' "$inspect_output" >&2
+              exit 1
+            fi
+            echo "Version image already exists with matching release metadata and platforms; reusing it without overwrite."
+            echo "exists=true" >>"$GITHUB_OUTPUT"
+          elif grep -Eqi 'manifest unknown|not found' "$inspect_output"; then
+            echo "exists=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "Could not safely determine whether the version image exists" >&2
+            cat "$inspect_output" >&2
+            exit 1
+          fi
+      - name: build and push immutable version
+        if: steps.image.outputs.exists != 'true'
         working-directory: relay
         env:
+          GIT_SHA: ${{ steps.release.outputs.sha }}
           REGISTRY_IMAGE: ghcr.io/${{ github.repository }}/relay
-          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag }}
-        run: docker buildx bake --push --var REGISTRY_IMAGE="$REGISTRY_IMAGE" --var VERSION="$VERSION"
-      - name: tag latest
+          SOURCE_URL: https://github.com/${{ github.repository }}
+          VERSION: ${{ steps.release.outputs.version }}
+        # Keep release identity workflow-owned so recovery also works for tags
+        # whose historical bake file predates OCI index annotations.
+        run: >-
+          docker buildx bake --push
+          --set "relay.annotations=index:org.opencontainers.image.revision=$GIT_SHA"
+          --set "relay.annotations=index:org.opencontainers.image.source=$SOURCE_URL"
+          --set "relay.annotations=index:org.opencontainers.image.version=$VERSION"
+          --set "relay.tags=$REGISTRY_IMAGE:$VERSION"
+          --var GIT_SHA="$GIT_SHA"
+          --var REGISTRY_IMAGE="$REGISTRY_IMAGE"
+          --var SOURCE_URL="$SOURCE_URL"
+          --var VERSION="$VERSION"
+      - name: verify published version
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          REGISTRY_IMAGE: ghcr.io/${{ github.repository }}/relay
+          SOURCE_URL: https://github.com/${{ github.repository }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          manifest=$(mktemp)
+          trap 'rm -f "$manifest"' EXIT
+          docker buildx imagetools inspect --raw "$REGISTRY_IMAGE:$VERSION" >"$manifest"
+          jq -e --arg revision "$RELEASE_SHA" --arg source "$SOURCE_URL" --arg version "$VERSION" '
+            def runtime_manifests:
+              [.manifests[] |
+                select(.platform.os != "unknown" or .platform.architecture != "unknown")];
+            .schemaVersion == 2 and
+            .mediaType == "application/vnd.oci.image.index.v1+json" and
+            .annotations["org.opencontainers.image.revision"] == $revision and
+            .annotations["org.opencontainers.image.source"] == $source and
+            .annotations["org.opencontainers.image.version"] == $version and
+            (runtime_manifests | length == 2) and
+            ([runtime_manifests[] |
+              select(.mediaType == "application/vnd.oci.image.manifest.v1+json") |
+              "\(.platform.os)/\(.platform.architecture)"] | sort) ==
+              ["linux/amd64", "linux/arm64"]
+          ' "$manifest" >/dev/null
+      - name: check latest release
+        id: promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          latest_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          if [[ "$latest_tag" == "$VERSION" ]]; then
+            echo "promote=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "Not promoting $VERSION: the current latest published release is $latest_tag"
+            echo "promote=false" >>"$GITHUB_OUTPUT"
+          fi
+      - name: promote verified release to latest
+        if: steps.promotion.outputs.promote == 'true'
         env:
           REGISTRY_IMAGE: ghcr.io/${{ github.repository }}/relay
-          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || needs.release-please.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: docker buildx imagetools create -t "$REGISTRY_IMAGE:latest" "$REGISTRY_IMAGE:$VERSION"

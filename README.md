@@ -1,373 +1,233 @@
 # Cloudflare Mail Relay
 
-SMTP submission relay for custom-domain sending through Cloudflare Email
-Sending. Use it with Gmail's **Send mail as**, internal applications, scripts,
-or any SMTP-capable client that needs authenticated outbound mail.
+Authenticated SMTP and raw-MIME HTTP submission through Cloudflare Email
+Sending. Use it with Gmail **Send mail as**, applications, or scripts.
 
-![Admin dashboard — service health, ops actions, recent send activity](docs/images/01-dashboard.png)
+![Admin dashboard](docs/images/01-dashboard.png)
 
-[Live demo: explore the admin UI with sample data](https://relay-demo.alexmiller.net)
+[Explore the public demo](https://relay-demo.alexmiller.net). It uses the real
+UI with local sample data. It cannot send mail or change Cloudflare resources.
 
-The demo is deployed separately from the production Worker. It uses the real UI
-with an in-browser mock API, so you can click through domains, senders, users,
-credentials, API keys, and events without sending mail or changing Cloudflare
-resources.
+## Why use this relay?
 
-The project has two deployable pieces:
+Cloudflare now provides [native authenticated SMTP](https://developers.cloudflare.com/email-service/api/send-emails/smtp/).
+Use that when an account-wide API token and implicit TLS on port `465` meet
+your needs.
 
-- A Cloudflare Worker that enforces policy, calls Email Sending `send_raw`, and
-  serves the admin UI bundle at the same hostname (Workers Static Assets). The
-  static shell is public; admin and self-service data APIs are protected by
-  Cloudflare Access.
-- A Go SMTP relay you run on a Docker host reachable from your SMTP clients.
+This project adds:
 
-The public demo is a third, optional static Worker. It has no D1, KV, Access,
-Email Sending token, HMAC secret, or send endpoints.
+- Per-user SMTP credentials and sender grants.
+- STARTTLS submission on port `587`, including Gmail **Send mail as**.
+- Quotas, idempotency, metadata-only events, and an admin/self-service UI.
+- A raw-MIME HTTP API with scoped API keys.
+- A safe conversation anchor for common client `Message-ID` values that
+  Cloudflare replaces during delivery.
 
-Most of the stack runs on Cloudflare. The SMTP relay is the exception: SMTP
-clients need a raw TCP listener on port `587`, which Cloudflare
-Workers/Containers do not currently provide. That listener only needs to be
-reachable from your SMTP clients; it can be public for Gmail-style send-as
-workflows or private for internal applications. Run the relay anywhere you
-already operate Docker, or on a small VM such as a GCP free-tier eligible
-`e2-micro` instance in one of Google's supported free-tier regions.
+It is send-only. It does not receive mail, compose messages, run mailing lists,
+schedule delivery, or persist message bodies itself.
+
+## Architecture
 
 ```mermaid
 flowchart LR
-  SMTP[SMTP clients] -->|SMTP 587 STARTTLS| Relay[Go SMTP relay]
-  Apps[HTTP clients] -->|POST /send raw MIME| Worker[Cloudflare Worker]
-  Relay -->|HMAC-signed /relay/send| Worker
-  Admin[Admin browser] -->|Cloudflare Access| Worker
-  Worker -->|admin UI bundle| Admin
-  Worker --> D1[(D1 source of truth)]
-  Worker --> KV[(KV cache)]
-  Worker --> Email[Cloudflare Email Sending]
+  SMTP["SMTP client"] -->|"587 + STARTTLS"| Relay["Go relay"]
+  Relay -->|"HMAC HTTPS"| Worker["Cloudflare Worker"]
+  HTTP["HTTP client"] -->|"Bearer API key"| Worker
+  UI["Browser"] -->|"Cloudflare Access"| Worker
+  Worker --> D1["D1 + KV"]
+  Worker --> Email["Cloudflare Email Sending"]
 ```
 
-## What It Does
-
-- SMTP submission on port `587` for mail clients and applications.
-- Raw MIME HTTP API for applications.
-- Admin UI for domains, senders, users, SMTP credentials, API keys, and events.
-- Multi-domain sending from one Cloudflare account.
-- Metadata-only audit log, idempotency, quotas, and basic operational doctors.
-
-## Demo
-
-Try the admin UI without connecting it to Cloudflare:
-
-```text
-https://relay-demo.alexmiller.net
-```
-
-The demo is a separate static Worker, not a route on a production relay
-deployment. It uses the real UI with an in-browser mock API and sample data.
-Actions such as creating credentials, refreshing domains, rolling API keys, and
-opening event drawers are simulated locally; no email is sent and no
-Cloudflare resources are changed.
-
-## What It Does Not Do
-
-- No inbound email handling.
-- No templates, mailing lists, scheduling, or message body storage.
-- No built-in password login for the admin UI; Cloudflare Access is the auth
-  boundary.
-- No structured JSON email composer. The HTTP API accepts raw MIME only.
+The Worker also serves the static UI. Only `/admin/api/*` and `/self/api/*`
+are behind Cloudflare Access. See [the architecture reference](docs/architecture.md)
+for routes and trust boundaries.
 
 ## Requirements
 
-### Cloudflare account
+- A Workers Paid account with [Email Sending](https://developers.cloudflare.com/email-service/get-started/send-emails/)
+  enabled.
+- Cloudflare Zero Trust enabled for the admin UI.
+- Each sending domain on Cloudflare DNS and onboarded to Email Sending.
+- A custom admin hostname on a Cloudflare-managed zone, such as
+  `mail.example.com`. Platform hostnames require the explicit
+  `--allow-platform-hostnames` setup flag.
+- Node.js `>=22.23.2`, pnpm, and Docker.
+- A Docker host reachable from SMTP clients on TCP `587`.
 
-Before running setup, enable each of these in your Cloudflare account. Most are
-one-click toggles; do them up-front to avoid setup tripping on partial state.
+The relay host can be public or private. Gmail must be able to reach it;
+internal applications do not require public ingress.
 
-- **Workers Paid subscription** ($5/month). Required for Email Sending.
-- **Zero Trust enabled**. The admin UI uses Cloudflare Access, and new
-  Cloudflare accounts may need to enable Zero Trust before Access apps can be
-  created.
-- **A Cloudflare-managed zone for the admin host** (e.g. `mail.example.com` on
-  a zone you own). Does not have to be the same zone as your sending domain:
-  `mail.example.com` and a sending domain `example.org` on a different zone is
-  fine. Many adopters use a dedicated zone like `mail.<their-domain>` purely
-  for the relay's control plane.
-- **Each sending domain**:
-  - Must use Cloudflare DNS.
-  - Must have Cloudflare Email Sending enabled and verified in the Cloudflare
-    dashboard before setup can complete. Setup verifies this; it does not
-    enable it for you.
-  - Can usually keep existing apex MX records for inbound mail. Email Sending
-    publishes outbound bounce/auth records under `cf-bounce.<domain>` and does
-    not normally require moving inbound mail. If the Cloudflare onboarding UI
-    reports a DNS conflict, follow that specific error before rerunning setup.
-
-You can find your Cloudflare account ID in the dashboard URL
-(`https://dash.cloudflare.com/<account-id>`) or by running `wrangler whoami`
-once you have set a token.
-
-### Local environment
-
-- Local Node.js 22, `pnpm`, `wrangler`, and `docker`.
-- A Docker host reachable on TCP `587` from the clients or services that will
-  submit mail. It only needs to be public if public clients such as Gmail need
-  to connect to it; for private applications, it can live behind your firewall
-  or on an internal network. This can be existing infrastructure or a small VM
-  such as a GCP free-tier eligible `e2-micro` instance. Check the provider's
-  current free-tier region and egress limits.
-
-## Setup
-
-Install dependencies:
+## Install
 
 ```sh
 pnpm install
 ```
 
-Create a Cloudflare API token and export it before running live preflight or
-apply:
+Create a [Cloudflare API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)
+for setup and export it as `CLOUDFLARE_API_TOKEN`. Grant it:
+
+- Account: Account Settings Read, Billing Read, D1 Edit, Email Sending Edit,
+  Workers KV Storage Edit, Workers Scripts Edit, Workers Routes Read and Edit,
+  Access Organizations Read, Access Apps Edit, and Access Policies Edit.
+- User: User Details Read.
+- Zone: Zone Read, DNS Edit, and Zone DNS Settings Edit for the admin and
+  sending zones.
+
+Verify the token:
 
 ```sh
-export CLOUDFLARE_API_TOKEN=...
-pnpm exec wrangler whoami
+pnpm --dir worker exec wrangler whoami
 ```
 
-You do not need `wrangler login`; the setup flow uses the API token.
+### Preflight
 
-### Cloudflare API token permissions
-
-Cloudflare calls write permissions "Edit" in the token UI. Older docs or error
-messages may say "Write"; choose "Edit" in the dashboard. The setup token
-should have:
-
-- Account -> Account Settings -> Read
-- Account -> Billing -> Read
-- Account -> D1 -> Edit
-- Account -> Email Sending -> Edit
-- Account -> Workers KV Storage -> Edit
-- Account -> Workers Routes -> Read
-- Account -> Workers Routes -> Edit
-- Account -> Workers Scripts -> Edit
-- Account -> Workers Tail -> Read
-- Account -> Access: Organizations -> Read
-- Account -> Access: Apps -> Edit
-- Account -> Access: Policies -> Edit
-- User -> User Details -> Read
-- Zone -> Zone -> Read
-- Zone -> DNS -> Edit
-- Zone -> Zone DNS Settings -> Edit
-
-Apply the zone permissions to the zone(s) hosting your admin URL and sending
-domains.
-
-### Preflight and apply
-
-Run a preflight check. Setup validates the token, account, and zone, then
-prints a plan without mutating Cloudflare. If `CLOUDFLARE_API_TOKEN` is not set,
-it falls back to plan-only output. Repeat `--domain` for every sending domain:
+Preflight checks the account, zones, Email Sending, and existing resources. It
+does not mutate Cloudflare. Without a token, it prints a plan only.
 
 ```sh
 pnpm run setup \
   --account-id <cloudflare-account-id> \
   --admin-url https://mail.example.com \
-  --allow-email <admin@example.com> \
+  --allow-email admin@example.com \
   --domain example.com
 ```
 
-Use `pnpm run setup`, not bare `pnpm setup`; pnpm reserves the bare command for
-its own shell setup helper.
+Repeat `--allow-email` and `--domain` as needed. Use `pnpm run setup --help`
+for all options. Use `pnpm run setup`, not `pnpm setup`; pnpm reserves the
+shorter command.
 
-If setup fails on a fresh Cloudflare account:
-
-- Access organization or `access_not_enabled` errors usually mean Zero Trust
-  has not been enabled yet.
-- Workers Paid warnings usually mean the account has not subscribed to Workers
-  Paid. Email Sending requires this.
-- Email Sending failures usually mean the domain has not been onboarded under
-  Cloudflare Email Sending yet.
-- `401` or `403` from deploy or route steps usually means the setup token is
-  missing one of the Workers Scripts, Workers Routes, Zone, or DNS permissions.
-
-Create the Cloudflare resources, apply migrations, deploy the Worker, bootstrap
-the first admin, and write `RUNBOOK.md`:
+### Apply
 
 ```sh
 pnpm run setup --apply \
   --account-id <cloudflare-account-id> \
   --admin-url https://mail.example.com \
-  --allow-email <admin@example.com> \
+  --allow-email admin@example.com \
   --domain example.com \
   --smtp-host smtp.example.com
 ```
 
-For each `--domain`, `--apply` looks up the Cloudflare zone and Email Sending
-status before deploying, then registers the domain in D1 so it shows up on
-first login. You should not need to copy zone IDs by hand or add the domain
-again through the UI. `--smtp-host` is the SMTP relay hostname shown in
-credential setup details; omit it to use `smtp.<first-domain>`. You can change
-it later from **Settings**.
+Across its resumable runs, apply creates or reuses D1, KV, and the Access app;
+writes the Worker config; applies migrations; sets generated application
+secrets; deploys the Worker; bootstraps the first admin; registers sending
+domains; and writes the gitignored `RUNBOOK.md`.
 
-The wizard intentionally does **not** push its broad setup API token as the
-Worker runtime `CF_API_TOKEN`. After `--apply`, create a least-privilege
-Cloudflare API token with **Account -> Email Sending -> Edit** plus **Zone ->
-Zone -> Read** for the sending zones, then push it:
+The broad setup token is not used as the Worker's runtime token by default. On
+a new install, setup intentionally stops before the final deploy until
+`CF_API_TOKEN` exists. Create a second token with only **Account -> Email
+Sending -> Edit** and **Zone -> Zone -> Read** for the sending zones, then set
+it while the setup token remains exported for Wrangler authentication:
 
 ```sh
 pnpm --dir worker exec wrangler secret put CF_API_TOKEN
 ```
 
-Validate the same-origin Access gate:
+Paste the runtime token at the prompt, then rerun the same `setup --apply`
+command. `--push-cf-api-token` skips this separation and should only be used for
+a one-shot install followed by immediate token replacement.
+
+Setup writes generated secrets to
+`.cf-mail-relay-setup-recovery.json` before the first remote mutation. The file
+is gitignored, mode `0600`, and removed after `RUNBOOK.md` is written. Keep it
+while recovering an interrupted install. Setup refuses to replace an incomplete
+remote secret set without the matching journal. The destructive
+`--rotate-all-worker-secrets` flag is for disaster recovery, not normal retries.
+
+Validate the Access gate after deployment:
 
 ```sh
 pnpm access:verify --admin-url https://mail.example.com
 ```
 
-The Worker serves the admin UI from the same hostname as the API; no separate
-Pages project is involved. The Access app must be path-scoped to
-`/admin/api/*` and `/self/api/*`. Do not put `/`, `/_astro/*`, `/relay/*`,
-`/send`, `/bootstrap/admin`, or `/healthz` behind Access.
-The UI's sign-in button navigates to `/self/api/login`, which is inside the
-Access-gated self-service path and redirects back to the UI after Access auth.
+The Access app must protect only `/admin/api/*` and `/self/api/*`. The setup
+wizard configures this boundary.
 
-Manual setup is still possible: copy `worker/wrangler.toml.example`, create D1
-and KV, apply all migrations before deploying, set secrets with `wrangler secret
-put`, build `ui/` into `worker/public/`, deploy the Worker, then either insert
-the first admin row directly in D1 or use the recovery-only `POST
-/bootstrap/admin` endpoint with a temporary `BOOTSTRAP_SETUP_TOKEN` secret.
-Delete `BOOTSTRAP_SETUP_TOKEN` immediately after manual bootstrap.
+## DNS and relay host
 
-## DNS
+Use the DNS records created by [Email Sending domain onboarding](https://developers.cloudflare.com/email-service/configuration/domains/).
+Email Sending and Email Routing are separate; onboarding outbound sending does
+not require moving inbound MX records.
 
-For each sending domain, publish the records Cloudflare Email Sending gives you:
-
-- `cf-bounce.<domain>` MX.
-- `cf-bounce.<domain>` SPF TXT.
-- DKIM TXT/CNAME.
-- `_dmarc.<domain>` TXT. Start with `v=DMARC1; p=none`.
-
-Create one DNS-only SMTP relay record:
+Create a DNS-only `A` or `AAAA` record for the relay, for example:
 
 ```text
 smtp.example.com. A <relay-host-ip>
 ```
 
-Do not orange-cloud the SMTP hostname. Cloudflare's HTTP proxy does not proxy
-SMTP.
+Do not proxy this record through Cloudflare's HTTP proxy.
 
-Email Sending records are for outbound mail and usually live under
-`cf-bounce.<domain>`. Cloudflare Email Routing records are for inbound mail and
-live at the apex. Keep those concepts separate.
+Install the pinned, nonroot Compose service by following
+[infra/docker/README.md](infra/docker/README.md). It covers certificate setup,
+health checks, upgrades, and rollback.
 
-## Relay
+## SMTP clients
 
-Run the relay on the Docker host:
+Create a sender grant and SMTP credential in the UI, then configure the client:
 
-```sh
-docker compose -f infra/docker/relay.compose.yml up -d
-```
-
-The relay needs these environment values:
-
-| Variable | Purpose |
+| Setting | Value |
 |---|---|
-| `RELAY_WORKER_URL` | Worker base URL |
-| `RELAY_KEY_ID` | HMAC key id sent to Worker |
-| `RELAY_HMAC_SECRET` | Shared HMAC secret matching Worker secret |
-| `RELAY_TLS_CERT_FILE` | Mounted certificate path |
-| `RELAY_TLS_KEY_FILE` | Mounted private key path |
-
-See `infra/docker/` for plain Docker, lego, Traefik, and host-certbot examples.
-
-## SMTP Clients
-
-For each sender address:
-
-1. Add or verify the domain in the admin UI.
-2. Add the exact sender address.
-3. Create an SMTP credential scoped to that sender.
-4. Configure your SMTP client with the relay hostname, port `587`, STARTTLS, the
-   SMTP username, and the generated SMTP password.
-
-For Gmail, open Settings -> Accounts and Import -> Send mail as -> Add another
-email address. Use the relay hostname, port `587`, TLS, the SMTP username, and
-the generated SMTP password, then confirm Gmail's verification email.
-
-For applications, use the same values:
-
-| SMTP setting | Value |
-|---|---|
-| Host | `smtp.<domain>` or your chosen relay hostname |
+| Host | Your relay hostname |
 | Port | `587` |
 | Security | STARTTLS |
-| Username | SMTP credential username |
-| Password | SMTP credential password |
+| Username | Generated SMTP username |
+| Password | Generated SMTP password |
 
-Multiple sender domains can use the same relay hostname. For example,
-`alex@example.com` and `ops@example.org` can both use `smtp.example.com:587`.
-The app stores this hostname in **Settings** so users see the host, port, and
-STARTTLS requirement when they create or roll SMTP credentials.
+For Gmail, follow Google's [Send mail as](https://support.google.com/mail/answer/22370)
+flow and use those values. For a common, syntactically safe `Message-ID` whose
+resulting `References` value fits Cloudflare's
+[per-header limit](https://developers.cloudflare.com/email-service/reference/headers/),
+the Worker adds the client's ID before delivery. This lets a reply reconnect to
+Gmail's local Sent conversation after Cloudflare assigns a new ID.
 
-## HTTP Send API
+## HTTP API
 
-Applications can send raw MIME directly through the Worker:
+`POST /send` accepts raw MIME as base64 or base64url:
 
 ```sh
-curl -fsS https://<worker-host>/send \
+curl -fsS https://mail.example.com/send \
   -H "Authorization: Bearer <api-key>" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: <stable-key>" \
   --data '{"from":"alex@example.com","recipients":["to@example.net"],"raw":"<base64url-mime>"}'
 ```
 
-The API key must belong to a user allowed to send as the `from` address.
-The MIME `From:` header must also match `from`; `Bcc:` is stripped before
-delivery. Duplicate `From:`, `Sender:`, or `Message-ID:` headers are rejected.
+The API key user must be allowed to use `from`. The MIME `From:` header must
+match it. The Worker strips `Bcc:` and rejects duplicate `From:`, `Sender:`, or
+`Message-ID:` headers. See [examples/README.md](examples/README.md) for curl,
+Node.js, and Python clients.
 
-Breaking change: `/send` clients must pass `from` and `recipients` explicitly in
-the JSON body. The Worker no longer derives the delivery envelope from `To:`,
-`Cc:`, or `Bcc:` MIME headers.
-
-## Verification and Operations
-
-Run local checks:
+## Verify and operate
 
 ```sh
-pnpm doctor:local -- --domain example.com --worker-url https://<worker-host>
+pnpm doctor:local -- --domain example.com --worker-url https://mail.example.com
 pnpm doctor:delivery -- --domain example.com
 ```
 
 `doctor:local` checks DNS, Worker health, SMTP STARTTLS, and optional SMTP AUTH.
-`doctor:delivery` gives you a subject token, then asks you to paste received
-headers so it can confirm DKIM and DMARC pass.
+`doctor:delivery` checks received DKIM and DMARC results.
 
-Operational notes:
+See [docs/operations.md](docs/operations.md) for rotation, migrations,
+idempotency, recovery, and dashboard actions. D1 is authoritative; KV is only a
+cache. This project does not persist message bodies. Cloudflare's separate
+[Email Preview](https://developers.cloudflare.com/email-service/configuration/domains/#email-preview)
+is enabled automatically for new sending domains and retains sent content for
+about seven days; disable it per domain if that is not desired.
 
-- Rotate `RELAY_HMAC_SECRET` by setting `RELAY_HMAC_SECRET_PREVIOUS`, deploying a
-  new current secret, updating relay hosts, then removing previous after the
-  overlap window.
-- Rotate leaked SMTP credentials or API keys from the admin UI.
-- D1 is the source of truth. KV is cache only.
-- D1 Time Travel can restore production databases, but restore is destructive.
-- The setup wizard bootstraps the first admin directly in D1 and does not create
-  `BOOTSTRAP_SETUP_TOKEN`. If you use the manual `/bootstrap/admin` recovery
-  flow, delete `BOOTSTRAP_SETUP_TOKEN` immediately after bootstrap.
-- The Worker includes a daily Cron cleanup for expired replay, idempotency,
-  auth-failure, and quota rows. Keep the `[triggers]` section from
-  `worker/wrangler.toml.example`.
-- Provider delivery arrays in `send_events` are stored as privacy-preserving
-  summaries with counts and categorical reason/status codes only.
-- Keep attachments under about 3.25 MiB before encoding; MIME/base64 overhead can
-  push larger files over Cloudflare's 5 MiB Email Sending limit.
-
-## Development
+## Develop
 
 ```sh
 pnpm test
 pnpm typecheck
 pnpm build
-go test ./...          # from relay/
+
+cd relay
+go vet ./...
+go test ./...
 ```
 
-Architecture and contributor notes live in [docs/architecture.md](./docs/architecture.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) before changing scope or security
+boundaries.
 
 ## License
 
-Apache-2.0. See [LICENSE](./LICENSE).
+Apache-2.0. See [LICENSE](LICENSE).

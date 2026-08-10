@@ -1,6 +1,53 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { CloudflareApiClient, createOrFindD1, createOrFindKv, generateSecrets, lookupCloudflareDomain, main, parseArgs, parseUsersCount, renderRunbook, renderWranglerToml, runApply } from "./setup.mjs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { CloudflareApiClient, createOrFindD1, createOrFindKv, generateSecrets, lookupCloudflareDomain, main, parseArgs, parseUsersCount, policyVersionBumpSql, renderRunbook, renderWranglerToml, runApply, writeFileWithMode, writeRecoveryJournalAtomic, writeSensitiveFileAtomic } from "./setup.mjs";
+
+describe("setup policy_version generation", () => {
+  it("preserves first-bootstrap behavior and advances on same-second reruns", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL)");
+
+      const sql = policyVersionBumpSql(100);
+      db.exec(sql);
+      assert.deepEqual(
+        { ...db.prepare("SELECT value_json, updated_at FROM settings WHERE key = 'policy_version'").get() },
+        { value_json: JSON.stringify("100"), updated_at: 100 },
+      );
+
+      db.exec(sql);
+      assert.equal(
+        db.prepare("SELECT value_json FROM settings WHERE key = 'policy_version'").get().value_json,
+        JSON.stringify("101"),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("never regresses legacy raw-number or JSON-string generations", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL)");
+      const writeVersion = db.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('policy_version', ?, 0)");
+      const readVersion = db.prepare("SELECT value_json FROM settings WHERE key = 'policy_version'");
+
+      writeVersion.run("250");
+      db.exec(policyVersionBumpSql(100));
+      assert.equal(readVersion.get().value_json, JSON.stringify("251"));
+
+      writeVersion.run(JSON.stringify("300"));
+      db.exec(policyVersionBumpSql(100));
+      assert.equal(readVersion.get().value_json, JSON.stringify("301"));
+    } finally {
+      db.close();
+    }
+  });
+});
 
 describe("setup parseArgs", () => {
   it("parses repeatable domains and core options", () => {
@@ -13,14 +60,20 @@ describe("setup parseArgs", () => {
       "other.example.com",
       "--d1-database-id",
       "d1_123",
+      "--d1-database-name",
+      "custom-d1",
       "--kv-namespace-id",
       "kv_123",
+      "--access-app-name",
+      "custom-access",
     ], {});
 
     assert.equal(options.accountId, "acc_123");
     assert.deepEqual(options.domains, ["example.com", "other.example.com"]);
     assert.equal(options.d1DatabaseId, "d1_123");
+    assert.equal(options.d1DatabaseName, "custom-d1");
     assert.equal(options.kvNamespaceId, "kv_123");
+    assert.equal(options.accessAppName, "custom-access");
     assert.equal(options.relayHost, "smtp.example.com");
   });
 
@@ -43,6 +96,15 @@ describe("setup parseArgs", () => {
 
   it("does not accept the removed --dry-run mode", () => {
     assert.throws(() => parseArgs(["--dry-run"], {}), /Unknown option: --dry-run/);
+  });
+
+  it("uses an explicit destructive rotation flag and rejects the old ambiguous name", () => {
+    const options = parseArgs(["--rotate-all-worker-secrets"], {});
+    assert.equal(options.rotateAllWorkerSecrets, true);
+    assert.throws(
+      () => parseArgs(["--regenerate-secrets"], {}),
+      /removed because it understated a destructive operation/,
+    );
   });
 });
 
@@ -88,6 +150,7 @@ describe("setup main", () => {
       assert.doesNotMatch(command, /<admin@example\.com>/, `placeholder leaked: ${command}`);
       assert.doesNotMatch(command, /<domain>/, `placeholder leaked: ${command}`);
     }
+    assert.equal(result.plan.commands[0], "export CLOUDFLARE_ACCOUNT_ID=acc_123");
     assert.ok(result.plan.commands.some((command) => command.includes("d1 migrations apply cf-mail-relay --remote")));
     assert.ok(result.plan.commands.some((command) => command.includes("--account-id acc_123")));
     assert.ok(result.plan.commands.some((command) => command.includes("--pages-url https://mail.example.com")));
@@ -105,6 +168,19 @@ describe("setup main", () => {
       main(["--account-id", "acc_123", "--admin-url", "https://mail.example.com", "--domain", "example.com"], {}),
       /--allow-email is required/,
     );
+  });
+
+  it("documents explicit recovery behavior in --help", async () => {
+    const result = await main(["--help"], {});
+    assert.match(result.usage, /--rotate-all-worker-secrets/);
+    assert.match(result.usage, /--d1-database-name/);
+    assert.match(result.usage, /--access-app-name/);
+    assert.match(result.usage, /Destructive disaster recovery/);
+    assert.match(result.usage, /Destructive replacement retries must include it\s+again/);
+    assert.match(result.usage, /exits\s+nonzero after this intentional first phase/);
+    assert.match(result.usage, /intermediate Worker version/);
+    assert.match(result.usage, /blocked until every required secret name is present/);
+    assert.doesNotMatch(result.usage, /--regenerate-secrets/);
   });
 
   it("passes preflight checks when Cloudflare resources are visible", async () => {
@@ -188,6 +264,204 @@ function json(body, status = 200) {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+const managedSecretNames = ["CREDENTIAL_PEPPER", "METADATA_PEPPER", "RELAY_HMAC_SECRET_CURRENT"];
+const requiredSecretNames = ["CF_API_TOKEN", ...managedSecretNames];
+
+function recoveryJournalFixture({ pushed = [], operation = "initialize" } = {}) {
+  return {
+    version: 1,
+    account_id: "acc",
+    worker_script_name: "cf-mail-relay-worker",
+    relay_key_id: "rel_01",
+    operation,
+    created_at: "2026-08-10T00:00:00.000Z",
+    secrets: {
+      CREDENTIAL_PEPPER: "A".repeat(43),
+      METADATA_PEPPER: "B".repeat(43),
+      RELAY_HMAC_SECRET_CURRENT: "C".repeat(43),
+    },
+    pushed_secret_names: pushed,
+  };
+}
+
+function createApplyHarness({
+  remoteSecrets = [],
+  scriptExists = remoteSecrets.length > 0,
+  recoveryJournal = null,
+  runbook = null,
+  pushCfApiToken = true,
+  rotateAllWorkerSecrets = false,
+  failOnceAt = null,
+  initialUsers = 0,
+  secretListStatus = null,
+  wranglerExists = false,
+} = {}) {
+  const remoteSecretNames = new Set(remoteSecrets);
+  const files = new Map([
+    ["/repo/worker/wrangler.toml.example", `name = "cf-mail-relay-worker"
+account_id = "REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID"
+database_name = "cf-mail-relay"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+ACCESS_TEAM_DOMAIN = "your-team.cloudflareaccess.com"
+ACCESS_AUDIENCE = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
+RELAY_HMAC_KEY_ID = "rel_REPLACE_ME"
+routes = [{ pattern = "mail.example.com", custom_domain = true }]`],
+  ]);
+  if (wranglerExists) files.set("/repo/worker/wrangler.toml", "existing");
+  if (recoveryJournal !== null) files.set("/repo/.cf-mail-relay-setup-recovery.json", `${JSON.stringify(recoveryJournal)}\n`);
+  if (runbook !== null) files.set("/repo/RUNBOOK.md", runbook);
+
+  let workerScriptExists = scriptExists;
+  let users = initialUsers;
+  let failureConsumed = false;
+  const execCalls = [];
+  const events = [];
+  const progress = [];
+  const journalHistory = [];
+
+  const fail = (label) => {
+    if (!failureConsumed && failOnceAt === label) {
+      failureConsumed = true;
+      throw new Error(`injected interruption: ${label}`);
+    }
+  };
+
+  const fetchImpl = async (url, init = {}) => {
+    const parsed = new URL(url);
+    const path = parsed.pathname;
+    if (path === "/client/v4/accounts/acc/workers/scripts/cf-mail-relay-worker/secrets") {
+      events.push("remote-read:secrets");
+      if (secretListStatus !== null) return json({ success: false }, secretListStatus);
+      if (!workerScriptExists) return json({ success: false }, 404);
+      return json({ success: true, result: [...remoteSecretNames].map((name) => ({ name })) });
+    }
+    if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") {
+      return json({ success: true, result: [{ name: "cf-mail-relay", uuid: "d1_existing" }] });
+    }
+    if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") {
+      return json({ success: true, result: [{ id: "kv_existing", title: "cf-mail-relay-hot" }] });
+    }
+    if (path === "/client/v4/zones" && parsed.searchParams.get("name") === "example.com") {
+      return json({ success: true, result: [{ id: "zone_xyz", name: "example.com" }] });
+    }
+    if (path === "/client/v4/zones/zone_xyz/email/sending/subdomains") {
+      return json({ success: true, result: [{ enabled: true, name: "example.com" }] });
+    }
+    throw new Error(`unexpected ${init.method ?? "GET"} ${url}`);
+  };
+
+  const options = parseArgs([
+    "--account-id", "acc",
+    "--admin-url", "https://mail.example.com",
+    "--allow-email", "alex@example.com",
+    "--domain", "example.com",
+    "--apply",
+  ], {});
+  options.workerDir = "/repo/worker";
+  options.repoRoot = "/repo";
+  options.wranglerExamplePath = "/repo/worker/wrangler.toml.example";
+  options.wranglerPath = "/repo/worker/wrangler.toml";
+  options.runbookPath = "/repo/RUNBOOK.md";
+  options.recoveryJournalPath = "/repo/.cf-mail-relay-setup-recovery.json";
+  options.pushCfApiToken = pushCfApiToken;
+  options.rotateAllWorkerSecrets = rotateAllWorkerSecrets;
+
+  const execImpl = async (command, args, execOptions = {}) => {
+    const text = args.join(" ");
+    execCalls.push({ command, args: [...args], stdin: execOptions.stdin, env: execOptions.env });
+    if (args.includes("secret") && args.includes("bulk")) {
+      events.push("remote-mutation:secret-bulk");
+      fail("secret-bulk-before-remote");
+      workerScriptExists = true;
+      const values = JSON.parse(execOptions.stdin);
+      for (const name of Object.keys(values)) remoteSecretNames.add(name);
+      fail("secret-bulk-after-remote");
+      return undefined;
+    }
+    if (args.includes("secret") && args.includes("put")) {
+      const name = args[args.indexOf("put") + 1];
+      events.push(`remote-mutation:secret:${name}`);
+      fail(`secret:${name}`);
+      workerScriptExists = true;
+      remoteSecretNames.add(name);
+      return undefined;
+    }
+    if (text.includes("d1 migrations apply")) {
+      events.push("remote-mutation:migrations");
+      fail("before-push");
+      return undefined;
+    }
+    if (command === "pnpm" && args[0] === "--filter") {
+      fail("after-pushes-before-deploy");
+      return undefined;
+    }
+    if (text.includes("wrangler deploy")) {
+      events.push("remote-mutation:deploy");
+      return undefined;
+    }
+    if (text.includes("FROM users")) {
+      return JSON.stringify([{ results: [{ n: users }] }]);
+    }
+    if (text.includes("INSERT INTO users")) {
+      users += 1;
+      events.push("remote-mutation:bootstrap");
+      return undefined;
+    }
+    if (text.includes("INSERT INTO domains")) {
+      events.push("remote-mutation:domain");
+      fail("before-runbook");
+      return undefined;
+    }
+    if (text.includes("d1 execute")) {
+      events.push("remote-mutation:d1");
+    }
+    return undefined;
+  };
+
+  const context = {
+    options,
+    env: { CLOUDFLARE_API_TOKEN: "setup-token" },
+    client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "setup-token", fetchImpl),
+    execImpl,
+    readFileImpl: (path) => {
+      if (!files.has(path)) throw new Error(`missing injected file: ${path}`);
+      return files.get(path);
+    },
+    writeFileImpl: (path, body) => { files.set(path, body); },
+    writeSensitiveFileImpl: (path, body) => { files.set(path, body); },
+    existsImpl: (path) => files.has(path),
+    writeRecoveryJournalImpl: (path, journal) => {
+      events.push("local-write:recovery-journal");
+      const copy = structuredClone(journal);
+      journalHistory.push(copy);
+      files.set(path, `${JSON.stringify(copy)}\n`);
+    },
+    removeRecoveryJournalImpl: (path) => {
+      events.push("local-remove:recovery-journal");
+      files.delete(path);
+    },
+    accessAppImpl: async () => {
+      events.push("remote-mutation:access");
+      return { app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" };
+    },
+    fetchImpl,
+    progressImpl: (message) => progress.push(message),
+  };
+
+  return {
+    context,
+    events,
+    execCalls,
+    files,
+    journalHistory,
+    options,
+    progress,
+    remoteSecretNames,
+    run: () => runApply(context),
+  };
 }
 
 describe("setup apply helpers", () => {
@@ -345,6 +619,24 @@ routes = [
     assert.match(rendered, /pattern = "mail\.milf\.red"/);
   });
 
+  it("the checked-in Wrangler template selects the requested account", () => {
+    const template = readFileSync(new URL("../../worker/wrangler.toml.example", import.meta.url), "utf8");
+    const rendered = renderWranglerToml({
+      template,
+      accountId: "acc_xyz",
+      d1Id: "d1_xyz",
+      d1Name: "cf-mail-relay-v1-test",
+      kvId: "kv_xyz",
+      accessTeamDomain: "team.cloudflareaccess.com",
+      accessAudience: "aud_xyz",
+      adminUrl: "https://mail.example.com",
+      relayKeyId: "rel_01",
+      workerScriptName: "cf-mail-relay-v1-test",
+    });
+
+    assert.match(rendered, /^account_id = "acc_xyz"$/mu);
+  });
+
   it("renderRunbook includes admin URL, IDs, and DNS records per domain", () => {
     const runbook = renderRunbook({
       adminUrl: "https://mail.milf.red",
@@ -364,15 +656,366 @@ routes = [
     assert.match(runbook, /other\.example\.com/);
     assert.match(runbook, /RELAY_HMAC_SECRET=S3CR3T/);
     assert.match(runbook, /RELAY_DOMAIN=mailer\.example\.com/);
+    assert.match(runbook, /RELAY_TLS_CERT_FILE=\/tls\/relay\.pem/);
+    assert.match(runbook, /RELAY_TLS_KEY_FILE=\/tls\/relay\.pem/);
     assert.match(runbook, /relay: `mailer\.example\.com`/);
+  });
+
+  it("writes the recovery journal atomically with owner-only permissions", () => {
+    const directory = mkdtempSync(join(tmpdir(), "cf-mail-relay-setup-"));
+    const path = join(directory, "recovery.json");
+    try {
+      const journal = recoveryJournalFixture();
+      writeRecoveryJournalAtomic(path, journal);
+
+      assert.equal(statSync(path).mode & 0o777, 0o600);
+      assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), journal);
+
+      const updated = recoveryJournalFixture({ pushed: ["CREDENTIAL_PEPPER"] });
+      writeRecoveryJournalAtomic(path, updated);
+      assert.equal(statSync(path).mode & 0o777, 0o600);
+      assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), updated);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("atomically replaces a sensitive file with owner-only permissions", () => {
+    const directory = mkdtempSync(join(tmpdir(), "cf-mail-relay-runbook-"));
+    const path = join(directory, "RUNBOOK.md");
+    try {
+      writeFileWithMode(path, "old\n", { encoding: "utf8", mode: 0o644 });
+      assert.equal(statSync(path).mode & 0o777, 0o644);
+
+      writeSensitiveFileAtomic(path, "secret\n", { encoding: "utf8", mode: 0o600 });
+      assert.equal(statSync(path).mode & 0o777, 0o600);
+      assert.equal(readFileSync(path, "utf8"), "secret\n");
+      assert.deepEqual(readdirSync(directory), ["RUNBOOK.md"]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans up a sensitive temporary file if the atomic rename fails", () => {
+    const directory = mkdtempSync(join(tmpdir(), "cf-mail-relay-runbook-"));
+    const path = join(directory, "RUNBOOK.md");
+    try {
+      mkdirSync(path);
+      assert.throws(
+        () => writeSensitiveFileAtomic(path, "secret\n", { encoding: "utf8", mode: 0o600 }),
+        /EISDIR|ENOTDIR|ENOTEMPTY|operation not permitted/iu,
+      );
+      assert.deepEqual(readdirSync(directory), ["RUNBOOK.md"]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("persists generated secrets before the first remote mutation and removes the journal only after success", async () => {
+    const harness = createApplyHarness();
+    const result = await harness.run();
+
+    const firstJournalWrite = harness.events.indexOf("local-write:recovery-journal");
+    const firstRemoteMutation = harness.events.findIndex((event) => event.startsWith("remote-mutation:"));
+    assert.ok(firstJournalWrite >= 0);
+    assert.ok(firstRemoteMutation > firstJournalWrite, harness.events.join(" | "));
+    assert.deepEqual([...harness.remoteSecretNames].sort(), [...requiredSecretNames].sort());
+    assert.equal(harness.files.has(harness.options.recoveryJournalPath), false);
+
+    const managedBulks = harness.execCalls.filter(({ args }) => args.includes("secret") && args.includes("bulk"));
+    assert.equal(managedBulks.length, 1, "all managed values should use one intermediate-version write");
+    assert.deepEqual(JSON.parse(managedBulks[0].stdin), harness.journalHistory[0].secrets);
+
+    const wranglerCalls = harness.execCalls.filter(({ args }) => args[0] === "exec" && args[1] === "wrangler");
+    assert.ok(wranglerCalls.length > 0);
+    assert.ok(wranglerCalls.every(({ env }) => env?.CLOUDFLARE_ACCOUNT_ID === "acc"));
+
+    const runbook = harness.files.get(harness.options.runbookPath);
+    assert.match(runbook, /^RELAY_HMAC_SECRET=[A-Za-z0-9_-]{43}$/mu);
+    assert.doesNotMatch(runbook, /<existing>/iu);
+
+    const generatedValues = Object.values(harness.journalHistory[0].secrets);
+    const observableOutput = JSON.stringify({
+      result,
+      progress: harness.progress,
+      commands: harness.execCalls.map(({ command, args }) => ({ command, args })),
+    });
+    for (const value of generatedValues) {
+      assert.doesNotMatch(observableOutput, new RegExp(value, "u"));
+    }
+  });
+
+  it("keeps the recovery journal and refuses deploy until CF_API_TOKEN exists", async () => {
+    const harness = createApplyHarness({ pushCfApiToken: false });
+    let failure;
+    try {
+      await harness.run();
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure instanceof Error);
+    assert.match(failure.message, /required Worker secrets are missing: CF_API_TOKEN/);
+    assert.ok(harness.files.has(harness.options.recoveryJournalPath));
+    assert.ok(!harness.execCalls.some(({ args }) => args.includes("deploy")));
+    assert.equal(harness.execCalls.filter(({ args }) => args.includes("secret") && args.includes("bulk")).length, 1);
+    assert.deepEqual([...harness.remoteSecretNames].sort(), [...managedSecretNames].sort());
+    const journal = JSON.parse(harness.files.get(harness.options.recoveryJournalPath));
+    for (const value of Object.values(journal.secrets)) {
+      assert.doesNotMatch(failure.message, new RegExp(value, "u"));
+    }
+  });
+
+  it("reuses complete remote secrets from a fresh clone without generating or rotating", async () => {
+    const harness = createApplyHarness({
+      remoteSecrets: requiredSecretNames,
+      scriptExists: true,
+      pushCfApiToken: false,
+    });
+    const result = await harness.run();
+
+    assert.equal(harness.journalHistory.length, 0);
+    assert.ok(!harness.execCalls.some(({ args }) => args.includes("secret")));
+    assert.ok(result.steps.some((step) => step.step === "managed_secrets" && step.source === "remote"));
+    assert.ok(result.steps.some((step) => step.step === "runbook_preserved"));
+    assert.equal(harness.files.has(harness.options.runbookPath), false);
+  });
+
+  it("pushes CF_API_TOKEN independently while preserving the existing relay HMAC value", async () => {
+    const existingRelaySecret = "R".repeat(43);
+    const harness = createApplyHarness({
+      remoteSecrets: managedSecretNames,
+      scriptExists: true,
+      pushCfApiToken: true,
+      runbook: `# existing runbook\nRELAY_HMAC_SECRET=${existingRelaySecret}\n`,
+    });
+    const result = await harness.run();
+
+    const secretPuts = harness.execCalls.filter(({ args }) => args.includes("secret") && args.includes("put"));
+    assert.deepEqual(secretPuts.map(({ args }) => args[args.indexOf("put") + 1]), ["CF_API_TOKEN"]);
+    assert.equal(secretPuts[0].stdin, "setup-token");
+    assert.equal(harness.journalHistory.length, 0);
+    assert.match(harness.files.get(harness.options.runbookPath), new RegExp(`^RELAY_HMAC_SECRET=${existingRelaySecret}$`, "mu"));
+    assert.ok(result.steps.some((step) => step.step === "runbook_written" && step.secret_source === "existing_runbook"));
+  });
+
+  it("refuses incomplete remote managed-secret state before any mutation when no journal exists", async () => {
+    const harness = createApplyHarness({
+      remoteSecrets: ["CF_API_TOKEN", "CREDENTIAL_PEPPER"],
+      scriptExists: true,
+      pushCfApiToken: false,
+    });
+
+    await assert.rejects(
+      harness.run(),
+      /incomplete managed secrets: missing METADATA_PEPPER, RELAY_HMAC_SECRET_CURRENT/,
+    );
+    assert.equal(harness.journalHistory.length, 0);
+    assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
+  });
+
+  it("refuses to infer secret state from local wrangler.toml when the remote check fails", async () => {
+    const harness = createApplyHarness({
+      secretListStatus: 403,
+      wranglerExists: true,
+    });
+
+    await assert.rejects(
+      harness.run(),
+      /Could not inspect remote Worker secrets.*HTTP 403.*Refusing to guess from local files/s,
+    );
+    assert.equal(harness.journalHistory.length, 0);
+    assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
+  });
+
+  it("refuses a Wrangler config bound to another account before any mutation", async () => {
+    const harness = createApplyHarness({ wranglerExists: true });
+    harness.files.set(harness.options.wranglerPath, 'account_id = "another-account"\n');
+
+    await assert.rejects(
+      harness.run(),
+      /selects Cloudflare account another-account, but --account-id selects acc/,
+    );
+    assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
+  });
+
+  it("refuses a recovery journal bound to another account before any mutation", async () => {
+    const journal = recoveryJournalFixture();
+    journal.account_id = "another-account";
+    const harness = createApplyHarness({
+      recoveryJournal: journal,
+      remoteSecrets: requiredSecretNames,
+      scriptExists: true,
+    });
+
+    await assert.rejects(harness.run(), /recovery journal .* does not match account acc/s);
+    assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
+  });
+
+  it("resumes an initialize recovery journal without the destructive flag", async () => {
+    const journal = recoveryJournalFixture({ operation: "initialize" });
+    const harness = createApplyHarness({
+      recoveryJournal: journal,
+      rotateAllWorkerSecrets: false,
+    });
+
+    const result = await harness.run();
+
+    assert.ok(result.steps.some((step) =>
+      step.step === "secret_recovery_journal"
+      && step.source === "initialize"
+      && step.resumed === true));
+    const managedBulk = harness.execCalls.find(({ args }) => args.includes("secret") && args.includes("bulk"));
+    assert.deepEqual(JSON.parse(managedBulk.stdin), journal.secrets);
+  });
+
+  it("resumes a replace_all recovery journal only with the destructive flag", async () => {
+    const journal = recoveryJournalFixture({ operation: "replace_all" });
+    const harness = createApplyHarness({
+      recoveryJournal: journal,
+      remoteSecrets: requiredSecretNames,
+      scriptExists: true,
+      rotateAllWorkerSecrets: true,
+    });
+
+    const result = await harness.run();
+
+    assert.ok(result.steps.some((step) =>
+      step.step === "secret_recovery_journal"
+      && step.source === "replace_all"
+      && step.resumed === true));
+    const managedBulk = harness.execCalls.find(({ args }) => args.includes("secret") && args.includes("bulk"));
+    assert.deepEqual(JSON.parse(managedBulk.stdin), journal.secrets);
+  });
+
+  it("refuses the destructive flag when an initialize recovery journal exists", async () => {
+    const harness = createApplyHarness({
+      recoveryJournal: recoveryJournalFixture({ operation: "initialize" }),
+      rotateAllWorkerSecrets: true,
+    });
+
+    await assert.rejects(
+      harness.run(),
+      /records an interrupted normal initialization.*Rerun without --rotate-all-worker-secrets/s,
+    );
+    assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
+  });
+
+  it("requires the destructive flag again when a replace_all recovery journal exists", async () => {
+    const harness = createApplyHarness({
+      recoveryJournal: recoveryJournalFixture({ operation: "replace_all" }),
+      remoteSecrets: requiredSecretNames,
+      scriptExists: true,
+      rotateAllWorkerSecrets: false,
+    });
+
+    await assert.rejects(
+      harness.run(),
+      /records an interrupted destructive replacement.*Rerun with --rotate-all-worker-secrets/s,
+    );
+    assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
+  });
+
+  it("requires the destructive flag to replace all managed secrets on an existing deployment", async () => {
+    const harness = createApplyHarness({
+      remoteSecrets: requiredSecretNames,
+      scriptExists: true,
+      pushCfApiToken: false,
+      rotateAllWorkerSecrets: true,
+    });
+    const result = await harness.run();
+
+    assert.equal(harness.journalHistory[0].operation, "replace_all");
+    const managedBulks = harness.execCalls.filter(({ args }) => args.includes("secret") && args.includes("bulk"));
+    assert.equal(managedBulks.length, 1);
+    assert.deepEqual(JSON.parse(managedBulks[0].stdin), harness.journalHistory[0].secrets);
+    assert.ok(!harness.execCalls.some(({ args }) => args.includes("secret") && args.includes("put")));
+    assert.equal(harness.files.has(harness.options.recoveryJournalPath), false);
+    assert.ok(result.steps.some((step) => step.step === "secret_recovery_journal" && step.source === "replace_all"));
+    assert.doesNotMatch(harness.files.get(harness.options.runbookPath), /<existing>/iu);
+  });
+
+  it("retries the same bulk values after interruption before the remote bulk commit", async () => {
+    const harness = createApplyHarness({ failOnceAt: "secret-bulk-before-remote" });
+
+    await assert.rejects(harness.run(), /injected interruption: secret-bulk-before-remote/);
+    const saved = JSON.parse(harness.files.get(harness.options.recoveryJournalPath));
+    assert.deepEqual(saved.pushed_secret_names, []);
+    assert.deepEqual([...harness.remoteSecretNames], []);
+    const firstAttempt = harness.execCalls.find(({ args }) => args.includes("secret") && args.includes("bulk"));
+    assert.deepEqual(JSON.parse(firstAttempt.stdin), saved.secrets);
+
+    const result = await harness.run();
+    const attempts = harness.execCalls.filter(({ args }) => args.includes("secret") && args.includes("bulk"));
+    assert.equal(attempts.length, 2);
+    assert.ok(attempts.every(({ stdin }) => JSON.stringify(JSON.parse(stdin)) === JSON.stringify(saved.secrets)));
+    assert.ok(result.steps.some((step) => step.step === "secret_recovery_journal" && step.resumed === true));
+    assert.equal(harness.files.has(harness.options.recoveryJournalPath), false);
+  });
+
+  it("retries the same bulk values when remote completion is ambiguous", async () => {
+    const harness = createApplyHarness({ failOnceAt: "secret-bulk-after-remote" });
+
+    await assert.rejects(harness.run(), /injected interruption: secret-bulk-after-remote/);
+    const saved = JSON.parse(harness.files.get(harness.options.recoveryJournalPath));
+    assert.deepEqual(saved.pushed_secret_names, []);
+    assert.deepEqual([...harness.remoteSecretNames].sort(), [...managedSecretNames].sort());
+
+    await harness.run();
+    const attempts = harness.execCalls.filter(({ args }) => args.includes("secret") && args.includes("bulk"));
+    assert.equal(attempts.length, 2);
+    assert.ok(attempts.every(({ stdin }) => JSON.stringify(JSON.parse(stdin)) === JSON.stringify(saved.secrets)));
+    assert.equal(harness.files.has(harness.options.recoveryJournalPath), false);
+  });
+
+  it("resumes after all secret pushes without changing managed values", async () => {
+    const harness = createApplyHarness({ failOnceAt: "after-pushes-before-deploy" });
+
+    await assert.rejects(harness.run(), /injected interruption: after-pushes-before-deploy/);
+    const saved = JSON.parse(harness.files.get(harness.options.recoveryJournalPath));
+    assert.deepEqual([...saved.pushed_secret_names].sort(), [...managedSecretNames].sort());
+    const managedBulkCount = () => harness.execCalls.filter(({ args }) =>
+      args.includes("secret") && args.includes("bulk")).length;
+    assert.equal(managedBulkCount(), 1);
+
+    await harness.run();
+    assert.equal(managedBulkCount(), 1);
+    assert.equal(harness.files.has(harness.options.recoveryJournalPath), false);
+    assert.match(harness.files.get(harness.options.runbookPath), new RegExp(`^RELAY_HMAC_SECRET=${saved.secrets.RELAY_HMAC_SECRET_CURRENT}$`, "mu"));
+  });
+
+  it("retains the journal after deploy and resumes through runbook persistence", async () => {
+    const harness = createApplyHarness({ failOnceAt: "before-runbook" });
+
+    await assert.rejects(harness.run(), /injected interruption: before-runbook/);
+    const saved = JSON.parse(harness.files.get(harness.options.recoveryJournalPath));
+    const managedBulksBeforeRetry = harness.execCalls.filter(({ args }) =>
+      args.includes("secret") && args.includes("bulk")).length;
+    assert.equal(managedBulksBeforeRetry, 1);
+    assert.ok(harness.execCalls.some(({ args }) => args.includes("deploy")));
+
+    await harness.run();
+    const managedBulksAfterRetry = harness.execCalls.filter(({ args }) =>
+      args.includes("secret") && args.includes("bulk")).length;
+    assert.equal(managedBulksAfterRetry, managedBulksBeforeRetry);
+    assert.equal(harness.files.has(harness.options.recoveryJournalPath), false);
+    assert.match(harness.files.get(harness.options.runbookPath), new RegExp(`^RELAY_HMAC_SECRET=${saved.secrets.RELAY_HMAC_SECRET_CURRENT}$`, "mu"));
   });
 
   it("runApply orchestrates create-or-reuse, secret push, deploy, bootstrap", async () => {
     const execCalls = [];
+    const secretBulkPayloads = [];
     const writes = new Map();
     const exists = new Set();
+    const remoteSecrets = new Set();
+    let workerScriptExists = false;
+    let recoveryJournal = null;
     const fetchImpl = async (url, init = {}) => {
       const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/workers/scripts/cf-mail-relay-worker/secrets") {
+        if (!workerScriptExists) return json({ success: false }, 404);
+        return json({ success: true, result: [...remoteSecrets].map((name) => ({ name })) });
+      }
       if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") {
         return json({ success: true, result: [] });
       }
@@ -409,13 +1052,26 @@ routes = [
     options.wranglerExamplePath = "/repo/worker/wrangler.toml.example";
     options.wranglerPath = "/repo/worker/wrangler.toml";
     options.runbookPath = "/repo/RUNBOOK.md";
+    options.recoveryJournalPath = "/repo/.cf-mail-relay-setup-recovery.json";
+    options.pushCfApiToken = true;
 
     const result = await runApply({
       options,
       env: { CLOUDFLARE_API_TOKEN: "token" },
       client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
-      execImpl: async (command, args) => {
+      execImpl: async (command, args, execOptions = {}) => {
         execCalls.push(`${command} ${args.join(" ")}`);
+        if (args.includes("secret") && args.includes("bulk")) {
+          const payload = JSON.parse(execOptions.stdin);
+          secretBulkPayloads.push(payload);
+          workerScriptExists = true;
+          for (const name of Object.keys(payload)) remoteSecrets.add(name);
+        }
+        const secretIndex = args.indexOf("put");
+        if (args.includes("secret") && secretIndex >= 0) {
+          workerScriptExists = true;
+          remoteSecrets.add(args[secretIndex + 1]);
+        }
         if (args.join(" ").includes("d1 execute") && args.join(" ").includes("FROM users")) {
           return JSON.stringify([{ results: [{ n: 0 }] }]);
         }
@@ -431,7 +1087,10 @@ routes = [
   { pattern = "mail.example.com", custom_domain = true },
 ]`,
       writeFileImpl: (path, body) => { writes.set(path, body); },
-      existsImpl: (path) => exists.has(path),
+      writeSensitiveFileImpl: (path, body) => { writes.set(path, body); },
+      existsImpl: (path) => path === options.recoveryJournalPath ? recoveryJournal !== null : exists.has(path),
+      writeRecoveryJournalImpl: (_path, journal) => { recoveryJournal = structuredClone(journal); },
+      removeRecoveryJournalImpl: () => { recoveryJournal = null; },
       accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
       progressImpl: () => {},
       fetchImpl,
@@ -461,7 +1120,7 @@ routes = [
     assert.ok(settingsCommand);
     assert.match(settingsCommand, /VALUES \('smtp_host', '"smtp\.example\.com"', unixepoch\(\)\)/);
     assert.doesNotMatch(settingsCommand, /\\"smtp\.example\.com\\"/);
-    assert.ok(execCalls.some((call) => call.includes("secret put RELAY_HMAC_SECRET_CURRENT")));
+    assert.ok(execCalls.some((call) => call.includes("secret bulk --name cf-mail-relay-worker")));
     assert.ok(execCalls.some((call) => call.includes("wrangler deploy")));
     // Setup bootstraps the first admin directly in D1 and never creates the
     // manual-recovery BOOTSTRAP_SETUP_TOKEN during normal wizard runs.
@@ -470,8 +1129,8 @@ routes = [
     assert.ok(!execCalls.some((call) => call.includes("secret put BOOTSTRAP_SETUP_TOKEN")));
     assert.ok(!execCalls.some((call) => call.includes("secret delete BOOTSTRAP_SETUP_TOKEN")));
     assert.ok(!execCalls.some((call) => call.includes("secret list --format json")));
-    const generatedSecretPuts = execCalls.filter((call) => /secret put (CREDENTIAL_PEPPER|METADATA_PEPPER|RELAY_HMAC_SECRET_CURRENT|BOOTSTRAP_SETUP_TOKEN)$/.test(call));
-    assert.equal(generatedSecretPuts.length, 3, "expected only the 3 steady-state generated-secret puts");
+    assert.equal(secretBulkPayloads.length, 1, "expected one managed-secret bulk write");
+    assert.deepEqual(Object.keys(secretBulkPayloads[0]).sort(), [...managedSecretNames].sort());
     // Domains registered: setup INSERTs each --domain into D1 with zone_id + status.
     assert.ok(stepNames.includes("domains_registered"));
     const domainsStep = result.steps.find((step) => step.step === "domains_registered");
@@ -480,7 +1139,7 @@ routes = [
     assert.ok(domainInsert, `expected domains INSERT; calls = ${execCalls.join(" | ")}`);
     assert.match(domainInsert, /ON CONFLICT\(domain\) DO UPDATE SET/);
     // policy_version was bumped after domain registration.
-    assert.ok(execCalls.some((call) => /d1 execute .*'policy_version'/.test(call)));
+    assert.ok(execCalls.some((call) => call.includes("d1 execute") && call.includes("'policy_version'")));
   });
 
   it("runApply validates sending domains before mutating resources", async () => {
@@ -544,6 +1203,9 @@ routes = [
     const execCalls = [];
     const fetchImpl = async (url, init = {}) => {
       const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/workers/scripts/cf-mail-relay-worker/secrets") {
+        return json({ success: true, result: ["CF_API_TOKEN", "CREDENTIAL_PEPPER", "METADATA_PEPPER", "RELAY_HMAC_SECRET_CURRENT"].map((name) => ({ name })) });
+      }
       if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") {
         return json({ success: true, result: [{ name: "cf-mail-relay", uuid: "d1_existing" }] });
       }
@@ -589,6 +1251,7 @@ routes = [
       readFileImpl: () => "",
       // Existing wrangler.toml — the previous --apply attempt created it.
       writeFileImpl: () => {},
+      writeSensitiveFileImpl: () => {},
       existsImpl: (path) => path === "/repo/worker/wrangler.toml",
       accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
       progressImpl: () => {},
@@ -604,8 +1267,15 @@ routes = [
 
   it("runApply emits progress lines via the injected progressImpl", async () => {
     const progressLines = [];
+    const remoteSecrets = new Set();
+    let workerScriptExists = false;
+    let recoveryJournal = null;
     const fetchImpl = async (url, init = {}) => {
       const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/workers/scripts/cf-mail-relay-worker/secrets") {
+        if (!workerScriptExists) return json({ success: false }, 404);
+        return json({ success: true, result: [...remoteSecrets].map((name) => ({ name })) });
+      }
       if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
       if (path === "/client/v4/accounts/acc/d1/database" && init.method === "POST") return json({ success: true, result: { uuid: "d1_new" } });
       if (path === "/client/v4/accounts/acc/storage/kv/namespaces" && (init.method ?? "GET") === "GET") return json({ success: true, result: [] });
@@ -628,12 +1298,23 @@ routes = [
     options.wranglerExamplePath = "/repo/worker/wrangler.toml.example";
     options.wranglerPath = "/repo/worker/wrangler.toml";
     options.runbookPath = "/repo/RUNBOOK.md";
+    options.recoveryJournalPath = "/repo/.cf-mail-relay-setup-recovery.json";
+    options.pushCfApiToken = true;
 
     await runApply({
       options,
       env: { CLOUDFLARE_API_TOKEN: "token" },
       client: new CloudflareApiClient("https://api.cloudflare.com/client/v4", "token", fetchImpl),
-      execImpl: async (_command, args) => {
+      execImpl: async (_command, args, execOptions = {}) => {
+        if (args.includes("secret") && args.includes("bulk")) {
+          workerScriptExists = true;
+          for (const name of Object.keys(JSON.parse(execOptions.stdin))) remoteSecrets.add(name);
+        }
+        const secretIndex = args.indexOf("put");
+        if (args.includes("secret") && secretIndex >= 0) {
+          workerScriptExists = true;
+          remoteSecrets.add(args[secretIndex + 1]);
+        }
         if (args.join(" ").includes("d1 execute") && args.join(" ").includes("FROM users")) {
           return JSON.stringify([{ results: [{ n: 0 }] }]);
         }
@@ -641,7 +1322,10 @@ routes = [
       },
       readFileImpl: () => "",
       writeFileImpl: () => {},
-      existsImpl: () => false,
+      writeSensitiveFileImpl: () => {},
+      existsImpl: (path) => path === options.recoveryJournalPath && recoveryJournal !== null,
+      writeRecoveryJournalImpl: (_path, journal) => { recoveryJournal = structuredClone(journal); },
+      removeRecoveryJournalImpl: () => { recoveryJournal = null; },
       accessAppImpl: async () => ({ app_id: "app_xyz", access_team_domain: "team.cloudflareaccess.com", access_audience: "aud_xyz" }),
       fetchImpl,
       progressImpl: (message) => progressLines.push(message),
@@ -663,6 +1347,9 @@ routes = [
     const execCalls = [];
     const fetchImpl = async (url, init = {}) => {
       const path = new URL(url).pathname;
+      if (path === "/client/v4/accounts/acc/workers/scripts/cf-mail-relay-worker/secrets") {
+        return json({ success: true, result: ["CF_API_TOKEN", "CREDENTIAL_PEPPER", "METADATA_PEPPER", "RELAY_HMAC_SECRET_CURRENT"].map((name) => ({ name })) });
+      }
       if (path === "/client/v4/accounts/acc/d1/database" && (init.method ?? "GET") === "GET") {
         return json({ success: true, result: [{ name: "cf-mail-relay", uuid: "d1_existing" }] });
       }
