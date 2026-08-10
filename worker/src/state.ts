@@ -94,6 +94,7 @@ const authDecisionTtlSeconds = 5;
 const credentialCacheTtlSeconds = 300;
 const idempotencyTtlSeconds = 24 * 60 * 60;
 export const idempotencyPendingLeaseSeconds = 5 * 60;
+const maxSmtpUsernameLength = 254;
 
 export async function authenticateSmtpCredential(
   env: Env,
@@ -102,19 +103,23 @@ export async function authenticateSmtpCredential(
   remoteIp: string | undefined,
 ): Promise<AuthDecision | { ok: false; reason: AuthFailureReason }> {
   const policyVersion = await policyVersionFromD1(env);
-  const credential = await lookupCredential(env, username, policyVersion);
+  const normalizedUsername = normalizeSmtpUsername(username);
+  const credential = utf8Length(normalizedUsername) <= maxSmtpUsernameLength
+    ? await lookupCredential(env, normalizedUsername, policyVersion)
+    : null;
   if (credential === null) {
-    await recordAuthFailure(env, username, "not_found", remoteIp);
+    await recordAuthFailure(env, await unknownUsernameToken(env, normalizedUsername), "not_found", remoteIp);
     return { ok: false, reason: "not_found" };
   }
+  const canonicalUsername = canonicalSmtpUsername(credential.username);
   if (credential.revoked_at !== null || credential.user_disabled_at !== null) {
-    await recordAuthFailure(env, username, "disabled", remoteIp);
+    await recordAuthFailure(env, canonicalUsername, "disabled", remoteIp);
     return { ok: false, reason: "disabled" };
   }
 
   const candidateHash = await credentialHash(env, password);
   if (!timingSafeEqualString(candidateHash, credential.secret_hash)) {
-    await recordAuthFailure(env, username, "bad_creds", remoteIp);
+    await recordAuthFailure(env, canonicalUsername, "bad_creds", remoteIp);
     return { ok: false, reason: "bad_creds" };
   }
 
@@ -236,11 +241,42 @@ export async function policyVersionFromD1(env: Env): Promise<string> {
   if (row === null) {
     return "1";
   }
+  return parsePolicyVersion(row.value_json);
+}
+
+/**
+ * Atomically advances the policy generation. The SQL expression accepts both
+ * historic raw numeric values (`7`) and JSON-string values (`"7"`), then uses
+ * the larger of wall-clock seconds or the previous generation plus one. D1
+ * serializes the UPSERT, so concurrent/same-second mutations cannot reuse a
+ * generation.
+ */
+export async function bumpPolicyVersion(env: Env): Promise<string> {
+  const now = nowSeconds();
+  await env.D1_MAIN.prepare(
+    `INSERT INTO settings (key, value_json, updated_at)
+     VALUES ('policy_version', json_quote(CAST(? AS TEXT)), ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value_json = json_quote(CAST(MAX(
+         CAST(CASE
+           WHEN json_valid(settings.value_json) THEN json_extract(settings.value_json, '$')
+           ELSE settings.value_json
+         END AS INTEGER) + 1,
+         ?
+       ) AS TEXT)),
+       updated_at = excluded.updated_at`,
+  )
+    .bind(now, now, now)
+    .run();
+  return policyVersionFromD1(env);
+}
+
+function parsePolicyVersion(raw: string): string {
   try {
-    const parsed = JSON.parse(row.value_json) as unknown;
+    const parsed = JSON.parse(raw) as unknown;
     return typeof parsed === "string" || typeof parsed === "number" ? String(parsed) : "1";
   } catch {
-    return row.value_json;
+    return raw;
   }
 }
 
@@ -482,7 +518,7 @@ export async function credentialHash(env: Env, password: string): Promise<string
 }
 
 async function lookupCredential(env: Env, username: string, policyVersion: string): Promise<CredentialRow | null> {
-  const normalizedUsername = username.trim().toLowerCase();
+  const normalizedUsername = normalizeSmtpUsername(username);
   const cacheKey = `cred:${policyVersion}:${normalizedUsername}`;
   const cached = await env.KV_HOT.get(cacheKey);
   if (cached !== null) {
@@ -605,21 +641,49 @@ async function allowedSendersForApiKey(env: Env, key: ApiKeyRow): Promise<string
 }
 
 function parseAllowedSenderIds(raw: string | null): string[] | null {
-  if (raw === null || raw.trim().length === 0) {
+  if (raw === null) {
     return null;
   }
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) && parsed.every((value) => typeof value === "string") ? parsed : null;
+    if (Array.isArray(parsed) && parsed.every((value) => typeof value === "string")) {
+      return parsed;
+    }
   } catch {
-    return null;
+    // Fall through to the stable fail-closed configuration error below.
   }
+  throw new Error("invalid_allowed_sender_ids_config");
 }
 
 async function recordAuthFailure(env: Env, username: string, reason: AuthFailureReason, remoteIp: string | undefined): Promise<void> {
   await env.D1_MAIN.prepare("INSERT INTO auth_failures (id, ts, source, remote_ip_hash, attempted_username, reason) VALUES (?, ?, 'smtp', ?, ?, ?)")
     .bind(prefixedId("authfail"), nowSeconds(), remoteIp === undefined ? null : await hmacSha256Hex(env.METADATA_PEPPER, remoteIp), username, reason)
     .run();
+}
+
+function normalizeSmtpUsername(username: string): string {
+  return username.trim().toLowerCase();
+}
+
+function canonicalSmtpUsername(username: string): string {
+  const normalized = normalizeSmtpUsername(username);
+  let bounded = "";
+  let bytes = 0;
+  for (const character of normalized) {
+    const characterBytes = utf8Length(character);
+    if (bytes + characterBytes > maxSmtpUsernameLength) break;
+    bounded += character;
+    bytes += characterBytes;
+  }
+  return bounded;
+}
+
+async function unknownUsernameToken(env: Env, username: string): Promise<string> {
+  return `hmac:${await hmacSha256Hex(env.METADATA_PEPPER, username)}`;
+}
+
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 async function updateCredentialLastUsed(env: Env, credentialId: string, remoteIp: string | undefined): Promise<void> {

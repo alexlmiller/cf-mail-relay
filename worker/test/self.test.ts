@@ -171,6 +171,15 @@ describe("self-service endpoints", () => {
     expect(keyInsert!.params).not.toContain("attacker");
   });
 
+  it("bounds self-service credential labels and SMTP usernames", async () => {
+    const { db } = makeD1({});
+    const env = makeEnv(db);
+
+    await expect(selfCreateSmtpCredential(env, "usr_self", { name: "x".repeat(129), username: "gmail-relay" })).rejects.toThrow("invalid_name");
+    await expect(selfCreateSmtpCredential(env, "usr_self", { name: "Laptop", username: "x".repeat(255) })).rejects.toThrow("invalid_username");
+    await expect(selfCreateApiKey(env, "usr_self", { name: "x".repeat(129) })).rejects.toThrow("invalid_name");
+  });
+
   it("refuses to revoke a credential owned by a different user", async () => {
     const { db } = makeD1({ changesOnRevoke: 0 });
     await expect(selfRevokeSmtpCredential(makeEnv(db), "usr_self", "cred_other")).rejects.toThrow("credential_not_found");
