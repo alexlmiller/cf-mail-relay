@@ -143,11 +143,21 @@ Current schema baseline: `worker/migrations/0001_init.sql` + `0002_security_hard
 
 The setup wizard is idempotent and will reuse existing D1/KV resources when
 given `--d1-id` and `--kv-id`; the Access helper updates the matching Access
-app by name. Adopters who prefer declarative state can drive resource creation
-via OpenTofu and pass the resulting IDs to `pnpm run setup`.
+app by name. It also reads remote Worker secret names before mutation. Complete
+managed-secret state is reused, while incomplete state without the matching
+mode-`0600` recovery journal is refused. Adopters who prefer declarative state
+can drive resource creation via OpenTofu and pass the resulting IDs to `pnpm
+run setup`.
+
+Wrangler secret writes may create intermediate Worker versions. Setup writes
+the three managed values in one bulk request, retries an ambiguous result with
+the same journaled values, and blocks its final application deploy until all
+required remote secret names are present.
 
 A reference module is in `infra/opentofu/`; see its `README.md` for the
 two-phase workflow.
 
-Secrets stay out of tfstate. The wizard always pushes secrets via `wrangler
-secret put`, never through Terraform/OpenTofu.
+Secrets stay out of tfstate. When initialization or explicit disaster recovery
+requires a secret write, the wizard uses Wrangler's secret commands, never
+Terraform/OpenTofu. See the project README for recovery-journal and
+`--rotate-all-worker-secrets` behavior.
