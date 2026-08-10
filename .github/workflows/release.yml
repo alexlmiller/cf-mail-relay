@@ -186,6 +186,7 @@ jobs:
           --set "relay.annotations=index:org.opencontainers.image.revision=$GIT_SHA"
           --set "relay.annotations=index:org.opencontainers.image.source=$SOURCE_URL"
           --set "relay.annotations=index:org.opencontainers.image.version=$VERSION"
+          --set "relay.tags=$REGISTRY_IMAGE:$VERSION"
           --var GIT_SHA="$GIT_SHA"
           --var REGISTRY_IMAGE="$REGISTRY_IMAGE"
           --var SOURCE_URL="$SOURCE_URL"
