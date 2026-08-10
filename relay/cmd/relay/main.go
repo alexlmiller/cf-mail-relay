@@ -29,6 +29,7 @@ var appVersion = "dev"
 
 const protocolVersion = "0.1.0-ms7"
 const defaultMaxMessageBytes = 4_718_592
+const healthcheckTimeout = 4 * time.Second
 
 type config struct {
 	ListenAddr        string
@@ -47,7 +48,7 @@ type config struct {
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
-		if err := checkSMTPBanner(envOrDefault("RELAY_LISTEN_ADDR", ":587"), 5*time.Second); err != nil {
+		if err := checkSMTPBanner(envOrDefault("RELAY_LISTEN_ADDR", ":587"), healthcheckTimeout); err != nil {
 			log.Printf("SMTP healthcheck failed: %v", err)
 			os.Exit(1)
 		}
@@ -106,12 +107,13 @@ func checkSMTPBanner(listenAddr string, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	conn, err := net.DialTimeout("tcp", address, timeout)
+	deadline := time.Now().Add(timeout)
+	conn, err := (&net.Dialer{Deadline: deadline}).Dial("tcp", address)
 	if err != nil {
 		return fmt.Errorf("connect to %s: %w", address, err)
 	}
 	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+	if err := conn.SetDeadline(deadline); err != nil {
 		return fmt.Errorf("set deadline: %w", err)
 	}
 

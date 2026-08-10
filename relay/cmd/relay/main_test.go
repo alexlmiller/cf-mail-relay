@@ -106,6 +106,16 @@ func TestCheckSMTPBanner(t *testing.T) {
 	}
 }
 
+func TestHealthcheckTimeoutFitsComposeBudget(t *testing.T) {
+	const composeTimeout = 5 * time.Second
+	if healthcheckTimeout != 4*time.Second {
+		t.Fatalf("healthcheckTimeout = %s want 4s", healthcheckTimeout)
+	}
+	if healthcheckTimeout >= composeTimeout {
+		t.Fatalf("healthcheck timeout %s must leave time inside Compose timeout %s", healthcheckTimeout, composeTimeout)
+	}
+}
+
 func TestSenderAllowed(t *testing.T) {
 	tests := []struct {
 		name    string

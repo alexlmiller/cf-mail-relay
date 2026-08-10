@@ -12,7 +12,7 @@ cert_source=$1
 key_source=$2
 deployment_dir=$3
 tls_dir=$deployment_dir/tls
-compose_file=${COMPOSE_FILE:-$deployment_dir/compose.yml}
+compose_file=${RELAY_COMPOSE_FILE:-$deployment_dir/compose.yml}
 bundle_file=$tls_dir/relay.pem
 
 [ -r "$cert_source" ] || { echo "certificate is not readable: $cert_source" >&2; exit 1; }
@@ -51,5 +51,9 @@ if [ -f "$compose_file" ]; then
   running_services=$(docker compose --project-directory "$deployment_dir" -f "$compose_file" ps --status running --services)
   if printf '%s\n' "$running_services" | grep -qx relay; then
     docker compose --project-directory "$deployment_dir" -f "$compose_file" restart relay
+  else
+    printf '%s\n' "warning: renewed certificate published to $bundle_file, but the relay service is not running; restart it before expecting the new certificate to be served" >&2
   fi
+else
+  printf '%s\n' "warning: renewed certificate published to $bundle_file, but Compose file $compose_file was not found; restart the relay before expecting the new certificate to be served" >&2
 fi
