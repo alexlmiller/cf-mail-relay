@@ -112,6 +112,7 @@ const maxCloudflareHeaderValueBytes = 2_048;
 // RFC 5322 section 2.1.1 limits physical lines excluding the trailing CRLF.
 const recommendedMimeLineBytes = 78;
 const maxMimeLineBytes = 998;
+const maxAdminJsonBodyBytes = 64 * 1024;
 
 app.get("/healthz", async (c) => {
   const requiredSchemaVersion = c.env.REQUIRED_D1_SCHEMA_VERSION || requiredSchemaVersionDefault;
@@ -1086,7 +1087,8 @@ async function adminJson(
     const result = await load();
     return c.json({ ok: true, result }, successStatus);
   } catch (error) {
-    return c.json({ ok: false, error: error instanceof Error ? error.message : "admin_request_failed" }, 400);
+    const failure = apiRequestFailure("admin_request_failed", error);
+    return c.json({ ok: false, error: failure.error }, failure.status);
   }
 }
 
@@ -1106,10 +1108,43 @@ async function selfJson(
     const result = await load(session.user.id);
     return c.json({ ok: true, result }, successStatus);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "self_request_failed";
-    const status = message === "credential_not_found" || message === "api_key_not_found" ? 404 : 400;
-    return c.json({ ok: false, error: message }, status);
+    const failure = apiRequestFailure("self_request_failed", error);
+    return c.json({ ok: false, error: failure.error }, failure.status);
   }
+}
+
+function apiRequestFailure(
+  event: "admin_request_failed" | "self_request_failed",
+  error: unknown,
+): { status: 400 | 404 | 413 | 503; error: string } {
+  const message = error instanceof Error ? error.message : event;
+  if (message === "request_body_too_large") {
+    return { status: 413, error: message };
+  }
+  if (message === "invalid_allowed_sender_ids_config") {
+    console.error(JSON.stringify({ event, error: message }));
+    return { status: 503, error: "service_unavailable" };
+  }
+  if (
+    message === "user_not_found" ||
+    message === "domain_not_found" ||
+    message === "sender_not_found" ||
+    message === "credential_not_found" ||
+    message === "api_key_not_found" ||
+    message === "cloudflare_zone_not_found"
+  ) {
+    return { status: 404, error: message };
+  }
+  if (
+    message === "invalid_json" ||
+    message.startsWith("invalid_") ||
+    message === "no_fields_to_update" ||
+    message === "sender_domain_mismatch"
+  ) {
+    return { status: 400, error: message };
+  }
+  console.error(JSON.stringify({ event, error: message }));
+  return { status: 503, error: "service_unavailable" };
 }
 
 function setAdminCors(c: Context<{ Bindings: Env }>): void {
@@ -1162,7 +1197,16 @@ function safeReturnPath(raw: string | undefined): string {
 }
 
 async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
-  const parsed = (await request.json()) as unknown;
+  const body = await readBodyBounded(request, maxAdminJsonBodyBytes);
+  if (body === null) {
+    throw new Error("request_body_too_large");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(body)) as unknown;
+  } catch {
+    throw new Error("invalid_json");
+  }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("invalid_json");
   }
