@@ -7,6 +7,7 @@ import {
   createUser,
   dashboard,
   deleteSender,
+  flushKvCaches,
   getAppSettings,
   refreshDomainFromCloudflare,
   revokeApiKey,
@@ -198,6 +199,29 @@ describe("admin dashboard", () => {
       smtp_port: 587,
       smtp_security: "STARTTLS",
     });
+  });
+
+  it("bounds credential labels and SMTP usernames", async () => {
+    const env = makeEnv();
+    await expect(createSmtpCredential(env, { user_id: "usr_1", name: "x".repeat(129), username: "gmail-relay" })).rejects.toThrow("invalid_name");
+    await expect(createSmtpCredential(env, { user_id: "usr_1", name: "Laptop", username: "x".repeat(255) })).rejects.toThrow("invalid_username");
+    await expect(createSmtpCredential(env, { user_id: "usr_1", name: "Laptop", username: "🚀".repeat(64) })).rejects.toThrow("invalid_username");
+    await expect(createApiKey(env, { user_id: "usr_1", name: "x".repeat(129) })).rejects.toThrow("invalid_name");
+  });
+
+  it("includes cached Access JWKS entries in the administrative cache flush", async () => {
+    const listedPrefixes: string[] = [];
+    const env = makeEnv();
+    env.KV_HOT = {
+      list: vi.fn(async (options: { prefix?: string }) => {
+        listedPrefixes.push(options.prefix ?? "");
+        return { keys: [], list_complete: true, cacheStatus: null };
+      }),
+      delete: vi.fn(async () => undefined),
+    } as unknown as KVNamespace;
+
+    await expect(flushKvCaches(env)).resolves.toMatchObject({ prefixes: expect.arrayContaining(["access:jwks:"]) });
+    expect(listedPrefixes).toContain("access:jwks:");
   });
 
   it("rejects missing user role instead of defaulting to admin", async () => {
@@ -448,6 +472,12 @@ describe("admin PATCH/DELETE endpoints", () => {
     await updateSmtpCredential(envWith(db), "cred_1", { name: "Gmail · laptop" });
     const upd = capture.updates.find((u) => u.sql.includes("UPDATE smtp_credentials"));
     expect(upd?.params[0]).toBe("Gmail · laptop");
+  });
+
+  it("rejects oversized credential and API key labels on update", async () => {
+    const { db } = makeRecordingD1();
+    await expect(updateSmtpCredential(envWith(db), "cred_1", { name: "x".repeat(129) })).rejects.toThrow("invalid_name");
+    await expect(updateApiKey(envWith(db), "key_1", { name: "x".repeat(129) })).rejects.toThrow("invalid_name");
   });
 
   it("restricts an API key's allowed senders by passing the array", async () => {
