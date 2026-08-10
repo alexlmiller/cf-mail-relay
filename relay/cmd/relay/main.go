@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -52,6 +53,15 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
 		if err := checkSMTPBanner(envOrDefault("RELAY_LISTEN_ADDR", ":587"), healthcheckTimeout); err != nil {
 			log.Printf("SMTP healthcheck failed: %v", err)
+			os.Exit(1)
+		}
+		if err := validateConfiguredCertificate(
+			os.Getenv("RELAY_TLS_CERT_FILE"),
+			os.Getenv("RELAY_TLS_KEY_FILE"),
+			envOrDefault("RELAY_DOMAIN", "localhost"),
+			time.Now(),
+		); err != nil {
+			log.Printf("TLS certificate healthcheck failed: %v", err)
 			os.Exit(1)
 		}
 		return
@@ -127,6 +137,31 @@ func checkSMTPBanner(listenAddr string, timeout time.Duration) error {
 		return fmt.Errorf("unexpected SMTP banner %q", strings.TrimSpace(banner))
 	}
 	_, _ = io.WriteString(conn, "QUIT\r\n")
+	return nil
+}
+
+func validateConfiguredCertificate(certFile, keyFile, domain string, now time.Time) error {
+	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("load configured certificate: %w", err)
+	}
+	if len(pair.Certificate) == 0 {
+		return errors.New("configured certificate has no leaf")
+	}
+
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return fmt.Errorf("parse configured leaf certificate: %w", err)
+	}
+	if now.Before(leaf.NotBefore) {
+		return fmt.Errorf("certificate is not valid before %s", leaf.NotBefore.Format(time.RFC3339))
+	}
+	if now.After(leaf.NotAfter) {
+		return fmt.Errorf("certificate expired at %s", leaf.NotAfter.Format(time.RFC3339))
+	}
+	if err := leaf.VerifyHostname(domain); err != nil {
+		return fmt.Errorf("certificate is not valid for RELAY_DOMAIN %q: %w", domain, err)
+	}
 	return nil
 }
 

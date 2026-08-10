@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,15 +25,35 @@ import (
 )
 
 func TestLoadX509KeyPairFromCombinedPEMBundle(t *testing.T) {
+	bundlePath := writeTestCertificateBundle(
+		t,
+		time.Now().Add(-time.Minute),
+		time.Now().Add(time.Hour),
+		"relay.test",
+	)
+
+	if _, err := tls.LoadX509KeyPair(bundlePath, bundlePath); err != nil {
+		t.Fatalf("load combined certificate and key bundle: %v", err)
+	}
+}
+
+func writeTestCertificateBundle(t *testing.T, notBefore, notAfter time.Time, dnsNames ...string) string {
+	t.Helper()
+
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
+	commonName := "relay.test"
+	if len(dnsNames) > 0 {
+		commonName = dnsNames[0]
+	}
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "relay.test"},
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(time.Hour),
+		Subject:      pkix.Name{CommonName: commonName},
+		DNSNames:     dnsNames,
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -53,9 +74,66 @@ func TestLoadX509KeyPairFromCombinedPEMBundle(t *testing.T) {
 	if err := os.WriteFile(bundlePath, bundle, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	return bundlePath
+}
 
-	if _, err := tls.LoadX509KeyPair(bundlePath, bundlePath); err != nil {
-		t.Fatalf("load combined certificate and key bundle: %v", err)
+func TestValidateConfiguredCertificate(t *testing.T) {
+	now := time.Date(2026, time.August, 10, 20, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		notBefore time.Time
+		notAfter  time.Time
+		dnsName   string
+		domain    string
+		wantErr   string
+	}{
+		{
+			name:      "valid",
+			notBefore: now.Add(-time.Hour),
+			notAfter:  now.Add(time.Hour),
+			dnsName:   "relay.test",
+			domain:    "relay.test",
+		},
+		{
+			name:      "expired",
+			notBefore: now.Add(-2 * time.Hour),
+			notAfter:  now.Add(-time.Hour),
+			dnsName:   "relay.test",
+			domain:    "relay.test",
+			wantErr:   "certificate expired at",
+		},
+		{
+			name:      "not yet valid",
+			notBefore: now.Add(time.Hour),
+			notAfter:  now.Add(2 * time.Hour),
+			dnsName:   "relay.test",
+			domain:    "relay.test",
+			wantErr:   "certificate is not valid before",
+		},
+		{
+			name:      "wrong hostname",
+			notBefore: now.Add(-time.Hour),
+			notAfter:  now.Add(time.Hour),
+			dnsName:   "other.test",
+			domain:    "relay.test",
+			wantErr:   "certificate is not valid for RELAY_DOMAIN",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bundlePath := writeTestCertificateBundle(t, test.notBefore, test.notAfter, test.dnsName)
+			err := validateConfiguredCertificate(bundlePath, bundlePath, test.domain, now)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateConfiguredCertificate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("validateConfiguredCertificate() error = %v, want substring %q", err, test.wantErr)
+			}
+		})
 	}
 }
 
@@ -259,7 +337,7 @@ func TestSessionAuthLockoutIsTemporary(t *testing.T) {
 	throttle := newThrottle(60, 20, 30*time.Second)
 	throttle.recordAuthFailure("gmail", "192.0.2.10")
 	session := &session{
-		backend: &backend{throttle: throttle},
+		backend:  &backend{throttle: throttle},
 		remoteIP: "192.0.2.10",
 	}
 
