@@ -80,6 +80,10 @@ exec /opt/cf-mail-relay/sync-certificates.sh \
 ```
 
 The helper restarts the relay only when its Compose service is already running.
+If the Compose file is elsewhere, set `RELAY_COMPOSE_FILE` to its path. When the
+Compose file is absent or the relay service is stopped, the helper publishes the
+renewed bundle successfully but warns that a restart is still required before
+the relay will serve the new certificate.
 
 `RELAY_ALLOW_INSECURE_AUTH` and `RELAY_ALLOW_INSECURE_WORKER_URL` are for
 isolated local development only. Do not set either in a public deployment.
