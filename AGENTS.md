@@ -14,7 +14,7 @@ This is a release-ready SMTP-to-Cloudflare-Email-Sending bridge:
 - `demo/`: standalone static Worker for the public click-through demo. It
   imports the UI shell, installs the mock API, and must not be deployed with
   production D1/KV/secrets or the production Worker route list.
-- `shared/`: shared TypeScript contracts.
+- `shared/`: cross-runtime HMAC test vectors consumed by Go and TypeScript tests.
 - `infra/`: setup wizard (`pnpm run setup --apply`), OpenTofu reference module,
   Cloudflare Access helpers, HMAC rotation, doctor scripts, and Docker
   relay deployment templates.
