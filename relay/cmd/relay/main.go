@@ -133,7 +133,7 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 func (s *session) authenticate(username, password string) error {
 	switch s.backend.throttle.checkAuth(username, s.remoteIP) {
 	case authLockedOut:
-		return smtp.ErrAuthFailed
+		return smtpError(454, smtp.EnhancedCode{4, 7, 0}, "authentication temporarily locked; try again later")
 	case authRateLimited:
 		return smtpError(454, smtp.EnhancedCode{4, 7, 0}, "too many authentication attempts; try again later")
 	}

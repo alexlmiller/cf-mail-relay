@@ -36,6 +36,7 @@ interface FakeD1State {
   sendEvents: unknown[][];
   authFailures: unknown[][];
   failSendEvents: boolean;
+  failInFlightTransition: boolean;
   failIdempotencyCompletion: boolean;
 }
 
@@ -51,6 +52,7 @@ function makeD1(): D1Database & { state: FakeD1State } {
     sendEvents: [],
     authFailures: [],
     failSendEvents: false,
+    failInFlightTransition: false,
     failIdempotencyCompletion: false,
   };
   const credential = {
@@ -160,11 +162,27 @@ function makeD1(): D1Database & { state: FakeD1State } {
       state.relayNonces.add(key);
       return { meta: { changes: 1 } };
     }
+    if (sql.includes("UPDATE idempotency_keys SET status = 'in_flight'")) {
+      if (state.failInFlightTransition) return { meta: { changes: 0 } };
+      const key = String(args[1]);
+      const existing = state.idempotency.get(key);
+      if (
+        existing === undefined ||
+        existing.status !== "pending" ||
+        existing.request_hash !== String(args[2]) ||
+        existing.source !== String(args[3]) ||
+        existing.expires_at <= Number(args[4])
+      ) {
+        return { meta: { changes: 0 } };
+      }
+      state.idempotency.set(key, { ...existing, status: "in_flight", updated_at: Number(args[0]) });
+      return { meta: { changes: 1 } };
+    }
     if (sql.includes("UPDATE idempotency_keys SET status = 'completed'")) {
       if (state.failIdempotencyCompletion) throw new Error("simulated idempotency completion failure");
       const key = String(args[3]);
       const existing = state.idempotency.get(key);
-      if (existing === undefined || existing.status !== "pending" || existing.request_hash !== String(args[4]) || existing.source !== String(args[5])) {
+      if (existing === undefined || existing.status !== "in_flight" || existing.request_hash !== String(args[4]) || existing.source !== String(args[5])) {
         return { meta: { changes: 0 } };
       }
       state.idempotency.set(key, {
@@ -179,7 +197,7 @@ function makeD1(): D1Database & { state: FakeD1State } {
     if (sql.includes("DELETE FROM idempotency_keys WHERE idempotency_key = ?")) {
       const key = String(args[0]);
       const existing = state.idempotency.get(key);
-      if (existing?.status === "pending" && existing.request_hash === String(args[1]) && existing.source === String(args[2])) {
+      if ((existing?.status === "pending" || existing?.status === "in_flight") && existing.request_hash === String(args[1]) && existing.source === String(args[2])) {
         state.idempotency.delete(key);
         return { meta: { changes: 1 } };
       }
@@ -237,15 +255,6 @@ function makeD1(): D1Database & { state: FakeD1State } {
         expires_at: Number(args[2]),
       });
       return { meta: { changes: 1 } };
-    }
-    if (sql.includes("UPDATE idempotency_keys SET updated_at = ?")) {
-      const key = String(args[1]);
-      const existing = state.idempotency.get(key);
-      if (existing !== undefined && existing.status === "pending" && existing.request_hash === String(args[2]) && existing.source === String(args[3])) {
-        state.idempotency.set(key, { ...existing, updated_at: Number(args[0]) });
-        return { meta: { changes: 1 } };
-      }
-      return { meta: { changes: 0 } };
     }
     if (sql.includes("INSERT INTO send_events")) {
       if (state.failSendEvents) throw new Error("simulated send event failure");
@@ -929,16 +938,16 @@ describe("relay endpoints", () => {
     expect(cfFetch).toHaveBeenCalledOnce();
   });
 
-  it("treats a structured MIME validation rejection as permanent", async () => {
+  it.each([400, 422])("treats a documented HTTP %i validation rejection as permanent without source metadata", async (status) => {
     const env = makeEnv();
     const cfFetch = vi.fn(async () =>
       new Response(
         JSON.stringify({
           success: false,
-          errors: [{ code: 1000, message: "invalid MIME", source: { pointer: "/mime_message" } }],
+          errors: [{ code: 1000, message: "invalid MIME" }],
           messages: [],
         }),
-        { status: 400, headers: { "content-type": "application/json" } },
+        { status, headers: { "content-type": "application/json" } },
       ),
     );
     vi.stubGlobal("fetch", cfFetch);
@@ -953,7 +962,17 @@ describe("relay endpoints", () => {
     expect(cfFetch).toHaveBeenCalledOnce();
   });
 
-  it("holds an idempotency reservation when the provider transport outcome is ambiguous", async () => {
+  it.each([400, 422])("keeps an unstructured HTTP %i provider response retryable", async (status) => {
+    const env = makeEnv();
+    const cfFetch = vi.fn(async () => new Response("not-json", { status }));
+    vi.stubGlobal("fetch", cfFetch);
+
+    expect((await httpSendRequest(env, `unknown-${status}`)).status).toBe(502);
+    expect((await httpSendRequest(env, `unknown-${status}`)).status).toBe(502);
+    expect(cfFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("holds an in-flight reservation when the provider transport outcome is ambiguous", async () => {
     const env = makeEnv();
     const cfFetch = vi.fn(async () => {
       throw new TypeError("simulated network failure");
@@ -967,6 +986,10 @@ describe("relay endpoints", () => {
     await expect(first.json()).resolves.toMatchObject({ ok: false, error_code: "cloudflare_send_raw_ambiguous" });
     expect(second.status).toBe(409);
     await expect(second.json()).resolves.toMatchObject({ ok: false, error: "idempotency_pending" });
+    const row = (env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency.get("http:key_1:ambiguous-fetch");
+    expect(row?.status).toBe("in_flight");
+    if (row !== undefined) row.updated_at -= 301;
+    expect((await httpSendRequest(env, "ambiguous-fetch")).status).toBe(409);
     expect(cfFetch).toHaveBeenCalledOnce();
   });
 
@@ -990,22 +1013,22 @@ describe("relay endpoints", () => {
     expect(cfFetch).toHaveBeenCalledOnce();
   });
 
-  it("takes over a stale pending reservation after the safety lease", async () => {
+  it("requires an in-flight claim before provider I/O and recovers a stale pending reservation", async () => {
     const env = makeEnv();
-    const cfFetch = vi
-      .fn<() => Promise<Response>>()
-      .mockRejectedValueOnce(new TypeError("simulated network failure"))
-      .mockResolvedValueOnce(cloudflareSuccess());
+    const d1 = env.D1_MAIN as D1Database & { state: FakeD1State };
+    d1.state.failInFlightTransition = true;
+    const cfFetch = vi.fn(async () => cloudflareSuccess());
     vi.stubGlobal("fetch", cfFetch);
 
-    expect((await httpSendRequest(env, "stale-pending")).status).toBe(502);
-    const d1 = env.D1_MAIN as D1Database & { state: FakeD1State };
+    expect((await httpSendRequest(env, "stale-pending")).status).toBe(409);
+    expect(cfFetch).not.toHaveBeenCalled();
     const row = d1.state.idempotency.get("http:key_1:stale-pending");
     expect(row).toBeDefined();
     if (row !== undefined) row.updated_at -= 301;
+    d1.state.failInFlightTransition = false;
 
     expect((await httpSendRequest(env, "stale-pending")).status).toBe(200);
-    expect(cfFetch).toHaveBeenCalledTimes(2);
+    expect(cfFetch).toHaveBeenCalledOnce();
   });
 
   it("retries legacy failed rows that cached a transient response", async () => {
@@ -1091,15 +1114,22 @@ describe("relay endpoints", () => {
   it.each([
     { name: "success", response: cloudflareSuccess(), status: 200 },
     { name: "permanent bounce", response: cloudflareSuccess({ permanent_bounces: ["alex@example.net"] }), status: 422 },
-  ])("does not overturn a known $name when audit and completion persistence fail", async ({ response, status }) => {
+  ])("returns a known $name and fences retries when audit and completion persistence fail", async ({ response, status }) => {
     const env = makeEnv();
     const d1 = env.D1_MAIN as D1Database & { state: FakeD1State };
     d1.state.failSendEvents = true;
     d1.state.failIdempotencyCompletion = true;
-    vi.stubGlobal("fetch", vi.fn(async () => response.clone()));
+    const cfFetch = vi.fn(async () => response.clone());
+    vi.stubGlobal("fetch", cfFetch);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    expect((await httpSendRequest(env, `persistence-${status}`)).status).toBe(status);
+    const idempotencyKey = `persistence-${status}`;
+    expect((await httpSendRequest(env, idempotencyKey)).status).toBe(status);
+    const row = d1.state.idempotency.get(`http:key_1:${idempotencyKey}`);
+    expect(row?.status).toBe("in_flight");
+    if (row !== undefined) row.updated_at -= 301;
+    expect((await httpSendRequest(env, idempotencyKey)).status).toBe(409);
+    expect(cfFetch).toHaveBeenCalledOnce();
   });
 
   it("does not overturn provider success when KV replay caching fails", async () => {

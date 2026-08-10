@@ -148,6 +148,21 @@ func TestSessionAuthRateLimitIsTemporaryWithoutLockout(t *testing.T) {
 	}
 }
 
+func TestSessionAuthLockoutIsTemporary(t *testing.T) {
+	throttle := newThrottle(60, 20, 30*time.Second)
+	throttle.recordAuthFailure("gmail", "192.0.2.10")
+	session := &session{
+		backend: &backend{throttle: throttle},
+		remoteIP: "192.0.2.10",
+	}
+
+	err := session.authenticate("gmail", "correct-password")
+	var smtpErr *smtp.SMTPError
+	if !errors.As(err, &smtpErr) || smtpErr.Code != 454 {
+		t.Fatalf("locked-out auth = %#v, want SMTP 454", err)
+	}
+}
+
 func TestSmtpErrorForSendError(t *testing.T) {
 	err := smtpErrorForSendError(&workerclient.SendError{
 		StatusCode: 403,
