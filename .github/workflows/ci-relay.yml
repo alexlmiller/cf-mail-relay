@@ -2,6 +2,7 @@ name: CI — relay
 
 on:
   push:
+    branches: [dev, main]
     paths:
       - "relay/**"
       - "shared/test-vectors.json"
