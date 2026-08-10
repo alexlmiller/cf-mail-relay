@@ -63,7 +63,7 @@ export async function main(argv, env, depsOrFetch = {}) {
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const execImpl = deps.execImpl ?? runCommand;
   const readFileImpl = deps.readFileImpl ?? ((path) => readFileSync(path, "utf8"));
-  const writeFileImpl = deps.writeFileImpl ?? ((path, body, options) => writeFileSync(path, body, options));
+  const writeFileImpl = deps.writeFileImpl ?? writeFileWithMode;
   const existsImpl = deps.existsImpl ?? existsSync;
   const writeRecoveryJournalImpl = deps.writeRecoveryJournalImpl ?? writeRecoveryJournalAtomic;
   const removeRecoveryJournalImpl = deps.removeRecoveryJournalImpl ?? ((path) => unlinkSync(path));
@@ -676,6 +676,16 @@ export function writeRecoveryJournalAtomic(path, journal) {
       }
     }
     throw error;
+  }
+}
+
+export function writeFileWithMode(path, body, options) {
+  writeFileSync(path, body, options);
+  if (typeof options === "object" && options !== null && options.mode !== undefined) {
+    // Node only applies writeFile's mode when creating a file. RUNBOOK.md may
+    // already exist from an older setup run, so enforce the requested mode
+    // after every sensitive rewrite as well.
+    chmodSync(path, options.mode);
   }
 }
 

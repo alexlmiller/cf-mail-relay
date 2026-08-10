@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CloudflareApiClient, createOrFindD1, createOrFindKv, generateSecrets, lookupCloudflareDomain, main, parseArgs, parseUsersCount, renderRunbook, renderWranglerToml, runApply, writeRecoveryJournalAtomic } from "./setup.mjs";
+import { CloudflareApiClient, createOrFindD1, createOrFindKv, generateSecrets, lookupCloudflareDomain, main, parseArgs, parseUsersCount, renderRunbook, renderWranglerToml, runApply, writeFileWithMode, writeRecoveryJournalAtomic } from "./setup.mjs";
 
 describe("setup parseArgs", () => {
   it("parses repeatable domains and core options", () => {
@@ -600,6 +600,21 @@ routes = [
       writeRecoveryJournalAtomic(path, updated);
       assert.equal(statSync(path).mode & 0o777, 0o600);
       assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), updated);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("tightens an existing sensitive file to owner-only permissions", () => {
+    const directory = mkdtempSync(join(tmpdir(), "cf-mail-relay-runbook-"));
+    const path = join(directory, "RUNBOOK.md");
+    try {
+      writeFileWithMode(path, "old\n", { encoding: "utf8", mode: 0o644 });
+      assert.equal(statSync(path).mode & 0o777, 0o644);
+
+      writeFileWithMode(path, "secret\n", { encoding: "utf8", mode: 0o600 });
+      assert.equal(statSync(path).mode & 0o777, 0o600);
+      assert.equal(readFileSync(path, "utf8"), "secret\n");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
