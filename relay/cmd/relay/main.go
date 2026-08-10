@@ -166,31 +166,41 @@ func (s *session) AuthMechanisms() []string {
 }
 
 func (s *session) Auth(mech string) (sasl.Server, error) {
-	authenticate := func(username, password string) error {
-		if !s.backend.throttle.allowAuth(username, s.remoteIP) {
-			return smtp.ErrAuthFailed
-		}
-		response, err := s.backend.client.Auth(context.Background(), username, password)
-		if err != nil {
-			s.backend.throttle.recordAuthFailure(username, s.remoteIP)
-			return smtp.ErrAuthFailed
-		}
-		s.backend.throttle.recordAuthSuccess(username, s.remoteIP)
-		s.authed = true
-		s.authDecision = response
-		return nil
-	}
-
 	switch strings.ToUpper(mech) {
 	case sasl.Plain:
 		return sasl.NewPlainServer(func(_, username, password string) error {
-			return authenticate(username, password)
+			return s.authenticate(username, password)
 		}), nil
 	case sasl.Login:
-		return &loginServer{authenticate: authenticate}, nil
+		return &loginServer{authenticate: s.authenticate}, nil
 	default:
 		return nil, smtp.ErrAuthUnknownMechanism
 	}
+}
+
+func (s *session) authenticate(username, password string) error {
+	switch s.backend.throttle.checkAuth(username, s.remoteIP) {
+	case authLockedOut:
+		return smtp.ErrAuthFailed
+	case authRateLimited:
+		return smtpError(454, smtp.EnhancedCode{4, 7, 0}, "too many authentication attempts; try again later")
+	}
+
+	response, err := s.backend.client.Auth(context.Background(), username, password)
+	if err != nil {
+		var authErr *workerclient.AuthError
+		if errors.As(err, &authErr) && authErr.InvalidCredentials() {
+			s.backend.throttle.recordAuthFailure(username, s.remoteIP)
+			return smtp.ErrAuthFailed
+		}
+		log.Printf("temporary relay auth failure: %v", err)
+		return smtpError(454, smtp.EnhancedCode{4, 7, 0}, "temporary authentication failure; try again later")
+	}
+
+	s.backend.throttle.recordAuthSuccess(username, s.remoteIP)
+	s.authed = true
+	s.authDecision = response
+	return nil
 }
 
 func (s *session) Mail(from string, opts *smtp.MailOptions) error {
@@ -434,21 +444,18 @@ func smtpErrorForSendError(err error) error {
 		return smtpError(451, smtp.EnhancedCode{4, 7, 1}, sendErr.Response.Error)
 	}
 
-	if sendErr.StatusCode == http.StatusTooManyRequests || sendErr.StatusCode >= 500 {
-		return smtpError(451, smtp.EnhancedCode{4, 7, 1}, "upstream send failed; try again later")
-	}
-	if sendErr.StatusCode >= 400 && sendErr.StatusCode < 500 {
-		return smtpError(550, smtp.EnhancedCode{5, 7, 1}, sendErr.Response.Error)
-	}
 	return smtpError(451, smtp.EnhancedCode{4, 7, 1}, "upstream send failed; try again later")
 }
 
 func isRelayOperatorError(err *workerclient.SendError) bool {
 	switch err.Response.Error {
-	case "replay_nonce", "unsupported_relay_version", "invalid_body_hash", "invalid_signature", "unknown_key_id", "missing_required_signed_header":
+	case "replay_nonce", "unsupported_relay_version", "invalid_body_hash", "invalid_body_sha256", "invalid_signature", "unknown_key_id",
+		"missing_required_signed_header", "missing_signed_headers", "invalid_timestamp", "timestamp_out_of_window",
+		"missing_key_id", "missing_timestamp", "missing_nonce", "missing_body_sha256", "missing_version", "missing_signature",
+		"missing_credential_id", "invalid_content_length":
 		return true
 	}
-	return err.Response.ErrorCode == "cloudflare_send_raw_permanent_failure"
+	return false
 }
 
 func envOrDefault(name, fallback string) string {
@@ -475,6 +482,14 @@ type authFailure struct {
 	lastFailure time.Time
 }
 
+type authThrottleDecision int
+
+const (
+	authAllowed authThrottleDecision = iota
+	authLockedOut
+	authRateLimited
+)
+
 func newThrottle(connPerMinute, authPerMinute int, authLockoutBase time.Duration) *throttle {
 	return &throttle{
 		connPerMinute:   connPerMinute,
@@ -499,8 +514,12 @@ func (t *throttle) allowConn(remoteIP string) bool {
 }
 
 func (t *throttle) allowAuth(username, remoteIP string) bool {
+	return t.checkAuth(username, remoteIP) == authAllowed
+}
+
+func (t *throttle) checkAuth(username, remoteIP string) authThrottleDecision {
 	if t == nil {
-		return true
+		return authAllowed
 	}
 	userKey := throttleUsername(username)
 	remoteKey := throttleRemote(remoteIP)
@@ -510,17 +529,20 @@ func (t *throttle) allowAuth(username, remoteIP string) bool {
 	defer t.mu.Unlock()
 	t.pruneLockedIfDue(now)
 	if failure, ok := t.authFailures[lockoutKey]; ok && now.Before(failure.blockUntil) {
-		return false
+		return authLockedOut
 	}
 	if t.authPerMinute <= 0 {
-		return true
+		return authAllowed
 	}
 	bucket := minuteBucket()
 	userCountKey := fmt.Sprintf("%s:user:%s", bucket, userKey)
 	remoteCountKey := fmt.Sprintf("%s:remote:%s", bucket, remoteKey)
 	t.authCounts[userCountKey]++
 	t.authCounts[remoteCountKey]++
-	return t.authCounts[userCountKey] <= t.authPerMinute && t.authCounts[remoteCountKey] <= t.authPerMinute*5
+	if t.authCounts[userCountKey] > t.authPerMinute || t.authCounts[remoteCountKey] > t.authPerMinute*5 {
+		return authRateLimited
+	}
+	return authAllowed
 }
 
 func (t *throttle) recordAuthFailure(username, remoteIP string) {
