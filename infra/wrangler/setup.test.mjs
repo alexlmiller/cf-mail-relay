@@ -150,6 +150,7 @@ describe("setup main", () => {
       assert.doesNotMatch(command, /<admin@example\.com>/, `placeholder leaked: ${command}`);
       assert.doesNotMatch(command, /<domain>/, `placeholder leaked: ${command}`);
     }
+    assert.equal(result.plan.commands[0], "export CLOUDFLARE_ACCOUNT_ID=acc_123");
     assert.ok(result.plan.commands.some((command) => command.includes("d1 migrations apply cf-mail-relay --remote")));
     assert.ok(result.plan.commands.some((command) => command.includes("--account-id acc_123")));
     assert.ok(result.plan.commands.some((command) => command.includes("--pages-url https://mail.example.com")));
@@ -370,7 +371,7 @@ routes = [{ pattern = "mail.example.com", custom_domain = true }]`],
 
   const execImpl = async (command, args, execOptions = {}) => {
     const text = args.join(" ");
-    execCalls.push({ command, args: [...args], stdin: execOptions.stdin });
+    execCalls.push({ command, args: [...args], stdin: execOptions.stdin, env: execOptions.env });
     if (args.includes("secret") && args.includes("bulk")) {
       events.push("remote-mutation:secret-bulk");
       fail("secret-bulk-before-remote");
@@ -618,6 +619,24 @@ routes = [
     assert.match(rendered, /pattern = "mail\.milf\.red"/);
   });
 
+  it("the checked-in Wrangler template selects the requested account", () => {
+    const template = readFileSync(new URL("../../worker/wrangler.toml.example", import.meta.url), "utf8");
+    const rendered = renderWranglerToml({
+      template,
+      accountId: "acc_xyz",
+      d1Id: "d1_xyz",
+      d1Name: "cf-mail-relay-v1-test",
+      kvId: "kv_xyz",
+      accessTeamDomain: "team.cloudflareaccess.com",
+      accessAudience: "aud_xyz",
+      adminUrl: "https://mail.example.com",
+      relayKeyId: "rel_01",
+      workerScriptName: "cf-mail-relay-v1-test",
+    });
+
+    assert.match(rendered, /^account_id = "acc_xyz"$/mu);
+  });
+
   it("renderRunbook includes admin URL, IDs, and DNS records per domain", () => {
     const runbook = renderRunbook({
       adminUrl: "https://mail.milf.red",
@@ -706,6 +725,10 @@ routes = [
     const managedBulks = harness.execCalls.filter(({ args }) => args.includes("secret") && args.includes("bulk"));
     assert.equal(managedBulks.length, 1, "all managed values should use one intermediate-version write");
     assert.deepEqual(JSON.parse(managedBulks[0].stdin), harness.journalHistory[0].secrets);
+
+    const wranglerCalls = harness.execCalls.filter(({ args }) => args[0] === "exec" && args[1] === "wrangler");
+    assert.ok(wranglerCalls.length > 0);
+    assert.ok(wranglerCalls.every(({ env }) => env?.CLOUDFLARE_ACCOUNT_ID === "acc"));
 
     const runbook = harness.files.get(harness.options.runbookPath);
     assert.match(runbook, /^RELAY_HMAC_SECRET=[A-Za-z0-9_-]{43}$/mu);
@@ -802,6 +825,17 @@ routes = [
       /Could not inspect remote Worker secrets.*HTTP 403.*Refusing to guess from local files/s,
     );
     assert.equal(harness.journalHistory.length, 0);
+    assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
+  });
+
+  it("refuses a Wrangler config bound to another account before any mutation", async () => {
+    const harness = createApplyHarness({ wranglerExists: true });
+    harness.files.set(harness.options.wranglerPath, 'account_id = "another-account"\n');
+
+    await assert.rejects(
+      harness.run(),
+      /selects Cloudflare account another-account, but --account-id selects acc/,
+    );
     assert.ok(!harness.events.some((event) => event.startsWith("remote-mutation:")), harness.events.join(" | "));
   });
 

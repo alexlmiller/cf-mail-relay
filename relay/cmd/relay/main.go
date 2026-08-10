@@ -5,7 +5,9 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -50,8 +52,14 @@ type config struct {
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
-		if err := checkSMTPBanner(envOrDefault("RELAY_LISTEN_ADDR", ":587"), healthcheckTimeout); err != nil {
-			log.Printf("SMTP healthcheck failed: %v", err)
+		if err := checkSMTPStartTLS(
+			envOrDefault("RELAY_LISTEN_ADDR", ":587"),
+			os.Getenv("RELAY_TLS_CERT_FILE"),
+			os.Getenv("RELAY_TLS_KEY_FILE"),
+			envOrDefault("RELAY_DOMAIN", "localhost"),
+			healthcheckTimeout,
+		); err != nil {
+			log.Printf("SMTP STARTTLS healthcheck failed: %v", err)
 			os.Exit(1)
 		}
 		return
@@ -104,7 +112,16 @@ func main() {
 	}
 }
 
-func checkSMTPBanner(listenAddr string, timeout time.Duration) error {
+func checkSMTPStartTLS(listenAddr, certFile, keyFile, domain string, timeout time.Duration) error {
+	return checkSMTPStartTLSWithTrust(listenAddr, certFile, keyFile, domain, timeout, nil, nil)
+}
+
+func checkSMTPStartTLSWithTrust(
+	listenAddr, certFile, keyFile, domain string,
+	timeout time.Duration,
+	roots *x509.CertPool,
+	currentTime func() time.Time,
+) error {
 	address, err := localHealthcheckAddress(listenAddr)
 	if err != nil {
 		return err
@@ -119,15 +136,90 @@ func checkSMTPBanner(listenAddr string, timeout time.Duration) error {
 		return fmt.Errorf("set deadline: %w", err)
 	}
 
-	banner, err := bufio.NewReader(io.LimitReader(conn, 512)).ReadString('\n')
+	reader := bufio.NewReader(conn)
+	banner, err := readSMTPResponse(reader, "220")
 	if err != nil {
+		if banner != "" && !strings.HasPrefix(banner, "220 ") && !strings.HasPrefix(banner, "220-") {
+			return fmt.Errorf("unexpected SMTP banner %q", strings.TrimSpace(banner))
+		}
 		return fmt.Errorf("read SMTP banner: %w", err)
 	}
-	if !strings.HasPrefix(banner, "220 ") && !strings.HasPrefix(banner, "220-") {
-		return fmt.Errorf("unexpected SMTP banner %q", strings.TrimSpace(banner))
+
+	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("load configured certificate: %w", err)
 	}
-	_, _ = io.WriteString(conn, "QUIT\r\n")
+	if len(pair.Certificate) == 0 {
+		return errors.New("configured certificate has no leaf")
+	}
+	configuredFingerprint := sha256.Sum256(pair.Certificate[0])
+
+	if _, err := io.WriteString(conn, "EHLO healthcheck.local\r\n"); err != nil {
+		return fmt.Errorf("write SMTP EHLO: %w", err)
+	}
+	if _, err := readSMTPResponse(reader, "250"); err != nil {
+		return fmt.Errorf("read SMTP EHLO response: %w", err)
+	}
+	if _, err := io.WriteString(conn, "STARTTLS\r\n"); err != nil {
+		return fmt.Errorf("write SMTP STARTTLS: %w", err)
+	}
+	if _, err := readSMTPResponse(reader, "220"); err != nil {
+		return fmt.Errorf("read SMTP STARTTLS response: %w", err)
+	}
+	if reader.Buffered() != 0 {
+		return errors.New("SMTP listener sent unexpected plaintext after STARTTLS response")
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+		ServerName: domain,
+		Time:       currentTime,
+	}
+	tlsConn := tls.Client(conn, tlsConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		return fmt.Errorf("negotiate SMTP STARTTLS and verify served certificate for RELAY_DOMAIN %q: %w", domain, err)
+	}
+	defer tlsConn.Close()
+
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return errors.New("SMTP STARTTLS listener served no leaf certificate")
+	}
+	servedFingerprint := sha256.Sum256(state.PeerCertificates[0].Raw)
+	if servedFingerprint != configuredFingerprint {
+		return fmt.Errorf(
+			"served leaf certificate fingerprint %x does not match configured certificate %x",
+			servedFingerprint,
+			configuredFingerprint,
+		)
+	}
 	return nil
+}
+
+func readSMTPResponse(reader *bufio.Reader, expectedCode string) (string, error) {
+	firstLine, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(firstLine, expectedCode+" ") && !strings.HasPrefix(firstLine, expectedCode+"-") {
+		return firstLine, fmt.Errorf("unexpected SMTP response %q", strings.TrimSpace(firstLine))
+	}
+	if strings.HasPrefix(firstLine, expectedCode+"-") {
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return firstLine, err
+			}
+			if strings.HasPrefix(line, expectedCode+" ") {
+				break
+			}
+			if !strings.HasPrefix(line, expectedCode+"-") {
+				return firstLine, fmt.Errorf("unexpected SMTP response %q", strings.TrimSpace(line))
+			}
+		}
+	}
+	return firstLine, nil
 }
 
 func localHealthcheckAddress(listenAddr string) (string, error) {

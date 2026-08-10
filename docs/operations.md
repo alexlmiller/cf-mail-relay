@@ -63,6 +63,47 @@ The equivalent endpoints are `POST /admin/api/ops/bump-policy-version` and
   fails remains fenced for seven days. HTTP ambiguity is never retried through
   the SMTP lease.
 
+### Break-glass SMTP retry release
+
+Normally, let an `ambiguous` row reach its one-hour retry lease and leave an
+`in_flight` row fenced until expiry. Cloudflare may already have accepted an
+`in_flight` message, so deleting it can cause duplicate delivery. **Flush
+caches** does not release either state because D1 is authoritative.
+
+After confirming the originating SMTP and Worker request has ended, inspect
+live rows that have been unchanged for at least five minutes:
+
+```sh
+pnpm --dir worker exec wrangler d1 execute <d1-database-name> --remote --command \
+"SELECT idempotency_key, request_hash, status, updated_at, expires_at
+   FROM idempotency_keys
+  WHERE source = 'smtp'
+    AND status IN ('in_flight', 'ambiguous')
+    AND updated_at <= unixepoch() - 300
+    AND expires_at > unixepoch()
+  ORDER BY updated_at DESC;"
+```
+
+Correlate the timestamps with relay, Worker, and provider records. Age alone
+does not prove the provider rejected the message. Only when duplicate risk is
+explicitly acceptable, delete the exact unchanged `in_flight` row:
+
+```sh
+pnpm --dir worker exec wrangler d1 execute <d1-database-name> --remote --command \
+"DELETE FROM idempotency_keys
+  WHERE idempotency_key = '<observed-idempotency-key>'
+    AND request_hash = '<observed-request-hash>'
+    AND source = 'smtp'
+    AND status = 'in_flight'
+    AND updated_at = <observed-updated-at>
+    AND updated_at <= unixepoch() - 300
+    AND expires_at = <observed-expires-at>;"
+```
+
+If no row changes, query again. Do not weaken the predicates or bulk-delete
+fences. The next client retry creates a fresh reservation; no KV deletion is
+needed because only completed responses are cached there.
+
 ## Bootstrap signal
 
 The normal setup wizard creates the first admin directly in D1 and does not set

@@ -67,8 +67,9 @@ sudo docker compose ps
 openssl s_client -connect smtp.example.com:587 -starttls smtp -servername smtp.example.com -verify_return_error -brief
 ```
 
-The container healthcheck connects to the local SMTP listener and requires a
-valid `220` banner; it does not merely check that the process exists.
+The container healthcheck negotiates with the local SMTP STARTTLS listener. It
+requires a valid `220` banner, a system-trusted certificate chain for
+`RELAY_DOMAIN`, and the same leaf certificate as the configured PEM bundle.
 
 ## Upgrade and rollback
 
@@ -86,6 +87,9 @@ Roll back by restoring the previous immutable tag and repeating the commands.
 Do not use `latest` in production.
 
 ## Certificate renewal hook
+
+Certificate renewal is the host's responsibility. Ensure its ACME client is
+configured to renew the relay certificate automatically.
 
 Certbot exposes the renewed certificate directory in `RENEWED_LINEAGE`. Save
 this wrapper as
