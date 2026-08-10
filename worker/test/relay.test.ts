@@ -933,6 +933,54 @@ describe("anchorClientMessageIdInReferences", () => {
     ).toContain("References: <parent@example.com> <current@example.com>\r\n");
   });
 
+  it("folds generated References lines at message-ID boundaries", () => {
+    const references = Array.from({ length: 8 }, (_, index) => `<thread-${index}@example.com>`).join(" ");
+    const output = anchorClientMessageIdInReferences(
+      `From: a@example.com\r\nSubject: A folded\r\n subject\r\nMessage-ID: <current@example.com>\r\nReferences: ${references}\r\n\r\nHello\r\n`,
+    );
+    const headerLines = output.slice(0, output.indexOf("\r\n\r\n")).split("\r\n");
+    const referencesIndex = headerLines.findIndex((line) => line.startsWith("References:"));
+    const referenceLines = headerLines.slice(referencesIndex);
+
+    expect(referencesIndex).toBeGreaterThanOrEqual(0);
+    expect(referenceLines.length).toBeGreaterThan(1);
+    expect(referenceLines.every((line) => new TextEncoder().encode(line).byteLength <= 78)).toBe(true);
+    expect(output).toContain("\r\n <thread-");
+    expect(output.replaceAll("\r\n", "")).not.toContain("\n");
+    expect(anchorClientMessageIdInReferences(output)).toBe(output);
+  });
+
+  it("never generates a References line beyond the RFC hard limit", () => {
+    const longLocalPart = "a".repeat(970);
+    const output = anchorClientMessageIdInReferences(
+      `From: a@example.com\r\nMessage-ID: <current@example.com>\r\nReferences: <${longLocalPart}@example.com>\r\n\r\nHello\r\n`,
+    );
+    const headerLines = output.slice(0, output.indexOf("\r\n\r\n")).split("\r\n");
+
+    expect(headerLines.every((line) => new TextEncoder().encode(line).byteLength <= 998)).toBe(true);
+    expect(output).toContain("\r\n <current@example.com>\r\n");
+  });
+
+  it("moves a first token to a continuation line when the field name would push it beyond 78 bytes", () => {
+    const firstReference = `<${"a".repeat(54)}@example.com>`;
+    const output = anchorClientMessageIdInReferences(
+      `From: a@example.com\r\nMessage-ID: <current@example.com>\r\nReferences: ${firstReference}\r\n\r\nHello\r\n`,
+    );
+    const referenceLines = output
+      .slice(output.indexOf("References:"), output.indexOf("\r\n\r\n"))
+      .split("\r\n");
+
+    expect(referenceLines[0]).toBe("References:");
+    expect(referenceLines.every((line) => new TextEncoder().encode(line).byteLength <= 78)).toBe(true);
+  });
+
+  it("leaves MIME unchanged when a References token cannot fit within the RFC hard limit", () => {
+    const mime =
+      `From: a@example.com\r\nMessage-ID: <current@example.com>\r\nReferences: <${"a".repeat(990)}@example.com>\r\n\r\nHello\r\n`;
+
+    expect(anchorClientMessageIdInReferences(mime)).toBe(mime);
+  });
+
   it("does not duplicate an existing client Message-ID anchor", () => {
     const mime =
       "From: a@example.com\r\nMessage-ID: <current@example.com>\r\nReferences: <root@example.com> <current@example.com>\r\n\r\nHello\r\n";
