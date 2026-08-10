@@ -33,8 +33,6 @@ worker/public/
 !.dev.vars.example
 wrangler.toml
 !wrangler.toml.example
-wrangler.spike.toml
-!wrangler.spike.toml.example
 
 # OpenTofu
 **/.terraform/

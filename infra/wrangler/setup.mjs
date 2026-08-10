@@ -1210,7 +1210,11 @@ Apply flags:
                              Allow pages.dev/workers.dev admin URLs. Custom
                              domains are strongly preferred.
   --d1-id <id>              Use existing D1 instead of creating.
+  --d1-database-name <name> Name used for migrations with --d1-id
+                            (default cf-mail-relay).
   --kv-id <id>              Use existing KV namespace instead of creating.
+  --access-app-name <name>  Access app to create or update
+                            (default cf-mail-relay-admin).
   --smtp-host <host>        SMTP relay hostname shown in client setup details
                              and RUNBOOK.md (default smtp.<first-domain>).
   --relay-key-id <id>       RELAY_HMAC_KEY_ID (default rel_01).

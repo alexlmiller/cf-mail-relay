@@ -1,0 +1,37 @@
+---
+import "../styles/global.css";
+
+interface Props {
+  demo?: boolean;
+  title?: string;
+}
+
+const { demo = false, title = "CF Mail Relay" } = Astro.props;
+---
+<!doctype html>
+<html lang="en" data-theme="light" data-demo={demo ? "true" : undefined}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <title>{title}</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://api.fontshare.com" crossorigin />
+    <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin />
+    <link rel="stylesheet" href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" />
+  </head>
+  <body>
+    <div id="app">
+      <noscript>
+        <div style="padding:40px;font-family:system-ui;text-align:center">
+          <p><strong>{title}</strong> requires JavaScript to render the admin UI.</p>
+        </div>
+      </noscript>
+    </div>
+    <slot />
+  </body>
+</html>

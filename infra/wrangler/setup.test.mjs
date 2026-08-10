@@ -60,14 +60,20 @@ describe("setup parseArgs", () => {
       "other.example.com",
       "--d1-database-id",
       "d1_123",
+      "--d1-database-name",
+      "custom-d1",
       "--kv-namespace-id",
       "kv_123",
+      "--access-app-name",
+      "custom-access",
     ], {});
 
     assert.equal(options.accountId, "acc_123");
     assert.deepEqual(options.domains, ["example.com", "other.example.com"]);
     assert.equal(options.d1DatabaseId, "d1_123");
+    assert.equal(options.d1DatabaseName, "custom-d1");
     assert.equal(options.kvNamespaceId, "kv_123");
+    assert.equal(options.accessAppName, "custom-access");
     assert.equal(options.relayHost, "smtp.example.com");
   });
 
@@ -166,6 +172,8 @@ describe("setup main", () => {
   it("documents explicit recovery behavior in --help", async () => {
     const result = await main(["--help"], {});
     assert.match(result.usage, /--rotate-all-worker-secrets/);
+    assert.match(result.usage, /--d1-database-name/);
+    assert.match(result.usage, /--access-app-name/);
     assert.match(result.usage, /Destructive disaster recovery/);
     assert.match(result.usage, /Destructive replacement retries must include it\s+again/);
     assert.match(result.usage, /exits\s+nonzero after this intentional first phase/);

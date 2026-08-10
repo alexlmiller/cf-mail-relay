@@ -27,6 +27,8 @@ import (
 
 var appVersion = "dev"
 
+// Retain the original wire identifier for compatibility with deployed Workers.
+// It identifies the relay protocol, not the application release.
 const protocolVersion = "0.1.0-ms7"
 const defaultMaxMessageBytes = 4_718_592
 const healthcheckTimeout = 4 * time.Second
@@ -211,7 +213,7 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 	}
 	if opts != nil {
 		if opts.Body == smtp.Body8BitMIME || opts.Body == smtp.BodyBinaryMIME {
-			return smtpError(554, smtp.EnhancedCode{5, 6, 0}, "8-bit content not supported in MVP; use base64 or quoted-printable")
+			return smtpError(554, smtp.EnhancedCode{5, 6, 0}, "8-bit content not supported; use base64 or quoted-printable")
 		}
 		if opts.Size > s.backend.maxMessageBytes {
 			return smtpError(552, smtp.EnhancedCode{5, 3, 4}, "message too large")
@@ -258,7 +260,7 @@ func (s *session) Data(r io.Reader) error {
 		return smtpError(552, smtp.EnhancedCode{5, 3, 4}, "message too large")
 	}
 	if contains8Bit(mime) {
-		return smtpError(554, smtp.EnhancedCode{5, 6, 0}, "8-bit content not supported in MVP; use base64 or quoted-printable")
+		return smtpError(554, smtp.EnhancedCode{5, 6, 0}, "8-bit content not supported; use base64 or quoted-printable")
 	}
 
 	traceID := newTraceID()

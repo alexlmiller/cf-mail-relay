@@ -13,14 +13,24 @@ output "d1_database_id" {
   value       = cloudflare_d1_database.main.id
 }
 
+output "d1_database_name" {
+  description = "Pass to `pnpm run setup --apply --d1-database-name`."
+  value       = cloudflare_d1_database.main.name
+}
+
 output "kv_namespace_id" {
   description = "Pass to `pnpm run setup --apply --kv-id`."
   value       = cloudflare_workers_kv_namespace.hot.id
 }
 
 output "access_application_id" {
-  description = "Cloudflare Access app id. The wizard's `pnpm access:setup` is idempotent on name, so passing this isn't strictly required, but it's exported for visibility."
+  description = "Cloudflare Access app id, exported for visibility."
   value       = cloudflare_access_application.admin.id
+}
+
+output "access_application_name" {
+  description = "Pass to `pnpm run setup --apply --access-app-name`."
+  value       = cloudflare_access_application.admin.name
 }
 
 output "access_application_aud" {

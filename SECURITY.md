@@ -1,67 +1,44 @@
-# Security Policy
+# Security policy
 
 ## Supported versions
 
-Security fixes are published for the latest stable release. The currently
-supported release line is `1.x`.
+Security fixes are published for the latest stable `1.x` release.
 
-## Reporting a vulnerability
+## Report a vulnerability
 
-Email **security@alexmiller.net** with the details. Do **not** open a public issue.
+Email **security@alexmiller.net**. Do not open a public issue. Include the
+affected component, release tag or commit, impact, and reproduction steps. Say
+whether you want disclosure credit.
 
-Please include:
+Expect acknowledgement within 72 hours and an initial assessment within seven
+days. Please allow a reasonable fix window before disclosure; 90 days is the
+default when severity does not require faster coordination.
 
-- A description of the vulnerability.
-- Steps to reproduce, or a minimal proof-of-concept.
-- The component affected (`relay/`, `worker/`, `ui/`, `shared/`, `infra/`).
-- The commit SHA or release tag you tested against.
-- Whether you would like credit in the disclosure.
+## In scope
 
-You should receive an acknowledgement within 72 hours and an initial assessment within 7 days.
+- Auth or authorization bypass in SMTP, `/relay/*`, `/send`,
+  `/bootstrap/admin`, `/admin/api/*`, or `/self/api/*`.
+- Open-relay behavior or sender-policy bypass.
+- HMAC, replay, idempotency, Access JWT, Origin, quota, or rate-limit bypass.
+- Credential, secret, message, recipient, or provider-response leakage beyond
+  the documented metadata model.
+- DKIM/DMARC spoofing enabled by this project.
+- Dependency, build, release, demo, or deployment-chain compromise.
 
-## Scope
+## Out of scope
 
-In scope:
-
-- Authentication bypass on the relay (`/relay/auth`, SMTP AUTH flow).
-- Authentication or authorisation bypass on the Worker (`/relay/*`, `/send`, `/admin/api/*`).
-- Open relay behaviour (delivering mail without authentication or outside the allowlist).
-- HMAC verification flaws, replay protection failures.
-- Cloudflare Access JWT verification flaws.
-- Credential or secret leakage in logs, error messages, or D1 columns.
-- Message body, subject, attachment, recipient-address, or provider-response
-  leakage beyond the documented metadata model.
-- DKIM/DMARC alignment failures that allow spoofing through this relay.
-- Idempotency-key collisions that allow duplicate sends or replay of a stored response across credentials.
-- Dependency, release, or deployment-chain issues that could compromise the
-  Worker, relay container, demo Worker, or published artifacts.
-
-Out of scope:
-
-- Adopter misconfiguration (e.g., publishing DNS records incorrectly, orange-clouding `smtp.<domain>`, leaving Email Sending in sandbox mode).
-- Cloudflare platform behaviour outside this codebase's control.
-- Volumetric denial-of-service against Cloudflare, GitHub, npm, or an adopter's
-  own Cloudflare account budget. Application-level rate-limit bypasses are in
-  scope.
-- Issues that require a compromised relay host. The relay host is trusted
-  infrastructure; rotate relay HMAC and SMTP credentials if it is compromised.
+- Cloudflare behavior outside this codebase.
+- Adopter DNS, Access, certificate, token, or relay-host misconfiguration.
+- Volumetric denial of service against providers or account budgets.
+- Findings that require an already compromised trusted relay host.
 - Social engineering, physical attacks, or compromised administrator devices.
-- Vulnerabilities in demo/sample data that do not affect the production Worker,
-  relay, setup tooling, or release artifacts.
+- Demo/sample-data findings with no production impact.
 
 ## Security model
 
-CF Mail Relay is send-only. It should not store message bodies, subjects, or
-attachment contents. D1 stores operational metadata, credential hashes,
-configuration, audit rows, idempotency records, and quota counters. Provider
-responses and idempotency replay bodies are expected to be sanitized before
-storage.
-
-The admin and sender self-service APIs are protected by Cloudflare Access. The
-SMTP relay authenticates to the Worker with HMAC, and the HTTP `/send` endpoint
-uses bearer API keys. Report any path that can send mail or mutate state without
-the relevant authentication boundary.
-
-## Coordinated disclosure
-
-Please give us a reasonable window to fix and release before any public disclosure. Standard practice is 90 days, shorter if the fix lands sooner.
+The service is send-only and does not persist bodies, subjects, attachments, or
+recipient addresses itself. Cloudflare Email Preview may retain sent content
+separately. D1 stores configuration, hashes, quotas, idempotency, and sanitized
+audit metadata. The relay uses HMAC, `/send` uses scoped API keys, and admin/self
+APIs use Cloudflare Access. See the
+[trust boundaries](docs/architecture.md#trust-boundaries).
