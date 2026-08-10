@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import app, { anchorClientMessageIdInReferences, stripCaptureHopHeaders } from "../src/index";
 import { hmacSha256Hex, sha256Hex, signRelayRequest } from "../src/hmac";
+import { beginIdempotentRequest } from "../src/state";
 
 const hmacSecret = "relay-secret";
 const keyId = "rel_test";
@@ -688,6 +689,20 @@ describe("relay endpoints", () => {
 
     expect(response.status).toBe(413);
     await expect(response.json()).resolves.toMatchObject({ ok: false, error: "auth_body_too_large" });
+  });
+
+  it("retains SMTP idempotency reservations beyond Gmail's retry window", async () => {
+    const env = makeEnv();
+    const now = Math.floor(Date.now() / 1000);
+
+    await expect(beginIdempotentRequest(env, "smtp-ttl", "smtp-hash", "smtp")).resolves.toEqual({ status: "new" });
+    await expect(beginIdempotentRequest(env, "http-ttl", "http-hash", "http")).resolves.toEqual({ status: "new" });
+
+    const rows = (env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency;
+    expect(rows.get("smtp-ttl")?.expires_at).toBeGreaterThanOrEqual(now + 7 * 24 * 60 * 60);
+    expect(rows.get("smtp-ttl")?.expires_at).toBeLessThanOrEqual(now + 7 * 24 * 60 * 60 + 1);
+    expect(rows.get("http-ttl")?.expires_at).toBeGreaterThanOrEqual(now + 24 * 60 * 60);
+    expect(rows.get("http-ttl")?.expires_at).toBeLessThanOrEqual(now + 24 * 60 * 60 + 1);
   });
 
   it("replays completed idempotency responses from D1", async () => {
