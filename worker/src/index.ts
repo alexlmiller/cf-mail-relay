@@ -109,10 +109,10 @@ const maxSendJsonBodyBytes = Math.ceil((maxRelayBodyBytes * 4) / 3) + 64 * 1024;
 const maxIdempotencyKeyBytes = 255;
 const maxCloudflareResponseBytes = 256 * 1024;
 const maxCloudflareHeaderValueBytes = 2_048;
-const maxAdminJsonBodyBytes = 64 * 1024;
 // RFC 5322 section 2.1.1 limits physical lines excluding the trailing CRLF.
 const recommendedMimeLineBytes = 78;
 const maxMimeLineBytes = 998;
+const maxAdminJsonBodyBytes = 64 * 1024;
 
 app.get("/healthz", async (c) => {
   const requiredSchemaVersion = c.env.REQUIRED_D1_SCHEMA_VERSION || requiredSchemaVersionDefault;
