@@ -10,6 +10,10 @@ variable "GIT_SHA" {
   default = "unknown"
 }
 
+variable "SOURCE_URL" {
+  default = "https://github.com/alexlmiller/cf-mail-relay"
+}
+
 group "default" {
   targets = ["relay"]
 }
@@ -23,7 +27,7 @@ target "relay" {
   }
   annotations = [
     "index:org.opencontainers.image.revision=${GIT_SHA}",
-    "index:org.opencontainers.image.source=https://github.com/alexlmiller/cf-mail-relay",
+    "index:org.opencontainers.image.source=${SOURCE_URL}",
     "index:org.opencontainers.image.version=${VERSION}",
   ]
   tags = ["${REGISTRY_IMAGE}:${VERSION}"]
