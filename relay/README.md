@@ -23,6 +23,8 @@ HTTPS.
 | `RELAY_AUTH_LOCKOUT_BASE_SECONDS` | Auth lockout base after failures | `30` |
 
 The recipient limit is fixed at 50 to match the Worker contract.
+The certificate and key paths may point to the same combined PEM bundle; the
+supported Compose deployment publishes them together as `/tls/relay.pem`.
 
 `RELAY_WORKER_URL` must use `https://`. For isolated local development only,
 set `RELAY_ALLOW_INSECURE_WORKER_URL=1` to permit `http://` or

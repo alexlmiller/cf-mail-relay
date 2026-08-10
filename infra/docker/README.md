@@ -8,9 +8,9 @@ The directory contains:
 
 - `relay.compose.yml` — hardened Compose service pinned to an immutable release.
 - `.env.example` — every required and optional runtime setting.
-- `sync-certificates.sh` — validates and atomically copies host-managed
-  certificate material for container UID/GID `65532`, then restarts a running
-  relay.
+- `sync-certificates.sh` — validates and atomically publishes host-managed
+  certificate material as one PEM bundle for container UID/GID `65532`, then
+  restarts a running relay.
 
 ## Install
 
@@ -36,7 +36,8 @@ certificate could be issued with:
 sudo certbot certonly --standalone -d smtp.example.com --agree-tos -m admin@example.com
 ```
 
-Copy the dereferenced certificate and key into the deployment directory:
+Publish the dereferenced certificate and key as one bundle in the deployment
+directory:
 
 ```sh
 sudo /opt/cf-mail-relay/sync-certificates.sh \
@@ -45,10 +46,11 @@ sudo /opt/cf-mail-relay/sync-certificates.sh \
   /opt/cf-mail-relay
 ```
 
-The helper refuses unreadable, invalid, or mismatched material. It writes the
-certificate as mode `0644` and the key as mode `0600`, both owned by UID/GID
-`65532`. Source symlinks are dereferenced so the container never depends on an
-ACME client's private archive paths.
+The helper refuses unreadable, invalid, or mismatched material. It combines the
+certificate and private key in `tls/relay.pem`, mode `0600`, owned by UID/GID
+`65532`, and publishes the pair with one atomic rename. Source symlinks are
+dereferenced so the container never depends on an ACME client's private archive
+paths.
 
 Start and verify the relay:
 

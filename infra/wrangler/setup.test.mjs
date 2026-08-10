@@ -364,6 +364,8 @@ routes = [
     assert.match(runbook, /other\.example\.com/);
     assert.match(runbook, /RELAY_HMAC_SECRET=S3CR3T/);
     assert.match(runbook, /RELAY_DOMAIN=mailer\.example\.com/);
+    assert.match(runbook, /RELAY_TLS_CERT_FILE=\/tls\/relay\.pem/);
+    assert.match(runbook, /RELAY_TLS_KEY_FILE=\/tls\/relay\.pem/);
     assert.match(runbook, /relay: `mailer\.example\.com`/);
   });
 
