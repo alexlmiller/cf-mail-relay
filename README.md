@@ -276,7 +276,8 @@ The relay needs these environment values:
 | `RELAY_TLS_CERT_FILE` | Mounted certificate path |
 | `RELAY_TLS_KEY_FILE` | Mounted private key path |
 
-See `infra/docker/` for plain Docker, lego, Traefik, and host-certbot examples.
+See `infra/docker/` for the supported nonroot Compose deployment with
+host-managed certificates and an atomic renewal helper.
 
 ## SMTP Clients
 
