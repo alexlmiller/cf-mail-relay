@@ -22,6 +22,7 @@ jobs:
   release-please:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
@@ -47,6 +48,7 @@ jobs:
         needs.release-please.outputs.released == 'true'
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write

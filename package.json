@@ -26,8 +26,7 @@
   "workspaces": [
     "worker",
     "ui",
-    "demo",
-    "shared"
+    "demo"
   ],
   "pnpm": {
     "overrides": {
