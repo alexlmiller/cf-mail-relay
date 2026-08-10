@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.1.0](https://github.com/alexlmiller/cf-mail-relay/compare/v1.0.0...v1.1.0) (2026-08-10)
+
+This release improves Gmail threading, retry safety, setup, and relay
+certificate handling.
+
+### What's new
+
+- Keeps replies in the correct Gmail conversation when Cloudflare replaces an
+  outgoing `Message-ID`.
+- Reduces duplicate delivery by retaining SMTP delivery fences for seven days
+  and handling uncertain provider results safely.
+- Returns retryable SMTP errors for temporary authentication and upstream
+  failures.
+- Makes setup resumable, uses a least-privilege runtime token by default, and
+  reliably targets the selected Cloudflare account.
+- Adds atomic certificate updates and a STARTTLS health check that verifies the
+  certificate actually being served.
+
+### Upgrading from 1.0.0
+
+- Apply D1 migration `0006` before deploying the Worker, and set
+  `REQUIRED_D1_SCHEMA_VERSION = "6"` in `worker/wrangler.toml`.
+- Upgrade the relay to the immutable `v1.1.0` image. Existing SMTP credentials,
+  API keys, HMAC secrets, and client settings remain valid.
+- The supported Docker deployment now uses host-managed certificate renewal.
+  Follow the updated Docker guide if adopting the new Compose template.
+- Node.js `22.23.2` or newer is required for setup and development tools.
+- HTTP `Idempotency-Key` values are now limited to 255 printable ASCII
+  characters without spaces.
+- `--regenerate-secrets` has been replaced by
+  `--rotate-all-worker-secrets`. The new option is only for disaster recovery
+  and invalidates existing credentials and API keys; do not use it for a
+  normal upgrade.
+
 ## 1.0.0 (2026-05-21)
 
 
