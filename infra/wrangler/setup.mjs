@@ -366,14 +366,16 @@ export async function runApply(ctx) {
     registeredDomains.push(lookup);
   }
   if (registeredDomains.length > 0) {
-    // Bump policy_version so any cached credentials miss on next read.
+    // Atomically bump policy_version so any cached credentials miss on next
+    // read. Setup can be rerun within the same second, so the next generation
+    // must consider both wall time and the currently stored value.
     await runWrangler(execImpl, options.workerDir, [
       "d1",
       "execute",
       d1.name,
       "--remote",
       "--command",
-      `INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES ('policy_version', ${sqlStringLiteral(JSON.stringify(String(Math.floor(Date.now() / 1000))))}, unixepoch())`,
+      policyVersionBumpSql(),
     ]);
     steps.push({ step: "domains_registered", domains: registeredDomains });
   }
@@ -428,6 +430,29 @@ export async function runApply(ctx) {
 
 function runWrangler(execImpl, cwd, args, stdin) {
   return execImpl("pnpm", ["exec", "wrangler", ...args], stdin === undefined ? { cwd } : { cwd, stdin });
+}
+
+/**
+ * Builds the single-statement policy generation update used by setup. Historic
+ * databases may store either a raw number (`7`) or a JSON string (`"7"`). The
+ * UPSERT handles both and advances to max(previous + 1, wall-clock seconds),
+ * matching the Worker mutation path without a read/write race.
+ */
+export function policyVersionBumpSql(now = Math.floor(Date.now() / 1000)) {
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new Error("policy_version wall-clock value must be a non-negative safe integer");
+  }
+  return `INSERT INTO settings (key, value_json, updated_at)
+VALUES ('policy_version', json_quote(CAST(${now} AS TEXT)), ${now})
+ON CONFLICT(key) DO UPDATE SET
+  value_json = json_quote(CAST(MAX(
+    CAST(CASE
+      WHEN json_valid(settings.value_json) THEN json_extract(settings.value_json, '$')
+      ELSE settings.value_json
+    END AS INTEGER) + 1,
+    ${now}
+  ) AS TEXT)),
+  updated_at = excluded.updated_at`;
 }
 
 function defaultProgress(message) {
