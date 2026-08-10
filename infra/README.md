@@ -11,7 +11,7 @@ Adopter-side tooling. Not deployed; runs locally on the adopter's workstation or
 | `wrangler/rotate-hmac.mjs` | Generate a new HMAC secret and print the rotation runbook. |
 | `docker/relay.compose.yml` | Supported hardened relay Compose service (host-managed certificates). |
 | `docker/.env.example` | Immutable image pin and runtime configuration template. |
-| `docker/sync-certificates.sh` | Validate/copy renewed certificates atomically and restart the relay. |
+| `docker/sync-certificates.sh` | Validate/publish a renewed certificate and key as one atomic PEM bundle, then restart the relay. |
 | `docker/README.md` | Installation, renewal hook, and STARTTLS verification. |
 | `opentofu/` | Optional declarative provisioning of D1, KV, Access (worker script + secrets stay out of tfstate). |
 | `setup/doctor-local.sh` | DNS/TLS/SMTP/Worker check. |

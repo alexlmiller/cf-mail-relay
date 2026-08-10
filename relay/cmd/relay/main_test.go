@@ -1,14 +1,60 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/alexlmiller/cf-mail-relay/relay/internal/workerclient"
 	"github.com/emersion/go-smtp"
 )
+
+func TestLoadX509KeyPairFromCombinedPEMBundle(t *testing.T) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "relay.test"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKeyDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bundle := append(
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateKeyDER})...,
+	)
+	bundlePath := filepath.Join(t.TempDir(), "relay.pem")
+	if err := os.WriteFile(bundlePath, bundle, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := tls.LoadX509KeyPair(bundlePath, bundlePath); err != nil {
+		t.Fatalf("load combined certificate and key bundle: %v", err)
+	}
+}
 
 func TestLocalHealthcheckAddress(t *testing.T) {
 	tests := []struct {
