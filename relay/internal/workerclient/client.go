@@ -56,6 +56,26 @@ type SendError struct {
 	Response   SendResponse
 }
 
+type AuthError struct {
+	StatusCode int
+	Response   AuthResponse
+}
+
+func (e *AuthError) Error() string {
+	reason := e.Response.Error
+	if reason == "" {
+		reason = http.StatusText(e.StatusCode)
+	}
+	if reason == "" {
+		reason = "unknown response"
+	}
+	return fmt.Sprintf("relay auth rejected: %s", reason)
+}
+
+func (e *AuthError) InvalidCredentials() bool {
+	return e.StatusCode == http.StatusUnauthorized && e.Response.Error == "invalid_credentials"
+}
+
 func (e *SendError) Error() string {
 	reason := e.Response.Error
 	if reason == "" {
@@ -95,7 +115,7 @@ func (c *Client) Auth(ctx context.Context, username, password string) (*AuthResp
 		if response.Error == "" {
 			response.Error = http.StatusText(status)
 		}
-		return &response, fmt.Errorf("relay auth rejected: %s", response.Error)
+		return &response, &AuthError{StatusCode: status, Response: response}
 	}
 	c.storeAuth(cacheKey, response)
 	return &response, nil
@@ -153,9 +173,13 @@ func (c *Client) post(ctx context.Context, path string, body []byte, headers map
 	defer response.Body.Close()
 	c.observePolicyVersion(response.Header.Get("x-relay-policy-version"))
 
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	const maxResponseBytes = 1 << 20
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
 		return response.StatusCode, err
+	}
+	if len(raw) > maxResponseBytes {
+		return response.StatusCode, fmt.Errorf("worker response exceeds %d bytes", maxResponseBytes)
 	}
 	if len(raw) > 0 && out != nil {
 		if err := json.Unmarshal(raw, out); err != nil {

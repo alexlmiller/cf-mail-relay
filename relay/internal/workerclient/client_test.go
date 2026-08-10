@@ -3,6 +3,7 @@ package workerclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,69 @@ import (
 
 	"github.com/alexlmiller/cf-mail-relay/relay/internal/hmacsign"
 )
+
+func TestClientAuthReturnsTypedInvalidCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(AuthResponse{OK: false, Error: "invalid_credentials"})
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL, KeyID: "rel_test", Secret: "secret", Version: "test"}
+	_, err := client.Auth(context.Background(), "gmail", "wrong")
+	var authErr *AuthError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("expected AuthError, got %T", err)
+	}
+	if !authErr.InvalidCredentials() {
+		t.Fatalf("expected explicit invalid credentials, got %#v", authErr)
+	}
+}
+
+func TestClientAuthDoesNotClassifyOtherFailuresAsInvalidCredentials(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "hmac drift", status: http.StatusUnauthorized, body: `{"ok":false,"error":"invalid_signature"}`},
+		{name: "rate limit", status: http.StatusTooManyRequests, body: `{"ok":false,"error":"rate_limited"}`},
+		{name: "worker outage", status: http.StatusServiceUnavailable, body: `{"ok":false,"error":"unavailable"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("content-type", "application/json")
+				w.WriteHeader(test.status)
+				w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+
+			client := &Client{BaseURL: server.URL, KeyID: "rel_test", Secret: "secret", Version: "test"}
+			_, err := client.Auth(context.Background(), "gmail", "pw")
+			var authErr *AuthError
+			if !errors.As(err, &authErr) {
+				t.Fatalf("expected AuthError, got %T", err)
+			}
+			if authErr.InvalidCredentials() {
+				t.Fatalf("%s must not be classified as invalid credentials", test.name)
+			}
+		})
+	}
+}
+
+func TestClientRejectsOversizedWorkerResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(strings.Repeat("x", (1<<20)+1)))
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL, KeyID: "rel_test", Secret: "secret", Version: "test"}
+	if _, err := client.Auth(context.Background(), "gmail", "pw"); err == nil || !strings.Contains(err.Error(), "response exceeds") {
+		t.Fatalf("expected bounded response error, got %v", err)
+	}
+}
 
 func TestClientSignsAuthRequest(t *testing.T) {
 	client := &Client{
