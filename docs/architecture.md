@@ -129,8 +129,9 @@ permissions at runtime.
    idempotency key.
 7. Worker re-checks policy, rejects duplicate singleton identity headers,
    requires the MIME `From:` header to match the authorized SMTP envelope,
-   reserves quota, strips capture-hop and `Bcc` headers, calls Cloudflare Email
-   Sending `send_raw`, and records a metadata audit row.
+   strips capture-hop and `Bcc` headers, appends the client's original
+   `Message-ID` to `References` as a conversation anchor, reserves quota, calls
+   Cloudflare Email Sending `send_raw`, and records a metadata audit row.
 8. Relay maps the Worker result to an SMTP status for the client.
 
 ## HTTP Flow

@@ -102,6 +102,7 @@ const gitSha = "ms7";
 const requiredSchemaVersionDefault = "5";
 const maxRelayBodyBytes = 6 * 1024 * 1024;
 const maxRelayAuthBodyBytes = 16 * 1024;
+const maxCloudflareHeaderValueBytes = 2_048;
 
 app.get("/healthz", async (c) => {
   const requiredSchemaVersion = c.env.REQUIRED_D1_SCHEMA_VERSION || requiredSchemaVersionDefault;
@@ -250,7 +251,8 @@ app.post("/relay/send", async (c) => {
     return c.json({ ok: false, error: "sender_header_not_allowed" }, 403);
   }
 
-  const mimeMessage = stripCaptureHopHeaders(decoded);
+  const strippedMimeMessage = stripCaptureHopHeaders(decoded);
+  const mimeMessage = anchorClientMessageIdInReferences(strippedMimeMessage);
   const mimeMessageBytes = new TextEncoder().encode(mimeMessage);
   const strippedMimeSha256 = await sha256Hex(mimeMessageBytes);
   const messageIdHeader = extractHeader(mimeMessage, "message-id");
@@ -777,6 +779,75 @@ export function stripCaptureHopHeaders(mimeMessage: string): string {
     "x-originating-ip",
     "x-received",
   ]);
+}
+
+export function anchorClientMessageIdInReferences(mimeMessage: string): string {
+  const messageId = extractHeader(mimeMessage, "message-id").trim();
+  if (!isCommonMessageId(messageId)) {
+    return mimeMessage;
+  }
+
+  const referencesHeaders = extractHeaders(mimeMessage, "references");
+  if (referencesHeaders.length > 1) {
+    return mimeMessage;
+  }
+
+  const existingReferences = referencesHeaders[0]?.trim() ?? "";
+  const inReplyToHeaders = extractHeaders(mimeMessage, "in-reply-to");
+  const inheritedReferences = existingReferences.length > 0
+    ? existingReferences
+    : inReplyToHeaders.length === 1
+      ? inReplyToHeaders[0]!.trim()
+      : "";
+  const updatedReferences = containsMessageId(inheritedReferences, messageId)
+    ? inheritedReferences
+    : [inheritedReferences, messageId].filter((value) => value.length > 0).join(" ");
+
+  if (new TextEncoder().encode(updatedReferences).byteLength > maxCloudflareHeaderValueBytes) {
+    return mimeMessage;
+  }
+  if (referencesHeaders.length === 1 && updatedReferences === existingReferences) {
+    return mimeMessage;
+  }
+
+  return setMimeHeader(mimeMessage, "References", updatedReferences);
+}
+
+function isCommonMessageId(value: string): boolean {
+  return /^<[^<>\s@]+@[^<>\s@]+>$/.test(value);
+}
+
+function containsMessageId(references: string, messageId: string): boolean {
+  const messageIds: string[] = references.match(/<[^<>]+>/g) ?? [];
+  return messageIds.includes(messageId);
+}
+
+function setMimeHeader(mimeMessage: string, name: string, value: string): string {
+  const normalized = mimeMessage.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+  const headerEnd = normalized.indexOf("\n\n");
+  if (headerEnd === -1) {
+    return mimeMessage;
+  }
+
+  const headers: string[] = [];
+  for (const line of normalized.slice(0, headerEnd).split("\n")) {
+    if (/^[ \t]/.test(line) && headers.length > 0) {
+      headers[headers.length - 1] += `\n${line}`;
+    } else {
+      headers.push(line);
+    }
+  }
+
+  const target = name.toLowerCase();
+  const existingIndex = headers.findIndex((header) => (header.split(":", 1)[0]?.toLowerCase() ?? "") === target);
+  if (existingIndex >= 0) {
+    headers[existingIndex] = `${name}: ${value}`;
+  } else {
+    headers.push(`${name}: ${value}`);
+  }
+
+  const body = normalized.slice(headerEnd + 2).replaceAll("\n", "\r\n");
+  return `${headers.join("\r\n")}\r\n\r\n${body}`;
 }
 
 function stripMimeHeaders(mimeMessage: string, names: string[]): string {
