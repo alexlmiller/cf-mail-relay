@@ -67,8 +67,9 @@ sudo docker compose ps
 openssl s_client -connect smtp.example.com:587 -starttls smtp -servername smtp.example.com -verify_return_error -brief
 ```
 
-The container healthcheck requires a valid SMTP `220` banner and a configured
-certificate whose validity window and hostname match `RELAY_DOMAIN`.
+The container healthcheck negotiates with the local SMTP STARTTLS listener. It
+requires a valid `220` banner, a system-trusted certificate chain for
+`RELAY_DOMAIN`, and the same leaf certificate as the configured PEM bundle.
 
 ## Upgrade and rollback
 

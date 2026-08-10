@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -51,17 +52,14 @@ type config struct {
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
-		if err := checkSMTPBanner(envOrDefault("RELAY_LISTEN_ADDR", ":587"), healthcheckTimeout); err != nil {
-			log.Printf("SMTP healthcheck failed: %v", err)
-			os.Exit(1)
-		}
-		if err := validateConfiguredCertificate(
+		if err := checkSMTPStartTLS(
+			envOrDefault("RELAY_LISTEN_ADDR", ":587"),
 			os.Getenv("RELAY_TLS_CERT_FILE"),
 			os.Getenv("RELAY_TLS_KEY_FILE"),
 			envOrDefault("RELAY_DOMAIN", "localhost"),
-			time.Now(),
+			healthcheckTimeout,
 		); err != nil {
-			log.Printf("TLS certificate healthcheck failed: %v", err)
+			log.Printf("SMTP STARTTLS healthcheck failed: %v", err)
 			os.Exit(1)
 		}
 		return
@@ -140,7 +138,39 @@ func checkSMTPBanner(listenAddr string, timeout time.Duration) error {
 	return nil
 }
 
-func validateConfiguredCertificate(certFile, keyFile, domain string, now time.Time) error {
+func checkSMTPStartTLS(listenAddr, certFile, keyFile, domain string, timeout time.Duration) error {
+	return checkSMTPStartTLSWithTrust(listenAddr, certFile, keyFile, domain, timeout, nil, nil)
+}
+
+func checkSMTPStartTLSWithTrust(
+	listenAddr, certFile, keyFile, domain string,
+	timeout time.Duration,
+	roots *x509.CertPool,
+	currentTime func() time.Time,
+) error {
+	address, err := localHealthcheckAddress(listenAddr)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(timeout)
+	conn, err := (&net.Dialer{Deadline: deadline}).Dial("tcp", address)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", address, err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(deadline); err != nil {
+		return fmt.Errorf("set deadline: %w", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	banner, err := readSMTPResponse(reader, "220")
+	if err != nil {
+		if banner != "" && !strings.HasPrefix(banner, "220 ") && !strings.HasPrefix(banner, "220-") {
+			return fmt.Errorf("unexpected SMTP banner %q", strings.TrimSpace(banner))
+		}
+		return fmt.Errorf("read SMTP banner: %w", err)
+	}
+
 	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return fmt.Errorf("load configured certificate: %w", err)
@@ -148,21 +178,74 @@ func validateConfiguredCertificate(certFile, keyFile, domain string, now time.Ti
 	if len(pair.Certificate) == 0 {
 		return errors.New("configured certificate has no leaf")
 	}
+	configuredFingerprint := sha256.Sum256(pair.Certificate[0])
 
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil {
-		return fmt.Errorf("parse configured leaf certificate: %w", err)
+	if _, err := io.WriteString(conn, "EHLO healthcheck.local\r\n"); err != nil {
+		return fmt.Errorf("write SMTP EHLO: %w", err)
 	}
-	if now.Before(leaf.NotBefore) {
-		return fmt.Errorf("certificate is not valid before %s", leaf.NotBefore.Format(time.RFC3339))
+	if _, err := readSMTPResponse(reader, "250"); err != nil {
+		return fmt.Errorf("read SMTP EHLO response: %w", err)
 	}
-	if now.After(leaf.NotAfter) {
-		return fmt.Errorf("certificate expired at %s", leaf.NotAfter.Format(time.RFC3339))
+	if _, err := io.WriteString(conn, "STARTTLS\r\n"); err != nil {
+		return fmt.Errorf("write SMTP STARTTLS: %w", err)
 	}
-	if err := leaf.VerifyHostname(domain); err != nil {
-		return fmt.Errorf("certificate is not valid for RELAY_DOMAIN %q: %w", domain, err)
+	if _, err := readSMTPResponse(reader, "220"); err != nil {
+		return fmt.Errorf("read SMTP STARTTLS response: %w", err)
+	}
+	if reader.Buffered() != 0 {
+		return errors.New("SMTP listener sent unexpected plaintext after STARTTLS response")
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+		ServerName: domain,
+		Time:       currentTime,
+	}
+	tlsConn := tls.Client(conn, tlsConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		return fmt.Errorf("negotiate SMTP STARTTLS and verify served certificate for RELAY_DOMAIN %q: %w", domain, err)
+	}
+	defer tlsConn.Close()
+
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return errors.New("SMTP STARTTLS listener served no leaf certificate")
+	}
+	servedFingerprint := sha256.Sum256(state.PeerCertificates[0].Raw)
+	if servedFingerprint != configuredFingerprint {
+		return fmt.Errorf(
+			"served leaf certificate fingerprint %x does not match configured certificate %x",
+			servedFingerprint,
+			configuredFingerprint,
+		)
 	}
 	return nil
+}
+
+func readSMTPResponse(reader *bufio.Reader, expectedCode string) (string, error) {
+	firstLine, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(firstLine, expectedCode+" ") && !strings.HasPrefix(firstLine, expectedCode+"-") {
+		return firstLine, fmt.Errorf("unexpected SMTP response %q", strings.TrimSpace(firstLine))
+	}
+	if strings.HasPrefix(firstLine, expectedCode+"-") {
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return firstLine, err
+			}
+			if strings.HasPrefix(line, expectedCode+" ") {
+				break
+			}
+			if !strings.HasPrefix(line, expectedCode+"-") {
+				return firstLine, fmt.Errorf("unexpected SMTP response %q", strings.TrimSpace(line))
+			}
+		}
+	}
+	return firstLine, nil
 }
 
 func localHealthcheckAddress(listenAddr string) (string, error) {
