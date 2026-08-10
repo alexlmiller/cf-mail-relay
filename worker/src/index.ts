@@ -69,8 +69,10 @@ import {
   extractHeader,
   extractHeaders,
   policyVersionFromD1,
+  refreshIdempotentRequestLease,
   recordBootstrapFailure,
   recordSendEvent,
+  releaseIdempotentRequest,
   reserveSendQuota,
   senderAllowedForApiKey,
   senderAllowedForCredential,
@@ -102,6 +104,9 @@ const gitSha = "ms7";
 const requiredSchemaVersionDefault = "5";
 const maxRelayBodyBytes = 6 * 1024 * 1024;
 const maxRelayAuthBodyBytes = 16 * 1024;
+const maxSendJsonBodyBytes = Math.ceil((maxRelayBodyBytes * 4) / 3) + 64 * 1024;
+const maxIdempotencyKeyBytes = 255;
+const maxCloudflareResponseBytes = 256 * 1024;
 const maxCloudflareHeaderValueBytes = 2_048;
 // RFC 5322 section 2.1.1 limits physical lines excluding the trailing CRLF.
 const recommendedMimeLineBytes = 78;
@@ -153,8 +158,8 @@ app.post("/bootstrap/admin", async (c) => {
 app.post("/relay/auth", async (c) => {
   const earlySize = rejectOversizedContentLength(c, maxRelayAuthBodyBytes);
   if (earlySize !== null) return earlySize;
-  const bodyBytes = new Uint8Array(await c.req.arrayBuffer());
-  if (bodyBytes.byteLength > maxRelayAuthBodyBytes) {
+  const bodyBytes = await readBodyBounded(c.req.raw, maxRelayAuthBodyBytes);
+  if (bodyBytes === null) {
     return c.json({ ok: false, error: "auth_body_too_large" }, 413);
   }
   const verification = await verifyRelayHmac(c.req.raw, c.env, bodyBytes);
@@ -185,15 +190,14 @@ app.post("/relay/auth", async (c) => {
 app.post("/relay/send", async (c) => {
   const earlySize = rejectOversizedContentLength(c, maxRelayBodyBytes);
   if (earlySize !== null) return earlySize;
-  const rawMimeBytes = new Uint8Array(await c.req.arrayBuffer());
+  const rawMimeBytes = await readBodyBounded(c.req.raw, maxRelayBodyBytes);
+  if (rawMimeBytes === null) {
+    return c.json({ ok: false, error: "message_too_large" }, 413);
+  }
   const verification = await verifyRelayHmac(c.req.raw, c.env, rawMimeBytes);
   if (!verification.ok) {
     return c.json({ ok: false, error: verification.error }, verification.status);
   }
-  if (rawMimeBytes.byteLength > maxRelayBodyBytes) {
-    return c.json({ ok: false, error: "message_too_large" }, 413);
-  }
-
   const from = normalizeEmail(c.req.header("x-relay-envelope-from") ?? "");
   const recipients = uniqueAddresses(parseRecipients(c.req.header("x-relay-recipients")).map(normalizeEmail).filter((recipient) => recipient.length > 0));
   if (from.length === 0) {
@@ -219,17 +223,19 @@ app.post("/relay/send", async (c) => {
   c.header("x-relay-policy-version", policyVersion);
   const senderPolicy = await senderAllowedForCredential(c.env, credentialId, from);
   if (!senderPolicy.ok) {
-    await recordSendEvent(c.env, {
-      traceId: c.req.header("x-relay-trace-id") ?? crypto.randomUUID(),
-      source: "smtp",
-      credentialId,
-      envelopeFrom: from,
-      recipients,
-      mimeSizeBytes: rawMimeBytes.byteLength,
-      messageIdHeader: "",
-      status: "policy_rejected",
-      smtpCode: "553",
-      errorCode: senderPolicy.reason,
+    await settleSideEffects("smtp sender policy rejection", {
+      audit: recordSendEvent(c.env, {
+        traceId: c.req.header("x-relay-trace-id") ?? crypto.randomUUID(),
+        source: "smtp",
+        credentialId,
+        envelopeFrom: from,
+        recipients,
+        mimeSizeBytes: rawMimeBytes.byteLength,
+        messageIdHeader: "",
+        status: "policy_rejected",
+        smtpCode: "553",
+        errorCode: senderPolicy.reason,
+      }),
     });
     return c.json({ ok: false, error: "sender_not_allowed" }, 403);
   }
@@ -256,7 +262,7 @@ app.post("/relay/send", async (c) => {
 
   const strippedMimeMessage = stripCaptureHopHeaders(decoded);
   const strippedMimeBytes = new TextEncoder().encode(strippedMimeMessage);
-  const strippedMimeSha256 = await sha256Hex(strippedMimeBytes);
+  const [rawMimeSha256, strippedMimeSha256] = await Promise.all([sha256Hex(rawMimeBytes), sha256Hex(strippedMimeBytes)]);
   const messageIdHeader = extractHeader(strippedMimeMessage, "message-id");
   const mimeMessage = anchorClientMessageIdInReferences(strippedMimeMessage);
   const idempotencyKey = await computeSmtpIdempotencyKey({
@@ -284,8 +290,8 @@ app.post("/relay/send", async (c) => {
   const quota = await reserveSendQuota(c.env, { source: "smtp", envelopeFrom: from, credentialId });
   if (!quota.ok) {
     const responseBody = { ok: false, error: "rate_limited", scope: quota.scope, limit: quota.limit };
-    await Promise.all([
-      recordSendEvent(c.env, {
+    await settleSideEffects("smtp quota rejection", {
+      audit: recordSendEvent(c.env, {
         traceId: c.req.header("x-relay-trace-id") ?? crypto.randomUUID(),
         source: "smtp",
         userId: senderPolicy.userId,
@@ -298,52 +304,15 @@ app.post("/relay/send", async (c) => {
         smtpCode: "451",
         errorCode: "rate_limited",
       }),
-      completeIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp", false, {
-        ok: false,
-        status: 429,
-        body: responseBody,
-        headers: { "x-relay-policy-version": policyVersion },
-      }),
-    ]);
+      idempotency: releaseIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp"),
+    });
     return c.json(responseBody, 429);
   }
 
-  const bodyText = JSON.stringify({
-    from,
-    recipients,
-    mime_message: mimeMessage,
-  });
-
-  const cfResponse = await fetch(sendRawUrl(c.env.CF_ACCOUNT_ID), {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${c.env.CF_API_TOKEN}`,
-      "content-type": "application/json",
-    },
-    body: bodyText,
-  });
-  const cfResponseText = await cfResponse.text();
-  const cfResponseParsed = parseJsonOrText(cfResponseText);
-  const cfResult = parseCloudflareResult(cfResponseParsed);
-  const cfResponseSafe = sanitizeCloudflareResponse(cfResponseParsed);
-  const allBounced =
-    cfResponse.ok &&
-    arrayLength(cfResult.bounced) > 0 &&
-    arrayLength(cfResult.delivered) === 0 &&
-    arrayLength(cfResult.queued) === 0;
-  const deliveryOk = cfResponse.ok && !allBounced;
-  const cfPermanentFailure = !deliveryOk && !allBounced && isPermanentCloudflareFailure(cfResponse.status, cfResult.errorCode);
-  const responseStatus = deliveryOk ? 200 : allBounced || cfPermanentFailure ? 422 : 502;
-  const responseErrorCode = deliveryOk
-    ? null
-    : allBounced
-      ? "all_recipients_bounced"
-      : cfPermanentFailure
-        ? "cloudflare_send_raw_permanent_failure"
-        : "cloudflare_send_raw_rejected";
-  const rawMimeSha256 = await sha256Hex(rawMimeBytes);
-  const cfRequestId = cfResponse.headers.get("cf-request-id");
-  const cfRayId = cfResponse.headers.get("cf-ray");
+  const delivery = await sendRawViaCloudflare(c.env, from, recipients, mimeMessage);
+  const deliveryOk = delivery.disposition === "accepted";
+  const responseStatus = deliveryHttpStatus(delivery.disposition);
+  const responseErrorCode = deliveryErrorCode(delivery);
   const responseBody = {
     ok: deliveryOk,
     from,
@@ -353,12 +322,12 @@ app.post("/relay/send", async (c) => {
     raw_mime_sha256: rawMimeSha256,
     stripped_mime_sha256: strippedMimeSha256,
     idempotency_key: idempotencyKey,
-    cf_status: cfResponse.status,
-    cf_ray_id: cfRayId,
-    cf_request_id: cfRequestId,
-    cf_response: cfResponseSafe,
+    cf_status: delivery.cfStatus,
+    cf_ray_id: delivery.cfRayId,
+    cf_request_id: delivery.cfRequestId,
+    cf_response: delivery.safeResponse,
     error_code: responseErrorCode,
-    cf_error_code: cfResult.errorCode,
+    cf_error_code: delivery.result.errorCode,
   };
   console.log(
     JSON.stringify({
@@ -367,12 +336,14 @@ app.post("/relay/send", async (c) => {
       recipient_count: recipients.length,
       raw_mime_size_bytes: rawMimeBytes.byteLength,
       stripped_mime_size_bytes: strippedMimeBytes.byteLength,
-      cf_status: cfResponse.status,
+      cf_status: delivery.cfStatus,
+      disposition: delivery.disposition,
     }),
   );
 
-  await Promise.all([
-    recordSendEvent(c.env, {
+  const terminal = delivery.disposition === "accepted" || delivery.disposition === "permanent";
+  await settleSideEffects(`smtp ${delivery.disposition}`, {
+    audit: recordSendEvent(c.env, {
       traceId: c.req.header("x-relay-trace-id") ?? crypto.randomUUID(),
       source: "smtp",
       userId: senderPolicy.userId,
@@ -381,24 +352,27 @@ app.post("/relay/send", async (c) => {
       recipients,
       mimeSizeBytes: rawMimeBytes.byteLength,
       messageIdHeader,
-      cfRequestId,
-      cfRayId,
-      cfDeliveredJson: cfResult.delivered === null ? null : JSON.stringify(cfResult.delivered),
-      cfQueuedJson: cfResult.queued === null ? null : JSON.stringify(cfResult.queued),
-      cfBouncedJson: cfResult.bounced === null ? null : JSON.stringify(cfResult.bounced),
-      status: deliveryOk ? "accepted" : allBounced ? "all_bounced" : "cf_error",
-      smtpCode: deliveryOk ? "250" : allBounced ? "550" : "451",
+      cfRequestId: delivery.cfRequestId,
+      cfRayId: delivery.cfRayId,
+      cfDeliveredJson: delivery.result.delivered === null ? null : JSON.stringify(delivery.result.delivered),
+      cfQueuedJson: delivery.result.queued === null ? null : JSON.stringify(delivery.result.queued),
+      cfBouncedJson: delivery.result.bounced === null ? null : JSON.stringify(delivery.result.bounced),
+      status: deliveryEventStatus(delivery),
+      smtpCode: delivery.disposition === "accepted" ? "250" : delivery.disposition === "permanent" ? "550" : "451",
       errorCode: responseErrorCode ?? undefined,
-      cfErrorCode: cfResult.errorCode,
+      cfErrorCode: delivery.result.errorCode,
     }),
-    completeIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp", deliveryOk, {
-      ok: deliveryOk,
-      status: responseStatus,
-      body: responseBody,
-      headers: { "x-relay-policy-version": policyVersion },
-    },
-    ),
-  ]);
+    idempotency: terminal
+      ? completeIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp", {
+          ok: deliveryOk,
+          status: responseStatus,
+          body: responseBody,
+          headers: { "x-relay-policy-version": policyVersion },
+        })
+      : delivery.disposition === "transient"
+        ? releaseIdempotentRequest(c.env, idempotencyKey, requestHash, "smtp")
+        : refreshIdempotentRequestLease(c.env, idempotencyKey, requestHash, "smtp"),
+  });
 
   return c.json(responseBody, responseStatus);
 });
@@ -542,6 +516,8 @@ app.post("/self/api/api-keys/:id/roll", async (c) =>
 app.get("/self/api/send-events", async (c) => selfJson(c, (userId) => selfSendEvents(c.env, userId)));
 
 app.post("/send", async (c) => {
+  const earlySize = rejectOversizedContentLength(c, maxSendJsonBodyBytes);
+  if (earlySize !== null) return earlySize;
   const bearer = parseBearer(c.req.header("authorization"));
   if (bearer === null) {
     return c.json({ ok: false, error: "missing_api_key" }, 401);
@@ -554,7 +530,11 @@ app.post("/send", async (c) => {
 
   let body: { from?: unknown; recipients?: unknown; raw?: unknown };
   try {
-    body = (await c.req.json()) as { from?: unknown; recipients?: unknown; raw?: unknown };
+    const bodyBytes = await readBodyBounded(c.req.raw, maxSendJsonBodyBytes);
+    if (bodyBytes === null) {
+      return c.json({ ok: false, error: "message_too_large" }, 413);
+    }
+    body = JSON.parse(new TextDecoder().decode(bodyBytes)) as { from?: unknown; recipients?: unknown; raw?: unknown };
   } catch {
     return c.json({ ok: false, error: "invalid_json" }, 400);
   }
@@ -614,17 +594,19 @@ app.post("/send", async (c) => {
   const mimeMessageBytes = new TextEncoder().encode(mimeMessage);
   const messageIdHeader = extractHeader(mimeMessage, "message-id");
   if (!senderAllowedForApiKey(from, apiKey.allowed_senders)) {
-    await recordSendEvent(c.env, {
-      traceId: crypto.randomUUID(),
-      source: "http",
-      userId: apiKey.user_id,
-      apiKeyId: apiKey.api_key_id,
-      envelopeFrom: from,
-      recipients,
-      mimeSizeBytes: rawMimeBytes.byteLength,
-      messageIdHeader,
-      status: "policy_rejected",
-      errorCode: "sender_not_allowed",
+    await settleSideEffects("http sender policy rejection", {
+      audit: recordSendEvent(c.env, {
+        traceId: crypto.randomUUID(),
+        source: "http",
+        userId: apiKey.user_id,
+        apiKeyId: apiKey.api_key_id,
+        envelopeFrom: from,
+        recipients,
+        mimeSizeBytes: rawMimeBytes.byteLength,
+        messageIdHeader,
+        status: "policy_rejected",
+        errorCode: "sender_not_allowed",
+      }),
     });
     return c.json({ ok: false, error: "sender_not_allowed" }, 403);
   }
@@ -637,8 +619,11 @@ app.post("/send", async (c) => {
     messageIdHeader,
     mimeSha256: strippedMimeSha256,
   });
-  const suppliedIdempotencyKey = c.req.header("idempotency-key")?.trim();
-  const idempotencyKey = suppliedIdempotencyKey && suppliedIdempotencyKey.length > 0 ? `http:${apiKey.api_key_id}:${suppliedIdempotencyKey}` : requestHash;
+  const suppliedIdempotencyKey = cleanIdempotencyKey(c.req.header("idempotency-key"));
+  if (suppliedIdempotencyKey === false) {
+    return c.json({ ok: false, error: "invalid_idempotency_key" }, 400);
+  }
+  const idempotencyKey = suppliedIdempotencyKey === null ? requestHash : `http:${apiKey.api_key_id}:${suppliedIdempotencyKey}`;
   const idempotency = await beginIdempotentRequest(c.env, idempotencyKey, requestHash, "http");
   if (idempotency.status === "pending") {
     return c.json({ ok: false, error: "idempotency_pending" }, 409);
@@ -657,8 +642,8 @@ app.post("/send", async (c) => {
   const quota = await reserveSendQuota(c.env, { source: "http", envelopeFrom: from, apiKeyId: apiKey.api_key_id });
   if (!quota.ok) {
     const responseBody = { ok: false, error: "rate_limited", scope: quota.scope, limit: quota.limit };
-    await Promise.all([
-      recordSendEvent(c.env, {
+    await settleSideEffects("http quota rejection", {
+      audit: recordSendEvent(c.env, {
         traceId: crypto.randomUUID(),
         source: "http",
         userId: apiKey.user_id,
@@ -670,48 +655,15 @@ app.post("/send", async (c) => {
         status: "rate_limited",
         errorCode: "rate_limited",
       }),
-      completeIdempotentRequest(c.env, idempotencyKey, requestHash, "http", false, {
-        ok: false,
-        status: 429,
-        body: responseBody,
-      }),
-    ]);
+      idempotency: releaseIdempotentRequest(c.env, idempotencyKey, requestHash, "http"),
+    });
     return c.json(responseBody, 429);
   }
 
-  const cfResponse = await fetch(sendRawUrl(c.env.CF_ACCOUNT_ID), {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${c.env.CF_API_TOKEN}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      recipients,
-      mime_message: mimeMessage,
-    }),
-  });
-  const cfResponseText = await cfResponse.text();
-  const cfResponseParsed = parseJsonOrText(cfResponseText);
-  const cfResult = parseCloudflareResult(cfResponseParsed);
-  const cfResponseSafe = sanitizeCloudflareResponse(cfResponseParsed);
-  const allBounced =
-    cfResponse.ok &&
-    arrayLength(cfResult.bounced) > 0 &&
-    arrayLength(cfResult.delivered) === 0 &&
-    arrayLength(cfResult.queued) === 0;
-  const deliveryOk = cfResponse.ok && !allBounced;
-  const cfPermanentFailure = !deliveryOk && !allBounced && isPermanentCloudflareFailure(cfResponse.status, cfResult.errorCode);
-  const responseStatus = deliveryOk ? 200 : allBounced || cfPermanentFailure ? 422 : 502;
-  const responseErrorCode = deliveryOk
-    ? null
-    : allBounced
-      ? "all_recipients_bounced"
-      : cfPermanentFailure
-        ? "cloudflare_send_raw_permanent_failure"
-        : "cloudflare_send_raw_rejected";
-  const cfRequestId = cfResponse.headers.get("cf-request-id");
-  const cfRayId = cfResponse.headers.get("cf-ray");
+  const delivery = await sendRawViaCloudflare(c.env, from, recipients, mimeMessage);
+  const deliveryOk = delivery.disposition === "accepted";
+  const responseStatus = deliveryHttpStatus(delivery.disposition);
+  const responseErrorCode = deliveryErrorCode(delivery);
   const responseBody = {
     ok: deliveryOk,
     from,
@@ -721,16 +673,17 @@ app.post("/send", async (c) => {
     raw_mime_sha256: rawMimeSha256,
     stripped_mime_sha256: strippedMimeSha256,
     idempotency_key: idempotencyKey,
-    cf_status: cfResponse.status,
-    cf_ray_id: cfRayId,
-    cf_request_id: cfRequestId,
-    cf_response: cfResponseSafe,
+    cf_status: delivery.cfStatus,
+    cf_ray_id: delivery.cfRayId,
+    cf_request_id: delivery.cfRequestId,
+    cf_response: delivery.safeResponse,
     error_code: responseErrorCode,
-    cf_error_code: cfResult.errorCode,
+    cf_error_code: delivery.result.errorCode,
   };
 
-  await Promise.all([
-    recordSendEvent(c.env, {
+  const terminal = delivery.disposition === "accepted" || delivery.disposition === "permanent";
+  await settleSideEffects(`http ${delivery.disposition}`, {
+    audit: recordSendEvent(c.env, {
       traceId: crypto.randomUUID(),
       source: "http",
       userId: apiKey.user_id,
@@ -739,21 +692,25 @@ app.post("/send", async (c) => {
       recipients,
       mimeSizeBytes: rawMimeBytes.byteLength,
       messageIdHeader,
-      cfRequestId,
-      cfRayId,
-      cfDeliveredJson: cfResult.delivered === null ? null : JSON.stringify(cfResult.delivered),
-      cfQueuedJson: cfResult.queued === null ? null : JSON.stringify(cfResult.queued),
-      cfBouncedJson: cfResult.bounced === null ? null : JSON.stringify(cfResult.bounced),
-      status: deliveryOk ? "accepted" : allBounced ? "all_bounced" : "cf_error",
+      cfRequestId: delivery.cfRequestId,
+      cfRayId: delivery.cfRayId,
+      cfDeliveredJson: delivery.result.delivered === null ? null : JSON.stringify(delivery.result.delivered),
+      cfQueuedJson: delivery.result.queued === null ? null : JSON.stringify(delivery.result.queued),
+      cfBouncedJson: delivery.result.bounced === null ? null : JSON.stringify(delivery.result.bounced),
+      status: deliveryEventStatus(delivery),
       errorCode: responseErrorCode ?? undefined,
-      cfErrorCode: cfResult.errorCode,
+      cfErrorCode: delivery.result.errorCode,
     }),
-    completeIdempotentRequest(c.env, idempotencyKey, requestHash, "http", deliveryOk, {
-      ok: deliveryOk,
-      status: responseStatus,
-      body: responseBody,
-    }),
-  ]);
+    idempotency: terminal
+      ? completeIdempotentRequest(c.env, idempotencyKey, requestHash, "http", {
+          ok: deliveryOk,
+          status: responseStatus,
+          body: responseBody,
+        })
+      : delivery.disposition === "transient"
+        ? releaseIdempotentRequest(c.env, idempotencyKey, requestHash, "http")
+        : refreshIdempotentRequestLease(c.env, idempotencyKey, requestHash, "http"),
+  });
 
   return c.json(responseBody, responseStatus);
 });
@@ -1012,6 +969,57 @@ function rejectOversizedContentLength(c: Context<{ Bindings: Env }>, limit: numb
   return null;
 }
 
+async function readBodyBounded(request: Request, limit: number): Promise<Uint8Array | null> {
+  return readStreamBounded(request.body, limit);
+}
+
+async function readStreamBounded(stream: ReadableStream<Uint8Array> | null, limit: number): Promise<Uint8Array | null> {
+  if (stream === null) {
+    return new Uint8Array();
+  }
+
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The size decision is already final; a failed cancellation must not
+          // turn a bounded 413 into an unhandled exception.
+        }
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
+function cleanIdempotencyKey(raw: string | undefined): string | null | false {
+  if (raw === undefined || raw.length === 0) return null;
+  const value = raw.trim();
+  if (value.length === 0) return false;
+  if (new TextEncoder().encode(value).byteLength > maxIdempotencyKeyBytes || !/^[\x21-\x7e]+$/.test(value)) {
+    return false;
+  }
+  return value;
+}
+
 function requiredRelaySignedHeaders(path: string): string[] {
   if (path === "/relay/send") {
     return ["x-relay-credential-id", "x-relay-envelope-from", "x-relay-recipients", "x-relay-version"];
@@ -1150,39 +1158,181 @@ async function readJsonObject(request: Request): Promise<Record<string, unknown>
   return parsed as Record<string, unknown>;
 }
 
-function parseCloudflareResult(value: unknown): {
+type DeliveryDisposition = "accepted" | "permanent" | "transient" | "ambiguous";
+
+interface ParsedCloudflareResult {
+  success: boolean | null;
   delivered: unknown[] | null;
   queued: unknown[] | null;
   bounced: unknown[] | null;
   errorCode: string | null;
-} {
-  if (typeof value !== "object" || value === null) {
-    return { delivered: null, queued: null, bounced: null, errorCode: null };
+  errorPointer: string | null;
+}
+
+interface CloudflareDelivery {
+  disposition: DeliveryDisposition;
+  cfStatus: number | null;
+  cfRequestId: string | null;
+  cfRayId: string | null;
+  safeResponse: unknown;
+  result: ParsedCloudflareResult;
+}
+
+async function sendRawViaCloudflare(env: Env, from: string, recipients: string[], mimeMessage: string): Promise<CloudflareDelivery> {
+  let response: Response;
+  try {
+    response = await fetch(sendRawUrl(env.CF_ACCOUNT_ID), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.CF_API_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ from, recipients, mime_message: mimeMessage }),
+    });
+  } catch (error) {
+    console.warn("Cloudflare send_raw transport outcome is ambiguous", error);
+    return emptyCloudflareDelivery("ambiguous", null, null, null);
   }
-  const object = value as { result?: unknown; errors?: unknown };
+
+  const cfRequestId = response.headers.get("cf-request-id");
+  const cfRayId = response.headers.get("cf-ray");
+  let parsed: unknown;
+  try {
+    const responseBytes = await readStreamBounded(response.body, maxCloudflareResponseBytes);
+    if (responseBytes === null) {
+      console.warn("Cloudflare send_raw response exceeded the local response limit");
+      return emptyCloudflareDelivery(response.ok ? "ambiguous" : "transient", response.status, cfRequestId, cfRayId);
+    }
+    parsed = parseJsonOrText(new TextDecoder().decode(responseBytes));
+  } catch (error) {
+    console.warn("Cloudflare send_raw response body could not be read", error);
+    return emptyCloudflareDelivery(response.ok ? "ambiguous" : "transient", response.status, cfRequestId, cfRayId);
+  }
+
+  const result = parseCloudflareResult(parsed);
+  const delivered = result.delivered;
+  const queued = result.queued;
+  const bounced = result.bounced;
+  if (response.ok && result.success === true && delivered !== null && queued !== null && bounced !== null) {
+    return {
+      disposition: isAllRecipientsBounced(result) ? "permanent" : "accepted",
+      cfStatus: response.status,
+      cfRequestId,
+      cfRayId,
+      safeResponse: sanitizeCloudflareResponse(parsed),
+      result,
+    };
+  }
+
+  if (!response.ok || result.success === false) {
+    return {
+      disposition: isPermanentCloudflareFailure(response.status, result.errorPointer) ? "permanent" : "transient",
+      cfStatus: response.status,
+      cfRequestId,
+      cfRayId,
+      safeResponse: sanitizeCloudflareResponse(parsed),
+      result,
+    };
+  }
+
+  // A successful HTTP status without the documented success/result shape may
+  // still mean the provider accepted the message. Hold the reservation briefly
+  // rather than either duplicating the send or falsely making it permanent.
+  return {
+    disposition: "ambiguous",
+    cfStatus: response.status,
+    cfRequestId,
+    cfRayId,
+    safeResponse: sanitizeCloudflareResponse(parsed),
+    result,
+  };
+}
+
+function emptyCloudflareDelivery(
+  disposition: "transient" | "ambiguous",
+  cfStatus: number | null,
+  cfRequestId: string | null,
+  cfRayId: string | null,
+): CloudflareDelivery {
+  return {
+    disposition,
+    cfStatus,
+    cfRequestId,
+    cfRayId,
+    safeResponse: null,
+    result: { success: null, delivered: null, queued: null, bounced: null, errorCode: null, errorPointer: null },
+  };
+}
+
+function deliveryHttpStatus(disposition: DeliveryDisposition): 200 | 422 | 502 {
+  return disposition === "accepted" ? 200 : disposition === "permanent" ? 422 : 502;
+}
+
+function deliveryErrorCode(delivery: CloudflareDelivery): string | null {
+  switch (delivery.disposition) {
+    case "accepted":
+      return null;
+    case "permanent":
+      return isAllRecipientsBounced(delivery.result)
+        ? "all_recipients_bounced"
+        : "cloudflare_send_raw_permanent_failure";
+    case "transient":
+      return "cloudflare_send_raw_rejected";
+    case "ambiguous":
+      return "cloudflare_send_raw_ambiguous";
+  }
+}
+
+function deliveryEventStatus(delivery: CloudflareDelivery): string {
+  if (delivery.disposition === "accepted") return "accepted";
+  if (isAllRecipientsBounced(delivery.result)) return "all_bounced";
+  if (delivery.disposition === "permanent") return "permanent_rejection";
+  return delivery.disposition === "ambiguous" ? "cf_ambiguous" : "cf_error";
+}
+
+function isAllRecipientsBounced(result: ParsedCloudflareResult): boolean {
+  return result.bounced !== null &&
+    result.bounced.length > 0 &&
+    result.delivered !== null &&
+    result.delivered.length === 0 &&
+    result.queued !== null &&
+    result.queued.length === 0;
+}
+
+async function settleSideEffects(context: string, effects: Record<string, Promise<void>>): Promise<void> {
+  const entries = Object.entries(effects);
+  const results = await Promise.allSettled(entries.map(([, effect]) => effect));
+  for (const [index, result] of results.entries()) {
+    if (result.status === "rejected") {
+      console.error(`${context} ${entries[index]?.[0] ?? "side effect"} failed`, result.reason);
+    }
+  }
+}
+
+function parseCloudflareResult(value: unknown): ParsedCloudflareResult {
+  if (typeof value !== "object" || value === null) {
+    return { success: null, delivered: null, queued: null, bounced: null, errorCode: null, errorPointer: null };
+  }
+  const object = value as { success?: unknown; result?: unknown; errors?: unknown };
   const result = typeof object.result === "object" && object.result !== null ? (object.result as Record<string, unknown>) : {};
   const errors = Array.isArray(object.errors) ? object.errors : [];
-  const firstError = errors.find((error): error is { code?: unknown } => typeof error === "object" && error !== null);
+  const firstError = errors.find(
+    (error): error is { code?: unknown; source?: { pointer?: unknown } } => typeof error === "object" && error !== null,
+  );
   return {
+    success: typeof object.success === "boolean" ? object.success : null,
     delivered: Array.isArray(result.delivered) ? result.delivered : null,
     queued: Array.isArray(result.queued) ? result.queued : null,
     bounced: Array.isArray(result.permanent_bounces) ? result.permanent_bounces : null,
     errorCode: typeof firstError?.code === "string" || typeof firstError?.code === "number" ? String(firstError.code) : null,
+    errorPointer: typeof firstError?.source?.pointer === "string" ? firstError.source.pointer : null,
   };
 }
 
-function isPermanentCloudflareFailure(status: number, errorCode: string | null): boolean {
-  if ([400, 401, 403, 404, 422].includes(status)) {
-    return true;
-  }
-  // Known Cloudflare API validation/auth classes should not be retried by SMTP
-  // clients. Unknown provider errors remain transient unless HTTP status says
-  // otherwise.
-  return errorCode !== null && /^10\d{3}$/.test(errorCode);
-}
-
-function arrayLength(value: unknown[] | null): number {
-  return value?.length ?? 0;
+function isPermanentCloudflareFailure(status: number, errorPointer: string | null): boolean {
+  if (status !== 400 && status !== 422) return false;
+  const pointer = errorPointer?.toLowerCase().replace(/^\//, "") ?? "";
+  return pointer === "mime_message" || pointer === "recipients" || pointer.startsWith("recipients/");
 }
 
 function parseBearer(raw: string | undefined): string | null {

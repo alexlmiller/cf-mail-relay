@@ -6,23 +6,37 @@ const hmacSecret = "relay-secret";
 const keyId = "rel_test";
 const apiSecret = "api-secret-123456789";
 
-function makeKv(): KVNamespace {
+function makeKv(): KVNamespace & { state: Map<string, string> } {
   const store = new Map<string, string>();
   return {
+    state: store,
     get: vi.fn(async (key: string) => store.get(key) ?? null),
     put: vi.fn(async (key: string, value: string) => {
       store.set(key, value);
     }),
-  } as unknown as KVNamespace;
+  } as unknown as KVNamespace & { state: Map<string, string> };
 }
 
 interface FakeD1State {
-  idempotency: Map<string, { status: string; request_hash: string; source: string; response_json: string | null }>;
+  idempotency: Map<
+    string,
+    {
+      status: string;
+      request_hash: string;
+      source: string;
+      response_json: string | null;
+      created_at: number;
+      updated_at: number;
+      expires_at: number;
+    }
+  >;
   relayNonces: Set<string>;
   settings: Map<string, string>;
   rates: Map<string, number>;
   sendEvents: unknown[][];
   authFailures: unknown[][];
+  failSendEvents: boolean;
+  failIdempotencyCompletion: boolean;
 }
 
 function makeD1(): D1Database & { state: FakeD1State } {
@@ -36,6 +50,8 @@ function makeD1(): D1Database & { state: FakeD1State } {
     rates: new Map(),
     sendEvents: [],
     authFailures: [],
+    failSendEvents: false,
+    failIdempotencyCompletion: false,
   };
   const credential = {
     id: "cred_1",
@@ -125,7 +141,15 @@ function makeD1(): D1Database & { state: FakeD1State } {
       if (state.idempotency.has(key)) {
         return { meta: { changes: 0 } };
       }
-      state.idempotency.set(key, { status: "pending", request_hash: String(args[1]), source: String(args[2]), response_json: null });
+      state.idempotency.set(key, {
+        status: "pending",
+        request_hash: String(args[1]),
+        source: String(args[2]),
+        response_json: null,
+        created_at: Number(args[3]),
+        updated_at: Number(args[4]),
+        expires_at: Number(args[5]),
+      });
       return { meta: { changes: 1 } };
     }
     if (sql.includes("INSERT OR IGNORE INTO relay_nonces")) {
@@ -136,17 +160,95 @@ function makeD1(): D1Database & { state: FakeD1State } {
       state.relayNonces.add(key);
       return { meta: { changes: 1 } };
     }
-    if (sql.includes("UPDATE idempotency_keys SET status = ?")) {
-      const existing = state.idempotency.get(String(args[3]));
-      state.idempotency.set(String(args[3]), {
-        status: String(args[0]),
-        request_hash: existing?.request_hash ?? "",
-        source: existing?.source ?? "smtp",
-        response_json: String(args[1]),
+    if (sql.includes("UPDATE idempotency_keys SET status = 'completed'")) {
+      if (state.failIdempotencyCompletion) throw new Error("simulated idempotency completion failure");
+      const key = String(args[3]);
+      const existing = state.idempotency.get(key);
+      if (existing === undefined || existing.status !== "pending" || existing.request_hash !== String(args[4]) || existing.source !== String(args[5])) {
+        return { meta: { changes: 0 } };
+      }
+      state.idempotency.set(key, {
+        ...existing,
+        status: "completed",
+        response_json: String(args[0]),
+        updated_at: Number(args[1]),
+        expires_at: Number(args[2]),
       });
       return { meta: { changes: 1 } };
     }
+    if (sql.includes("DELETE FROM idempotency_keys WHERE idempotency_key = ?")) {
+      const key = String(args[0]);
+      const existing = state.idempotency.get(key);
+      if (existing?.status === "pending" && existing.request_hash === String(args[1]) && existing.source === String(args[2])) {
+        state.idempotency.delete(key);
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
+    if (sql.includes("SET request_hash = ?, source = ?, status = 'pending'")) {
+      const key = String(args[5]);
+      const existing = state.idempotency.get(key);
+      if (existing === undefined || existing.expires_at > Number(args[6])) return { meta: { changes: 0 } };
+      state.idempotency.set(key, {
+        status: "pending",
+        request_hash: String(args[0]),
+        source: String(args[1]),
+        response_json: null,
+        created_at: Number(args[2]),
+        updated_at: Number(args[3]),
+        expires_at: Number(args[4]),
+      });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("SET status = 'pending', response_json = NULL")) {
+      const key = String(args[3]);
+      const existing = state.idempotency.get(key);
+      if (existing === undefined || existing.status !== "failed" || existing.request_hash !== String(args[4]) || existing.source !== String(args[5])) {
+        return { meta: { changes: 0 } };
+      }
+      state.idempotency.set(key, {
+        ...existing,
+        status: "pending",
+        response_json: null,
+        created_at: Number(args[0]),
+        updated_at: Number(args[1]),
+        expires_at: Number(args[2]),
+      });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("SET response_json = NULL, created_at = ?")) {
+      const key = String(args[3]);
+      const existing = state.idempotency.get(key);
+      if (
+        existing === undefined ||
+        existing.status !== "pending" ||
+        existing.request_hash !== String(args[4]) ||
+        existing.source !== String(args[5]) ||
+        existing.updated_at > Number(args[6]) ||
+        existing.expires_at <= Number(args[7])
+      ) {
+        return { meta: { changes: 0 } };
+      }
+      state.idempotency.set(key, {
+        ...existing,
+        response_json: null,
+        created_at: Number(args[0]),
+        updated_at: Number(args[1]),
+        expires_at: Number(args[2]),
+      });
+      return { meta: { changes: 1 } };
+    }
+    if (sql.includes("UPDATE idempotency_keys SET updated_at = ?")) {
+      const key = String(args[1]);
+      const existing = state.idempotency.get(key);
+      if (existing !== undefined && existing.status === "pending" && existing.request_hash === String(args[2]) && existing.source === String(args[3])) {
+        state.idempotency.set(key, { ...existing, updated_at: Number(args[0]) });
+        return { meta: { changes: 1 } };
+      }
+      return { meta: { changes: 0 } };
+    }
     if (sql.includes("INSERT INTO send_events")) {
+      if (state.failSendEvents) throw new Error("simulated send event failure");
       state.sendEvents.push(args);
       return { meta: { changes: 1 } };
     }
@@ -264,9 +366,47 @@ async function signedSendHeaders(body: Uint8Array, nonce: string, headers: Recor
   };
 }
 
+function httpSendRequest(
+  env: Record<string, unknown>,
+  idempotencyKey: string,
+  subject = "API",
+): Promise<Response> {
+  const mime = `From: gmail@alexmiller.net\r\nTo: alex@example.net\r\nSubject: ${subject}\r\n\r\nBody\r\n`;
+  return app.request(
+    "/send",
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiSecret}`,
+        "content-type": "application/json",
+        "idempotency-key": idempotencyKey,
+      },
+      body: JSON.stringify({
+        from: "gmail@alexmiller.net",
+        recipients: ["alex@example.net"],
+        raw: Buffer.from(mime, "utf8").toString("base64"),
+      }),
+    },
+    env,
+  );
+}
+
+function cloudflareSuccess(result: Record<string, unknown> = {}): Response {
+  return new Response(
+    JSON.stringify({
+      success: true,
+      errors: [],
+      messages: [],
+      result: { delivered: [], queued: [], permanent_bounces: [], ...result },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
 describe("relay endpoints", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("creates the first bootstrap admin with the one-time token", async () => {
@@ -521,6 +661,26 @@ describe("relay endpoints", () => {
     await expect(response.json()).resolves.toMatchObject({ ok: false, error: "message_too_large" });
   });
 
+  it("bounds streamed relay request bodies without relying on Content-Length", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(16 * 1024));
+        controller.enqueue(new Uint8Array([1]));
+        controller.close();
+      },
+    });
+    const request = new Request("http://localhost/relay/auth", {
+      method: "POST",
+      body: stream,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+
+    const response = await app.request(request, undefined, makeEnv());
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "auth_body_too_large" });
+  });
+
   it("replays completed idempotency responses from D1", async () => {
     const env = makeEnv();
     const cfFetch = vi.fn(async () => {
@@ -695,7 +855,7 @@ describe("relay endpoints", () => {
     expect(JSON.stringify(idempotencyRows)).not.toContain("alex@example.net");
   });
 
-  it("marks permanent Cloudflare API failures as non-retryable without leaking provider text", async () => {
+  it("treats Cloudflare auth/configuration failures as retryable without leaking provider text", async () => {
     const env = makeEnv();
     vi.stubGlobal(
       "fetch",
@@ -726,16 +886,236 @@ describe("relay endpoints", () => {
       env,
     );
 
-    expect(response.status).toBe(422);
+    expect(response.status).toBe(502);
     const responseJson = await response.json();
     expect(responseJson).toMatchObject({
       ok: false,
-      error_code: "cloudflare_send_raw_permanent_failure",
+      error_code: "cloudflare_send_raw_rejected",
       cf_error_code: "10000",
       cf_response: { success: false, errors: [{ code: 10000 }], messages: [] },
     });
     expect(JSON.stringify(responseJson.cf_response)).not.toContain("alex@example.net");
-    expect(JSON.stringify([...(env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency.values()])).not.toContain("alex@example.net");
+    expect((env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency.size).toBe(0);
+  });
+
+  it.each([401, 404, 429, 500, 503])("releases idempotency after a known retryable Cloudflare %i response", async (status) => {
+    const env = makeEnv();
+    const cfFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ success: false, errors: [{ code: 10000 }], messages: [] }), {
+        status,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", cfFetch);
+
+    expect((await httpSendRequest(env, `retryable-${status}`)).status).toBe(502);
+    expect((env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency.size).toBe(0);
+    expect((await httpSendRequest(env, `retryable-${status}`)).status).toBe(502);
+    expect(cfFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("replays an all-recipient permanent bounce without resending", async () => {
+    const env = makeEnv();
+    const cfFetch = vi.fn(async () => cloudflareSuccess({ permanent_bounces: ["alex@example.net"] }));
+    vi.stubGlobal("fetch", cfFetch);
+
+    const first = await httpSendRequest(env, "permanent-bounce");
+    const second = await httpSendRequest(env, "permanent-bounce");
+
+    expect(first.status).toBe(422);
+    await expect(first.json()).resolves.toMatchObject({ ok: false, error_code: "all_recipients_bounced" });
+    expect(second.status).toBe(422);
+    expect(second.headers.get("x-relay-idempotency-replay")).toBe("1");
+    expect(cfFetch).toHaveBeenCalledOnce();
+  });
+
+  it("treats a structured MIME validation rejection as permanent", async () => {
+    const env = makeEnv();
+    const cfFetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          success: false,
+          errors: [{ code: 1000, message: "invalid MIME", source: { pointer: "/mime_message" } }],
+          messages: [],
+        }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", cfFetch);
+
+    const first = await httpSendRequest(env, "mime-validation");
+    const second = await httpSendRequest(env, "mime-validation");
+
+    expect(first.status).toBe(422);
+    await expect(first.json()).resolves.toMatchObject({ ok: false, error_code: "cloudflare_send_raw_permanent_failure" });
+    expect(second.status).toBe(422);
+    expect(second.headers.get("x-relay-idempotency-replay")).toBe("1");
+    expect(cfFetch).toHaveBeenCalledOnce();
+  });
+
+  it("holds an idempotency reservation when the provider transport outcome is ambiguous", async () => {
+    const env = makeEnv();
+    const cfFetch = vi.fn(async () => {
+      throw new TypeError("simulated network failure");
+    });
+    vi.stubGlobal("fetch", cfFetch);
+
+    const first = await httpSendRequest(env, "ambiguous-fetch");
+    const second = await httpSendRequest(env, "ambiguous-fetch");
+
+    expect(first.status).toBe(502);
+    await expect(first.json()).resolves.toMatchObject({ ok: false, error_code: "cloudflare_send_raw_ambiguous" });
+    expect(second.status).toBe(409);
+    await expect(second.json()).resolves.toMatchObject({ ok: false, error: "idempotency_pending" });
+    expect(cfFetch).toHaveBeenCalledOnce();
+  });
+
+  it("holds an idempotency reservation for a malformed successful provider response", async () => {
+    const env = makeEnv();
+    const cfFetch = vi.fn(async () => new Response("not-json", { status: 200 }));
+    vi.stubGlobal("fetch", cfFetch);
+
+    expect((await httpSendRequest(env, "ambiguous-body")).status).toBe(502);
+    expect((await httpSendRequest(env, "ambiguous-body")).status).toBe(409);
+    expect(cfFetch).toHaveBeenCalledOnce();
+  });
+
+  it("bounds provider response bodies and treats oversized success responses as ambiguous", async () => {
+    const env = makeEnv();
+    const cfFetch = vi.fn(async () => new Response("x".repeat(256 * 1024 + 1), { status: 200 }));
+    vi.stubGlobal("fetch", cfFetch);
+
+    expect((await httpSendRequest(env, "oversized-provider-body")).status).toBe(502);
+    expect((await httpSendRequest(env, "oversized-provider-body")).status).toBe(409);
+    expect(cfFetch).toHaveBeenCalledOnce();
+  });
+
+  it("takes over a stale pending reservation after the safety lease", async () => {
+    const env = makeEnv();
+    const cfFetch = vi
+      .fn<() => Promise<Response>>()
+      .mockRejectedValueOnce(new TypeError("simulated network failure"))
+      .mockResolvedValueOnce(cloudflareSuccess());
+    vi.stubGlobal("fetch", cfFetch);
+
+    expect((await httpSendRequest(env, "stale-pending")).status).toBe(502);
+    const d1 = env.D1_MAIN as D1Database & { state: FakeD1State };
+    const row = d1.state.idempotency.get("http:key_1:stale-pending");
+    expect(row).toBeDefined();
+    if (row !== undefined) row.updated_at -= 301;
+
+    expect((await httpSendRequest(env, "stale-pending")).status).toBe(200);
+    expect(cfFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries legacy failed rows that cached a transient response", async () => {
+    const env = makeEnv();
+    const cfFetch = vi
+      .fn<() => Promise<Response>>()
+      .mockRejectedValueOnce(new TypeError("simulated network failure"))
+      .mockResolvedValueOnce(cloudflareSuccess());
+    vi.stubGlobal("fetch", cfFetch);
+
+    expect((await httpSendRequest(env, "legacy-transient")).status).toBe(502);
+    const row = (env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency.get("http:key_1:legacy-transient");
+    expect(row).toBeDefined();
+    if (row !== undefined) {
+      row.status = "failed";
+      row.response_json = JSON.stringify({ ok: false, status: 502, body: { ok: false, error: "legacy_transient" } });
+    }
+
+    expect((await httpSendRequest(env, "legacy-transient")).status).toBe(200);
+    expect(cfFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("replays legacy failed rows that cached a permanent response", async () => {
+    const env = makeEnv();
+    const cfFetch = vi.fn(async () => {
+      throw new TypeError("simulated network failure");
+    });
+    vi.stubGlobal("fetch", cfFetch);
+
+    expect((await httpSendRequest(env, "legacy-permanent")).status).toBe(502);
+    const row = (env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency.get("http:key_1:legacy-permanent");
+    expect(row).toBeDefined();
+    if (row !== undefined) {
+      row.status = "failed";
+      row.response_json = JSON.stringify({ ok: false, status: 422, body: { ok: false, error_code: "all_recipients_bounced" } });
+    }
+
+    const replay = await httpSendRequest(env, "legacy-permanent");
+    expect(replay.status).toBe(422);
+    expect(replay.headers.get("x-relay-idempotency-replay")).toBe("1");
+    expect(cfFetch).toHaveBeenCalledOnce();
+  });
+
+  it("atomically reuses an expired idempotency key for a different request", async () => {
+    const env = makeEnv();
+    const cfFetch = vi
+      .fn<() => Promise<Response>>()
+      .mockRejectedValueOnce(new TypeError("simulated network failure"))
+      .mockResolvedValueOnce(cloudflareSuccess());
+    vi.stubGlobal("fetch", cfFetch);
+
+    expect((await httpSendRequest(env, "expired-key", "First")).status).toBe(502);
+    const d1 = env.D1_MAIN as D1Database & { state: FakeD1State };
+    const row = d1.state.idempotency.get("http:key_1:expired-key");
+    expect(row).toBeDefined();
+    if (row !== undefined) row.expires_at = Math.floor(Date.now() / 1000) - 1;
+
+    expect((await httpSendRequest(env, "expired-key", "Second")).status).toBe(200);
+    expect(cfFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let the KV fast path replay an expired terminal response", async () => {
+    const env = makeEnv();
+    const cfFetch = vi.fn(async () => cloudflareSuccess());
+    vi.stubGlobal("fetch", cfFetch);
+
+    expect((await httpSendRequest(env, "expired-terminal")).status).toBe(200);
+    const d1 = env.D1_MAIN as D1Database & { state: FakeD1State };
+    const row = d1.state.idempotency.get("http:key_1:expired-terminal");
+    expect(row).toBeDefined();
+    if (row !== undefined) row.expires_at = Math.floor(Date.now() / 1000) - 1;
+
+    const kv = env.KV_HOT as KVNamespace & { state: Map<string, string> };
+    const cachedKey = "idem:http:key_1:expired-terminal";
+    const cached = JSON.parse(kv.state.get(cachedKey) ?? "{}") as Record<string, unknown>;
+    cached.expires_at = Math.floor(Date.now() / 1000) - 1;
+    kv.state.set(cachedKey, JSON.stringify(cached));
+
+    expect((await httpSendRequest(env, "expired-terminal")).status).toBe(200);
+    expect(cfFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { name: "success", response: cloudflareSuccess(), status: 200 },
+    { name: "permanent bounce", response: cloudflareSuccess({ permanent_bounces: ["alex@example.net"] }), status: 422 },
+  ])("does not overturn a known $name when audit and completion persistence fail", async ({ response, status }) => {
+    const env = makeEnv();
+    const d1 = env.D1_MAIN as D1Database & { state: FakeD1State };
+    d1.state.failSendEvents = true;
+    d1.state.failIdempotencyCompletion = true;
+    vi.stubGlobal("fetch", vi.fn(async () => response.clone()));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    expect((await httpSendRequest(env, `persistence-${status}`)).status).toBe(status);
+  });
+
+  it("does not overturn provider success when KV replay caching fails", async () => {
+    const kv = makeKv();
+    const originalPut = kv.put.bind(kv);
+    kv.put = vi.fn(async (key: string, value: string, options?: KVNamespacePutOptions) => {
+      if (key.startsWith("idem:")) throw new Error("simulated KV failure");
+      await originalPut(key, value, options);
+    });
+    const env = makeEnv({ KV_HOT: kv });
+    vi.stubGlobal("fetch", vi.fn(async () => cloudflareSuccess()));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    expect((await httpSendRequest(env, "kv-failure")).status).toBe(200);
+    const row = (env.D1_MAIN as D1Database & { state: FakeD1State }).state.idempotency.get("http:key_1:kv-failure");
+    expect(row?.status).toBe("completed");
   });
 
   it("rejects malformed HTTP envelope recipients", async () => {
@@ -785,6 +1165,16 @@ describe("relay endpoints", () => {
 
     expect(conflict.status).toBe(409);
     await expect(conflict.json()).resolves.toMatchObject({ ok: false, error: "idempotency_key_conflict" });
+  });
+
+  it("rejects oversized or non-printable HTTP idempotency keys", async () => {
+    const oversized = await httpSendRequest(makeEnv(), "x".repeat(256));
+    expect(oversized.status).toBe(400);
+    await expect(oversized.json()).resolves.toMatchObject({ ok: false, error: "invalid_idempotency_key" });
+
+    const spaced = await httpSendRequest(makeEnv(), "not clean");
+    expect(spaced.status).toBe(400);
+    await expect(spaced.json()).resolves.toMatchObject({ ok: false, error: "invalid_idempotency_key" });
   });
 
   it("requires a bearer API key on /send", async () => {
@@ -854,6 +1244,7 @@ describe("relay endpoints", () => {
     expect(limited.status).toBe(429);
     await expect(limited.json()).resolves.toMatchObject({ ok: false, error: "rate_limited", scope: "global_day", limit: 1 });
     expect(cfFetch).toHaveBeenCalledOnce();
+    expect(d1.state.idempotency.has("http:key_1:quota-2")).toBe(false);
   });
 
   it("rejects cross-origin admin POSTs before Access authorization", async () => {

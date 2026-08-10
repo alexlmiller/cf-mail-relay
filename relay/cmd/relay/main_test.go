@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -73,6 +76,78 @@ func TestThrottleLocksOutAfterAuthFailure(t *testing.T) {
 	}
 }
 
+func TestSessionAuthOnlyLocksOutExplicitInvalidCredentials(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		wantCode   int
+		wantLocked bool
+	}{
+		{name: "invalid credentials", status: 401, body: `{"ok":false,"error":"invalid_credentials"}`, wantCode: 535, wantLocked: true},
+		{name: "HMAC drift", status: 401, body: `{"ok":false,"error":"invalid_signature"}`, wantCode: 454},
+		{name: "rate limited", status: 429, body: `{"ok":false,"error":"rate_limited"}`, wantCode: 454},
+		{name: "worker outage", status: 503, body: `{"ok":false,"error":"unavailable"}`, wantCode: 454},
+		{name: "malformed response", status: 500, body: `not-json`, wantCode: 454},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("content-type", "application/json")
+				w.WriteHeader(test.status)
+				w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+
+			throttle := newThrottle(60, 20, 30*time.Second)
+			session := &session{
+				backend: &backend{
+					client:   &workerclient.Client{BaseURL: server.URL, KeyID: "rel_test", Secret: "secret", Version: "test"},
+					throttle: throttle,
+				},
+				remoteIP: "192.0.2.10",
+			}
+			err := session.authenticate("gmail", "pw")
+			var smtpErr *smtp.SMTPError
+			if !errors.As(err, &smtpErr) || smtpErr.Code != test.wantCode {
+				t.Fatalf("auth error = %#v, want SMTP %d", err, test.wantCode)
+			}
+			if got := len(throttle.authFailures) > 0; got != test.wantLocked {
+				t.Fatalf("locked = %v want %v", got, test.wantLocked)
+			}
+		})
+	}
+}
+
+func TestSessionAuthRateLimitIsTemporaryWithoutLockout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		json.NewEncoder(w).Encode(workerclient.AuthResponse{OK: true, TTLSeconds: 1})
+	}))
+	defer server.Close()
+
+	throttle := newThrottle(60, 1, 30*time.Second)
+	session := &session{
+		backend: &backend{
+			client:   &workerclient.Client{BaseURL: server.URL, KeyID: "rel_test", Secret: "secret", Version: "test"},
+			throttle: throttle,
+		},
+		remoteIP: "192.0.2.10",
+	}
+	if err := session.authenticate("gmail", "pw"); err != nil {
+		t.Fatal(err)
+	}
+	err := session.authenticate("gmail", "pw")
+	var smtpErr *smtp.SMTPError
+	if !errors.As(err, &smtpErr) || smtpErr.Code != 454 {
+		t.Fatalf("rate-limited auth = %#v, want SMTP 454", err)
+	}
+	if len(throttle.authFailures) != 0 {
+		t.Fatal("rate limiting must not create a credential lockout")
+	}
+}
+
 func TestSmtpErrorForSendError(t *testing.T) {
 	err := smtpErrorForSendError(&workerclient.SendError{
 		StatusCode: 403,
@@ -100,6 +175,31 @@ func TestSmtpErrorForSendError(t *testing.T) {
 	})
 	if !errors.As(err, &smtpErr) || smtpErr.Code != 550 {
 		t.Fatalf("permanent Cloudflare failure should be 550, got %#v", err)
+	}
+}
+
+func TestSmtpErrorForRetryableRelayFailures(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		error  string
+	}{
+		{name: "HMAC drift", status: 401, error: "invalid_signature"},
+		{name: "operator not found", status: 404, error: "worker_route_not_found"},
+		{name: "rate limit", status: 429, error: "rate_limited"},
+		{name: "worker error", status: 500, error: "internal_error"},
+		{name: "unknown client error", status: 400, error: "unknown_error"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := smtpErrorForSendError(&workerclient.SendError{
+				StatusCode: test.status,
+				Response:   workerclient.SendResponse{OK: false, Error: test.error},
+			})
+			var smtpErr *smtp.SMTPError
+			if !errors.As(err, &smtpErr) || smtpErr.Code != 451 {
+				t.Fatalf("relay failure = %#v, want SMTP 451", err)
+			}
+		})
 	}
 }
 

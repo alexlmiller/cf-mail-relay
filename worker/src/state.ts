@@ -46,6 +46,9 @@ interface IdempotencyRow {
   request_hash: string;
   source: string;
   response_json: string | null;
+  created_at: number;
+  updated_at: number;
+  expires_at: number;
 }
 
 export interface SendEventInput {
@@ -77,6 +80,7 @@ export interface ReplayResponse {
   headers?: Record<string, string>;
   request_hash?: string;
   source?: "smtp" | "http";
+  expires_at?: number;
 }
 
 export interface QuotaInput {
@@ -89,6 +93,7 @@ export interface QuotaInput {
 const authDecisionTtlSeconds = 5;
 const credentialCacheTtlSeconds = 300;
 const idempotencyTtlSeconds = 24 * 60 * 60;
+export const idempotencyPendingLeaseSeconds = 5 * 60;
 
 export async function authenticateSmtpCredential(
   env: Env,
@@ -328,13 +333,19 @@ export async function beginIdempotentRequest(
   requestHash: string,
   source: "smtp" | "http" = "smtp",
 ): Promise<{ status: "new" } | { status: "pending" } | { status: "conflict" } | { status: "replay"; response: ReplayResponse }> {
-  const cached = await env.KV_HOT.get(`idem:${key}`);
-  if (cached !== null) {
-    const cachedResponse = parseReplayResponse(cached);
-    if (cachedResponse.request_hash !== requestHash || cachedResponse.source !== source) {
-      return { status: "conflict" };
+  try {
+    const cached = await env.KV_HOT.get(`idem:${key}`);
+    if (cached !== null) {
+      const cachedResponse = parseReplayResponse(cached);
+      if (cachedResponse.expires_at !== undefined && cachedResponse.expires_at > nowSeconds()) {
+        if (cachedResponse.request_hash !== requestHash || cachedResponse.source !== source) {
+          return { status: "conflict" };
+        }
+        return { status: "replay", response: cachedResponse };
+      }
     }
-    return { status: "replay", response: cachedResponse };
+  } catch (error) {
+    console.warn("idempotency KV lookup failed; falling back to D1", error);
   }
 
   const now = nowSeconds();
@@ -347,14 +358,7 @@ export async function beginIdempotentRequest(
     return { status: "new" };
   }
 
-  const existing = await env.D1_MAIN.prepare("SELECT status, request_hash, source, response_json FROM idempotency_keys WHERE idempotency_key = ?").bind(key).first<IdempotencyRow>();
-  if (existing === null || existing.status === "pending" || existing.response_json === null) {
-    return { status: "pending" };
-  }
-  if (existing.request_hash !== requestHash || existing.source !== source) {
-    return { status: "conflict" };
-  }
-  return { status: "replay", response: parseReplayResponse(existing.response_json) };
+  return resolveExistingIdempotencyRequest(env, key, requestHash, source, now, 0);
 }
 
 export async function completeIdempotentRequest(
@@ -362,17 +366,47 @@ export async function completeIdempotentRequest(
   key: string,
   requestHash: string,
   source: "smtp" | "http",
-  success: boolean,
   response: ReplayResponse,
 ): Promise<void> {
   const now = nowSeconds();
-  const responseJson = JSON.stringify({ ...response, request_hash: requestHash, source });
-  await env.D1_MAIN.prepare("UPDATE idempotency_keys SET status = ?, response_json = ?, updated_at = ? WHERE idempotency_key = ?")
-    .bind(success ? "completed" : "failed", responseJson, now, key)
+  const expiresAt = now + idempotencyTtlSeconds;
+  const responseJson = JSON.stringify({ ...response, request_hash: requestHash, source, expires_at: expiresAt });
+  const result = await env.D1_MAIN.prepare(
+    "UPDATE idempotency_keys SET status = 'completed', response_json = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'pending'",
+  )
+    .bind(responseJson, now, expiresAt, key, requestHash, source)
     .run();
-  if (success) {
-    await env.KV_HOT.put(`idem:${key}`, responseJson, { expirationTtl: idempotencyTtlSeconds });
+  if (result.meta.changes === 0) {
+    throw new Error("idempotency reservation was not completed");
   }
+  await env.KV_HOT.put(`idem:${key}`, responseJson, { expirationTtl: idempotencyTtlSeconds });
+}
+
+export async function releaseIdempotentRequest(
+  env: Env,
+  key: string,
+  requestHash: string,
+  source: "smtp" | "http",
+): Promise<void> {
+  await env.D1_MAIN.prepare(
+    "DELETE FROM idempotency_keys WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'pending'",
+  )
+    .bind(key, requestHash, source)
+    .run();
+}
+
+export async function refreshIdempotentRequestLease(
+  env: Env,
+  key: string,
+  requestHash: string,
+  source: "smtp" | "http",
+): Promise<void> {
+  const now = nowSeconds();
+  await env.D1_MAIN.prepare(
+    "UPDATE idempotency_keys SET updated_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'pending' AND expires_at > ?",
+  )
+    .bind(now, key, requestHash, source, now)
+    .run();
 }
 
 export async function recordSendEvent(env: Env, event: SendEventInput): Promise<void> {
@@ -679,9 +713,89 @@ function normalizeAddress(value: string): string {
   return value.toLowerCase().replace(/^<|>$/g, "").trim();
 }
 
+async function resolveExistingIdempotencyRequest(
+  env: Env,
+  key: string,
+  requestHash: string,
+  source: "smtp" | "http",
+  now: number,
+  attempt: number,
+): Promise<{ status: "new" } | { status: "pending" } | { status: "conflict" } | { status: "replay"; response: ReplayResponse }> {
+  const existing = await env.D1_MAIN.prepare(
+    "SELECT status, request_hash, source, response_json, created_at, updated_at, expires_at FROM idempotency_keys WHERE idempotency_key = ?",
+  )
+    .bind(key)
+    .first<IdempotencyRow>();
+  if (existing === null) {
+    // A retention job may have removed the row after INSERT OR IGNORE. Let the
+    // caller retry rather than sending without a durable reservation.
+    return { status: "pending" };
+  }
+
+  if (existing.expires_at <= now) {
+    const takeover = await env.D1_MAIN.prepare(
+      "UPDATE idempotency_keys SET request_hash = ?, source = ?, status = 'pending', response_json = NULL, created_at = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND expires_at <= ?",
+    )
+      .bind(requestHash, source, now, now, now + idempotencyTtlSeconds, key, now)
+      .run();
+    if (takeover.meta.changes > 0) {
+      return { status: "new" };
+    }
+    return attempt < 2
+      ? resolveExistingIdempotencyRequest(env, key, requestHash, source, now, attempt + 1)
+      : { status: "pending" };
+  }
+
+  if (existing.request_hash !== requestHash || existing.source !== source) {
+    return { status: "conflict" };
+  }
+
+  if (existing.status === "completed" && existing.response_json !== null) {
+    return { status: "replay", response: parseReplayResponse(existing.response_json) };
+  }
+
+  if (existing.status === "failed" && existing.response_json !== null) {
+    const legacyResponse = parseReplayResponse(existing.response_json);
+    if (isTerminalReplayResponse(legacyResponse)) {
+      return { status: "replay", response: legacyResponse };
+    }
+    const takeover = await env.D1_MAIN.prepare(
+      "UPDATE idempotency_keys SET status = 'pending', response_json = NULL, created_at = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'failed'",
+    )
+      .bind(now, now, now + idempotencyTtlSeconds, key, requestHash, source)
+      .run();
+    if (takeover.meta.changes > 0) {
+      return { status: "new" };
+    }
+    return attempt < 2
+      ? resolveExistingIdempotencyRequest(env, key, requestHash, source, now, attempt + 1)
+      : { status: "pending" };
+  }
+
+  if (existing.status === "pending" && existing.updated_at <= now - idempotencyPendingLeaseSeconds) {
+    const takeover = await env.D1_MAIN.prepare(
+      "UPDATE idempotency_keys SET response_json = NULL, created_at = ?, updated_at = ?, expires_at = ? WHERE idempotency_key = ? AND request_hash = ? AND source = ? AND status = 'pending' AND updated_at <= ? AND expires_at > ?",
+    )
+      .bind(now, now, now + idempotencyTtlSeconds, key, requestHash, source, now - idempotencyPendingLeaseSeconds, now)
+      .run();
+    if (takeover.meta.changes > 0) {
+      return { status: "new" };
+    }
+    return attempt < 2
+      ? resolveExistingIdempotencyRequest(env, key, requestHash, source, now, attempt + 1)
+      : { status: "pending" };
+  }
+
+  return { status: "pending" };
+}
+
 function parseReplayResponse(raw: string): ReplayResponse {
   const parsed = JSON.parse(raw) as ReplayResponse;
   return { ...parsed, status: parsed.status ?? (parsed.ok ? 200 : 502) };
+}
+
+function isTerminalReplayResponse(response: ReplayResponse): boolean {
+  return response.ok || response.status === 422;
 }
 
 function prefixedId(prefix: string): string {
