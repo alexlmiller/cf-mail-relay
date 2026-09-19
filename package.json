@@ -30,11 +30,11 @@
   ],
   "pnpm": {
     "overrides": {
-      "yaml": "^2.9.0"
+      "yaml": "^2.9.1"
     }
   },
   "devDependencies": {
-    "playwright": "^1.62.1",
-    "tsx": "^4.23.10"
+    "playwright": "^1.63.0",
+    "tsx": "^4.23.13"
   }
 }
