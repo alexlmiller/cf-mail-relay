@@ -51,7 +51,7 @@ for routes and trust boundaries.
 - A custom admin hostname on a Cloudflare-managed zone, such as
   `mail.example.com`. Platform hostnames require the explicit
   `--allow-platform-hostnames` setup flag.
-- Node.js `>=22.23.2`, pnpm, and Docker.
+- Node.js `>=22.23.3`, pnpm, and Docker.
 - A Docker host reachable from SMTP clients on TCP `587`.
 
 The relay host can be public or private. Gmail must be able to reach it;
