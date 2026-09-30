@@ -2,11 +2,26 @@
 
 ## [1.1.1](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.0...v1.1.1) (2026-09-30)
 
+Security maintenance release. No configuration, credential, or D1 schema
+changes.
 
-### Bug Fixes
+### Security fixes
 
-* **deps:** resolve open npm security alerts ([496499c](https://github.com/alexlmiller/cf-mail-relay/commit/496499c1416dbc1a25a23c9160bc5c374ddef584))
-* **relay:** build with Go 1.27.1 for stdlib security fixes ([496499c](https://github.com/alexlmiller/cf-mail-relay/commit/496499c1416dbc1a25a23c9160bc5c374ddef584))
+- Builds the relay with Go 1.27.1, fixing reachable standard library
+  vulnerabilities in TLS, the HTTP client, URL parsing, and certificate
+  loading (GO-2026-6090, GO-2026-5026, GO-2026-6218, GO-2026-5972).
+- Restores the SMTP line-length limit after a reset `BDAT` transaction
+  (go-smtp 0.25.0).
+- Bundles Hono 4.13.9 in the Worker, fixing unbounded `parseBody()` nesting
+  and URL-fragment query parsing.
+- Updates build and development dependencies with published advisories,
+  including Astro, Vitest, fast-uri, svgo, js-yaml, sharp, devalue, and undici.
+
+### Upgrading from 1.1.0
+
+- Upgrade the relay to the immutable `v1.1.1` image and redeploy the Worker.
+  No migrations are required; the schema stays at version 6.
+- Node.js `22.23.3` or newer is required for setup and development tools.
 
 ## [1.1.0](https://github.com/alexlmiller/cf-mail-relay/compare/v1.0.0...v1.1.0) (2026-08-10)
 
