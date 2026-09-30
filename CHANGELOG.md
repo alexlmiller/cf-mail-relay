@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.1](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.0...v1.1.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **deps:** resolve open npm security alerts ([496499c](https://github.com/alexlmiller/cf-mail-relay/commit/496499c1416dbc1a25a23c9160bc5c374ddef584))
+* **relay:** build with Go 1.27.1 for stdlib security fixes ([496499c](https://github.com/alexlmiller/cf-mail-relay/commit/496499c1416dbc1a25a23c9160bc5c374ddef584))
+
 ## [1.1.0](https://github.com/alexlmiller/cf-mail-relay/compare/v1.0.0...v1.1.0) (2026-08-10)
 
 This release improves Gmail threading, retry safety, setup, and relay
