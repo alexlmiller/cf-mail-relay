@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.1...v1.1.2) (2026-10-04)
+
+
+### Bug Fixes
+
+* **relay:** accept BODY=8BITMIME declarations from Go SMTP clients ([f8877c6](https://github.com/alexlmiller/cf-mail-relay/commit/f8877c60a9e9021550e47943f8f0e7b9de0e5099))
+
 ## [1.1.1](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.0...v1.1.1) (2026-09-30)
 
 Security maintenance release. No configuration, credential, or D1 schema
