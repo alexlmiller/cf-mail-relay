@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.1.2](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.1...v1.1.2) (2026-10-04)
+
+Relay-only bug fix. No Worker, configuration, credential, or D1 schema
+changes.
+
+### Bug fixes
+
+- Accepts the `BODY=8BITMIME` declaration on `MAIL FROM`. go-smtp always
+  advertises 8BITMIME, so Go's `net/smtp` (used by Grafana and many other Go
+  applications) declares it on every message, even pure ASCII, and the relay
+  rejected all of them with `554 5.6.0`. Messages that actually contain 8-bit
+  bytes are still rejected; `BODY=BINARYMIME` is still refused.
+
+### Upgrading from 1.1.1
+
+- Upgrade the relay to the immutable `v1.1.2` image. The Worker does not need
+  a redeploy.
+
 ## [1.1.1](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.0...v1.1.1) (2026-09-30)
 
 Security maintenance release. No configuration, credential, or D1 schema
