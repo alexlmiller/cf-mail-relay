@@ -304,7 +304,10 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 		return smtp.ErrAuthRequired
 	}
 	if opts != nil {
-		if opts.Body == smtp.Body8BitMIME || opts.Body == smtp.BodyBinaryMIME {
+		// go-smtp always advertises 8BITMIME, and Go's net/smtp then declares
+		// BODY=8BITMIME on every message, even pure ASCII. Accept the
+		// declaration; Data rejects messages that really contain 8-bit bytes.
+		if opts.Body == smtp.BodyBinaryMIME {
 			return smtpError(554, smtp.EnhancedCode{5, 6, 0}, "8-bit content not supported; use base64 or quoted-printable")
 		}
 		if opts.Size > s.backend.maxMessageBytes {
