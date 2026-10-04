@@ -113,7 +113,9 @@ status/reason codes before storage.
   is 5 MiB; 25 MiB applies only when every destination is verified.
 - Relay MIME limit: 4.5 MiB by default.
 - Worker decoded raw-MIME guard: 6 MiB; JSON encoding overhead is separate.
-- The relay rejects 8BITMIME content; use base64 or quoted-printable.
+- The relay rejects messages containing 8-bit bytes; use base64 or
+  quoted-printable. It accepts a `BODY=8BITMIME` declaration, which Go's
+  `net/smtp` sends on every message because the relay advertises 8BITMIME.
 - Cloudflare signs outbound mail with DKIM.
 - Each relay process limits AUTH attempts per username and per remote IP at
   five times that limit. Exponential lockout is per username and remote-IP pair.

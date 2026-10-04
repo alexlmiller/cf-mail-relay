@@ -508,6 +508,41 @@ func TestContains8Bit(t *testing.T) {
 	}
 }
 
+func TestSessionMailAcceptsBody8BitMIMEDeclaration(t *testing.T) {
+	newSession := func() *session {
+		return &session{
+			backend:      &backend{maxMessageBytes: 1024},
+			authed:       true,
+			authDecision: &workerclient.AuthResponse{OK: true, AllowedSenders: []string{"grafana@example.com"}},
+		}
+	}
+
+	// Go's net/smtp declares BODY=8BITMIME whenever the server advertises it.
+	if err := newSession().Mail("grafana@example.com", &smtp.MailOptions{Body: smtp.Body8BitMIME}); err != nil {
+		t.Fatalf("BODY=8BITMIME declaration rejected: %v", err)
+	}
+
+	err := newSession().Mail("grafana@example.com", &smtp.MailOptions{Body: smtp.BodyBinaryMIME})
+	var smtpErr *smtp.SMTPError
+	if !errors.As(err, &smtpErr) || smtpErr.Code != 554 {
+		t.Fatalf("BODY=BINARYMIME error = %#v, want SMTP 554", err)
+	}
+}
+
+func TestSessionDataRejects8BitContent(t *testing.T) {
+	s := &session{
+		backend:    &backend{maxMessageBytes: 1024},
+		authed:     true,
+		mailFrom:   "grafana@example.com",
+		recipients: []string{"alex@example.com"},
+	}
+	err := s.Data(strings.NewReader("Subject: caf\xc3\xa9\r\n\r\nbody\r\n"))
+	var smtpErr *smtp.SMTPError
+	if !errors.As(err, &smtpErr) || smtpErr.Code != 554 {
+		t.Fatalf("8-bit DATA error = %#v, want SMTP 554", err)
+	}
+}
+
 func TestThrottleLimitsConnectionsPerMinute(t *testing.T) {
 	throttle := newThrottle(2, 20, 30)
 	if !throttle.allowConn("192.0.2.10") || !throttle.allowConn("192.0.2.10") {
