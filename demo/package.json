@@ -9,12 +9,12 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "astro": "^7.3.5"
+    "astro": "^7.3.6"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
-    "@cloudflare/workers-types": "^5.20260927.1",
+    "@cloudflare/workers-types": "^5.20261007.1",
     "typescript": "^5.9.3",
-    "wrangler": "^4.141.0"
+    "wrangler": "^4.148.0"
   }
 }

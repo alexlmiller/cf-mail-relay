@@ -31,7 +31,7 @@
   "pnpm": {
     "overrides": {
       "yaml": "^2.9.1",
-      "undici@7.29.0": "7.29.1"
+      "undici@7.29.0": "7.30.0"
     }
   },
   "devDependencies": {
