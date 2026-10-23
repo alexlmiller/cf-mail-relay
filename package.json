@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@9.15.9",
   "engines": {
-    "node": ">=22.23.3"
+    "node": ">=22.23.4"
   },
   "scripts": {
     "build": "pnpm -r --filter='./worker' --filter='./ui' --filter='./demo' build",
