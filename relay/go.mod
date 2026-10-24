@@ -1,6 +1,6 @@
 module github.com/alexlmiller/cf-mail-relay/relay
 
-go 1.27.1
+go 1.27.3
 
 require (
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
