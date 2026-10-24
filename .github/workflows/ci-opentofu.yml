@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
-          tofu_version: 1.11.5
+          tofu_version: v1.13.1
           tofu_wrapper: false
       - run: tofu -chdir=infra/opentofu fmt -check -recursive
       - run: tofu -chdir=infra/opentofu init -backend=false -lockfile=readonly
