@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.3](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.2...v1.1.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** promote verified dependency security fixes ([#77](https://github.com/alexlmiller/cf-mail-relay/issues/77)) ([f127e47](https://github.com/alexlmiller/cf-mail-relay/commit/f127e4713f4b8f2bfaeb49ddf0150c2e85edc43e))
+
 ## [1.1.2](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.1...v1.1.2) (2026-10-04)
 
 Relay-only bug fix. No Worker, configuration, credential, or D1 schema
