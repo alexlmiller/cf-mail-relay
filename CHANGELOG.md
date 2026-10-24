@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.4](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.3...v1.1.4) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** promote validated dependency cleanup to main ([#81](https://github.com/alexlmiller/cf-mail-relay/issues/81)) ([d0c7570](https://github.com/alexlmiller/cf-mail-relay/commit/d0c7570596b8b48c3ebc053ef5d32629395edd3e))
+
 ## [1.1.3](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.2...v1.1.3) (2026-10-24)
 
 
