@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.5](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.4...v1.1.5) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** promote validated November mail updates ([#96](https://github.com/alexlmiller/cf-mail-relay/issues/96)) ([3287d7d](https://github.com/alexlmiller/cf-mail-relay/commit/3287d7d0a17da3c48abb8544a242d99fd49f5e6d))
+* **relay:** align builder and CI on patched Go 1.27.4 ([#99](https://github.com/alexlmiller/cf-mail-relay/issues/99)) ([#101](https://github.com/alexlmiller/cf-mail-relay/issues/101)) ([60d2526](https://github.com/alexlmiller/cf-mail-relay/commit/60d25268683c68484bb1dc653a624f584f14d811))
+
 ## [1.1.4](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.3...v1.1.4) (2026-10-24)
 
 
