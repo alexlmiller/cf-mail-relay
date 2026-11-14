@@ -154,6 +154,11 @@ go vet ./...
 go test ./...
 ```
 
+The UI and demo explicitly provide the stable `@emnapi/runtime` development
+peer used by Astro's checker. Keep it compatible with `@astrojs/astro2tsx`'s
+`@emnapi/core`; allowing pnpm to select the runtime 2 beta alongside core 1
+breaks `astro check` before diagnostics run.
+
 CI also validates local D1 migrations, Wrangler dry-runs, OpenTofu, shell and
 Compose tooling, vulnerability checks, and multi-architecture relay builds.
 Release-please owns the unified version; published relay images are built from

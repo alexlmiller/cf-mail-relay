@@ -10,10 +10,11 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "astro": "^7.4.2"
+    "astro": "^7.4.12"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.12",
+    "@emnapi/runtime": "1.11.3",
     "typescript": "^5.9.3"
   }
 }
