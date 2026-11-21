@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.1.5](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.4...v1.1.5) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** promote validated November mail updates ([#96](https://github.com/alexlmiller/cf-mail-relay/issues/96)) ([3287d7d](https://github.com/alexlmiller/cf-mail-relay/commit/3287d7d0a17da3c48abb8544a242d99fd49f5e6d))
+* **relay:** align builder and CI on patched Go 1.27.4 ([#99](https://github.com/alexlmiller/cf-mail-relay/issues/99)) ([#101](https://github.com/alexlmiller/cf-mail-relay/issues/101)) ([60d2526](https://github.com/alexlmiller/cf-mail-relay/commit/60d25268683c68484bb1dc653a624f584f14d811))
+
+## [1.1.4](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.3...v1.1.4) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** promote validated dependency cleanup to main ([#81](https://github.com/alexlmiller/cf-mail-relay/issues/81)) ([d0c7570](https://github.com/alexlmiller/cf-mail-relay/commit/d0c7570596b8b48c3ebc053ef5d32629395edd3e))
+
+## [1.1.3](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.2...v1.1.3) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** promote verified dependency security fixes ([#77](https://github.com/alexlmiller/cf-mail-relay/issues/77)) ([f127e47](https://github.com/alexlmiller/cf-mail-relay/commit/f127e4713f4b8f2bfaeb49ddf0150c2e85edc43e))
+
 ## [1.1.2](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.1...v1.1.2) (2026-10-04)
 
 Relay-only bug fix. No Worker, configuration, credential, or D1 schema
