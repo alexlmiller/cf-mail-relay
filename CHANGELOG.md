@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.6](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.5...v1.1.6) (2026-11-21)
+
+
+### Bug Fixes
+
+* **deps:** promote validated November 21 mail updates ([#107](https://github.com/alexlmiller/cf-mail-relay/issues/107)) ([51feb03](https://github.com/alexlmiller/cf-mail-relay/commit/51feb03fba629c758f713f5cca5e8502adbf926a))
+
 ## [1.1.5](https://github.com/alexlmiller/cf-mail-relay/compare/v1.1.4...v1.1.5) (2026-11-14)
 
 
