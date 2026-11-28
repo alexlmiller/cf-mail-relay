@@ -32,7 +32,7 @@
     "overrides": {
       "yaml": "^2.9.1",
       "undici@>=7 <7.30.2": "7.30.2",
-      "undici@>=8 <8.12.4": "8.12.4"
+      "undici@>=8 <8.12.4": "8.13.1"
     }
   },
   "devDependencies": {
