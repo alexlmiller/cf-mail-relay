@@ -9,13 +9,13 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "astro": "^7.4.12"
+    "astro": "^7.4.13"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.12",
-    "@cloudflare/workers-types": "^5.20261118.1",
+    "@cloudflare/workers-types": "^5.20261125.1",
     "@emnapi/runtime": "1.11.3",
     "typescript": "^5.9.3",
-    "wrangler": "^4.164.0"
+    "wrangler": "^4.168.0"
   }
 }
